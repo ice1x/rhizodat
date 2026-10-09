@@ -1,286 +1,350 @@
-# Unified Python Data Access Layer
+# datorium
 
-## Unified Python API for OLTP, OLAP, Graph/Vector, and Lakehouse data
+## A bitemporal polyglot data layer
 
-A Python abstraction layer that provides a consistent execution and result-handling API over multiple database paradigms:
+datorium is a data access layer over several databases that behaves like **one
+transactional store**:
 
-- PostgreSQL (OLTP)
-- ClickHouse (OLAP)
-- [drevo](https://github.com/ice1x/drevo) (Graph + Full-text + Vector)
-- Apache Iceberg (Lakehouse tables)
+- **PostgreSQL**: OLTP, SQL
+- **ClickHouse**: OLAP, SQL
+- **[drevo](https://github.com/ice1x/drevo)**: graph (Cypher), full-text search, vectors
+- **Apache Iceberg**: lakehouse tables
 
-The project focuses on unifying **connection lifecycle**, **query execution**, and **result access**, while preserving native query languages and backend-specific capabilities.
+Application code works with entities through a **Repository** and groups writes
+in a **Unit of Work**. One Unit of Work is one **meta-transaction** that spans
+every store it touches and gives ACID guarantees at the layer level. Every
+record carries transaction time (and optionally valid time), so any entity can
+be read **as of** any moment.
+
+The Python implementation is the reference: it doubles as the specification and
+prototype for later ports (Rust, Go). Everything below is described in
+language-neutral terms on purpose.
+
+> Status: design. No code yet. This README is the specification v0.1 is built against.
 
 ---
 
-## Goals
-- Single Python API for heterogeneous data stores
-- Adapter-based architecture
-- Capability-driven design (SQL / Graph / Vector / FTS / Table)
-- No query language unification
+## Principles
+
+1. **No store is primary.** An entity may live in a single store or be spread
+   across all four. Identity, transactions, time and migrations never assume a
+   master database.
+2. **Native query languages stay.** SQL, Cypher and Iceberg scans are not
+   unified into a DSL; the layer unifies identity, transactions, time and
+   result access.
+3. **ACID belongs to the layer**, not only to the stores, and is stated
+   honestly where a store limits it (see [Guarantees](#guarantees)).
+4. **Portable by design.** No Python-only mechanisms in the core contracts
+   (identity, journal, protocol, migration format).
 
 ## Non-goals
-- No universal query DSL
-- No cross-database joins
-- No schema unification
-- No distributed (cross-backend) transactions
+
+- A universal query DSL
+- Cross-store joins inside the database engines
+- Schema unification across stores
 
 ---
 
-## Supported capabilities
+## Stores and capabilities
 
-| Backend        | SQL | Graph | Vector | FTS | Table | ACID |
-|----------------|-----|-------|--------|-----|-------|------|
-| PostgreSQL     | ✔   | ✖     | (pgvector, optional) | ✖ | ✖ | ✔ |
-| ClickHouse     | ✔   | ✖     | ✖      | ✖   | ✖     | ✖ (no multi-statement transactions) |
-| drevo          | ✖ (Cypher) | ✔ | ✔ | ✔ (BM25) | ✖ | ✔ (MVCC + WAL) |
-| Apache Iceberg | ✖   | ✖     | ✖      | ✖   | ✔     | ✔ (atomic snapshot commits) |
+| Store | Query | Native ACID | 2PC participant | Branch commit in a meta-transaction |
+|---|---|---|---|---|
+| PostgreSQL | SQL | ✔ | ✔ `PREPARE TRANSACTION` | prepare → `COMMIT PREPARED` |
+| drevo | Cypher, FTS, vector | ✔ MVCC + WAL | ✔ `prepare` / `commit_prepared` | prepare → `commit_prepared` |
+| Apache Iceberg | table scan | ✔ atomic snapshot commit | ✖ optimistic commit | stage data files → commit snapshot after the decision, retried |
+| ClickHouse | SQL | ✖ | ✖ | insert after the decision with a dedup token, retried |
 
-**Where Iceberg's ACID comes from.** Iceberg is a table format, not a server:
-every write produces a new snapshot, and the commit is an atomic swap of the
-table's metadata pointer in the catalog (optimistic concurrency, snapshot
-isolation for readers). The adapter uses `pyiceberg`, whose Transaction API
-groups several operations (append / overwrite / delete / schema update) into a
-single atomic commit. Engines that only read Iceberg (e.g. ClickHouse
-`iceberg()`) are out of scope for writes.
+Iceberg's atomicity comes from the format plus its catalog: a commit swaps the
+table's metadata pointer to a new snapshot. drevo's 2PC is exposed in
+`drevo-py` (`prepare(gid)`, `commit_prepared`, `rollback_prepared`,
+`list_prepared`) and in `drevo.dbapi` (PEP 249 TPC).
 
 ---
 
-## Connection strings
+## Architecture
 
-| DSN scheme | Adapter | Driver |
-|------------|---------|--------|
-| `postgresql://user:pass@host/db` | `PostgresAdapter` | `psycopg` |
-| `clickhouse://user:pass@host:8123/db` | `ClickHouseAdapter` | `clickhouse-connect` |
-| `drevo:///path/to/graph.redb` | `DrevoAdapter` (embedded) | `drevo-py` |
-| `drevo+mem://` | `DrevoAdapter` (embedded, in-memory) | `drevo-py` |
-| `drevo+bolt://host:7687` | `DrevoAdapter` (remote) | `neo4j` Bolt driver |
-| `iceberg+rest://host:8181/warehouse` | `IcebergAdapter` | `pyiceberg` (REST catalog) |
-| `iceberg+sql://…` / `iceberg+glue://…` | `IcebergAdapter` | `pyiceberg` (SQL / Glue catalog) |
+```
+ Application (entities, domain logic)
+        │  repo.get / add / remove / find / history
+        ▼
+ ┌──────────────────────────────────────────────┐
+ │ Repository[T]        entity ↔ store mapping  │
+ │ Unit of Work         one meta-transaction    │
+ │ Coordinator          2PC + journal + recovery│
+ │ Clock                hybrid logical clock    │
+ └──────────────────────────────────────────────┘
+        │  branches (one per touched store)
+        ▼
+ PostgreSQL │ drevo │ Iceberg │ ClickHouse      ← adapters
+```
 
 ---
 
-## Example
+## Identity
+
+Every record written by datorium carries service fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `dat_id` | UUIDv7 | Entity identity. Generated by the layer, never by a store. Every part of one entity has the same `dat_id` in every store. |
+| `dat_type` | string | Entity type, for stores that hold several types in one table or graph. |
+| `dat_txn` | UUIDv7 | The meta-transaction that wrote this version. Used for idempotent apply and for filtering uncommitted data. |
+| `dat_tx_time` | HLC timestamp | Transaction time of this version (see [Time](#time)). |
+
+UUIDv7 is time-ordered, which suits `ORDER BY` in ClickHouse, sorting in
+Iceberg and B-tree locality in PostgreSQL.
+
+Storage per store: PostgreSQL `uuid`, ClickHouse `UUID`, drevo node property,
+Iceberg `uuid` (falls back to `fixed[16]` where the engine lacks it).
+
+**Links between entities** are references by `dat_id`. Foreign keys cannot
+cross stores, so the Unit of Work checks referential integrity before commit.
+
+### Entity mapping
+
+Which part of an entity lives in which store is declared per entity type; there
+is no central registry to look up.
 
 ```python
-from unifieddb import connect
+from datorium import entity, Ref
 
-db = connect("postgresql://user:pass@localhost/db")
+@entity(stores={
+    "pg":         ["status", "amount", "customer"],
+    "drevo":      ["related"],          # links as graph edges
+    "clickhouse": ["events"],           # append-only facts
+    "iceberg":    ["snapshots"],        # long-term history
+})
+class Order:
+    status: str
+    amount: Decimal
+    customer: Ref["Customer"]
+```
 
-result = db.execute(
-    "SELECT id, name FROM users WHERE active = true"
+The narrow case is one store; the wide case is all four. Both use the same API.
+
+---
+
+## Meta-transactions
+
+A Unit of Work is one **meta-transaction** (`dat_txn`) with one **branch** per
+store it touches. It is flat: one global transaction, branches underneath, no
+nesting.
+
+- **One branch** → the store's own transaction, one-phase commit. No journal.
+- **Several branches** → the commit protocol below, coordinated through the journal.
+
+Writes never have to cover a whole entity: updating only the ClickHouse part of
+an `Order` is a meta-transaction with a single branch.
+
+### Commit protocol (several branches)
+
+1. **Begin.** Generate `dat_txn`; journal record `ACTIVE`.
+2. **Work.** Run statements in the branches: PostgreSQL and drevo in open
+   transactions; ClickHouse rows buffered; Iceberg data files may be written
+   early (they stay invisible until a snapshot references them).
+3. **Prepare.** Assign `dat_tx_time` from the HLC. PostgreSQL `PREPARE
+   TRANSACTION`, drevo `prepare(gid)`, Iceberg: data files written and conflicts
+   pre-checked, ClickHouse: payload persisted (in the journal, or as a staged
+   file referenced by it). Journal record `PREPARED` with every branch listed.
+   Any failure here → roll everything back.
+4. **Decide.** Journal record `COMMITTED`. **This is the atomic commit point.**
+5. **Finish.** `COMMIT PREPARED` / `commit_prepared`; Iceberg snapshot commit;
+   ClickHouse insert with `insert_deduplication_token = dat_txn:branch`.
+   Iceberg and ClickHouse steps are idempotent and retried until they succeed.
+6. **Done.** Journal record `DONE`.
+
+### Journal
+
+- Required for meta-transactions with several branches: `journal=<dsn>`
+  pointing to an ACID store (PostgreSQL or drevo). Missing → a clear error, not
+  a silent unsafe default.
+- Must be shared and durable: recovery may run on another host than the one
+  that crashed.
+- A local file (`journal="file:///…"`) is allowed only explicitly, for
+  development and single-process embedded use.
+- The journal is a coordination role, not a data master: it holds transaction
+  states, not entity data.
+
+### Recovery
+
+A recovery worker scans the journal (and `list_prepared` / `pg_prepared_xacts`):
+
+| Journal state | Action |
+|---|---|
+| `ACTIVE` or `PREPARED` (no decision) | roll back prepared branches (presumed abort) |
+| `COMMITTED` (not `DONE`) | roll forward every branch, idempotently |
+| `DONE` | nothing; eligible for journal compaction |
+
+### Guarantees
+
+| | What datorium guarantees |
+|---|---|
+| **A** | All branches commit or none do. PostgreSQL and drevo commit atomically via 2PC; Iceberg and ClickHouse are rolled forward after the decision, so the outcome is atomic but may become visible later. |
+| **C** | Invariants and cross-store references are validated in the Unit of Work before prepare; each store enforces its own constraints. |
+| **I** | Native isolation inside each store. Across stores, readers that go through datorium filter by committed `dat_txn` and `dat_tx_time`, so they do not see half-applied meta-transactions. Direct reads that bypass datorium can. |
+| **D** | Durability of each store plus the journal; a decided transaction survives crashes of the application, the coordinator host, or a store (recovery finishes it). |
+
+Known limit: an Iceberg `overwrite`/`delete` may conflict with a concurrent
+writer after the decision. Conflicts are pre-checked at prepare; a residual
+conflict is retried and, if it cannot be resolved, reported as a heuristic
+outcome for that branch.
+
+---
+
+## Time
+
+datorium is **bitemporal**:
+
+- **Transaction time** (always on): when the layer recorded a version.
+  `dat_tx_time` is a hybrid logical clock (HLC) timestamp, assigned at prepare.
+  Wall clocks of different hosts are never compared directly.
+- **Valid time** (opt-in per entity type): `valid_from` / `valid_to`, when the
+  fact holds in the real world.
+
+A write creates a new version; a delete closes the interval. Nothing is
+overwritten in place.
+
+```python
+repo.get(order_id)                              # current
+repo.get(order_id, as_of=t)                     # valid at t
+repo.get(order_id, as_of=t, known_at=t2)        # valid at t, as known at t2
+repo.history(order_id)                          # every version, every store
+```
+
+How each store keeps history: Iceberg snapshots and time travel; drevo facts
+with validity windows; ClickHouse append-only versioned rows; PostgreSQL
+versioned rows. A retention / compaction policy bounds the growth.
+
+---
+
+## Schema migrations
+
+One migration history for all stores, in a **language-neutral format**:
+numbered steps, each targeting one store.
+
+| Store | Step body |
+|---|---|
+| PostgreSQL | SQL |
+| ClickHouse | SQL (including `ENGINE`, `ORDER BY`, `TTL`) |
+| drevo | Cypher (e.g. `CREATE VECTOR INDEX`) |
+| Iceberg | declarative schema operations (add / rename / drop column, partition spec) |
+
+- The version table lives in the journal store.
+- Steps are idempotent (`IF NOT EXISTS`, checks before change): a migration
+  across stores is not atomic, so a failed run must be safe to repeat.
+- Schema versions are recorded with their transaction time, so `as_of` reads
+  know which schema applied then.
+
+Alembic may be used inside the Python prototype as a runner, but the step
+format is datorium's own so other language ports can execute it.
+
+---
+
+## API sketch (v0.1)
+
+```python
+from datorium import Datorium
+
+dat = Datorium(
+    stores={
+        "pg":         "postgresql://user:pass@localhost/app",
+        "drevo":      "drevo:///data/graph.redb",
+        "clickhouse": "clickhouse://localhost:8123/analytics",
+        "iceberg":    "iceberg+rest://localhost:8181/warehouse",
+    },
+    journal="postgresql://user:pass@localhost/datorium",
 )
 
-for row in result:
-    print(row["id"], row["name"])
+orders = dat.repository(Order)
+
+with dat.unit_of_work() as uow:          # one meta-transaction
+    order = Order(status="new", amount=Decimal("10.00"), customer=ref)
+    orders.add(order)
+    uow.commit()                          # 2PC across the touched stores
+
+order = orders.get(order.dat_id, as_of=yesterday)
 ```
+
+Native access stays available through adapters:
 
 ```python
-graph = connect("drevo:///data/knowledge.redb")   # or "drevo+bolt://localhost:7687"
-
-neighbours = graph.query(
-    "MATCH (n:note {title: $title})-[:links_to]->(m) RETURN m.title AS title",
-    title="Iceberg",
-)
-
-hits = graph.fts_search("snapshot isolation", k=5)
-
-similar = graph.search(
-    index="note_embeddings",
-    vector=embedding,
-    limit=5,
-)
+dat.store("pg").execute("SELECT count(*) FROM orders WHERE status = %(s)s", {"s": "new"})
+dat.store("drevo").query("MATCH (o:Order)-[:related]->(x) RETURN x LIMIT 10")
+dat.store("iceberg").scan("analytics.orders", filter="amount > 100").to_arrow()
 ```
 
-```python
-lake = connect("iceberg+rest://localhost:8181/warehouse")
-
-events = lake.scan(
-    "analytics.events",
-    filter="event_date >= '2026-01-01'",
-    columns=["user_id", "event_type"],
-).to_arrow()
-
-with lake.transaction("analytics.events") as tx:   # one atomic commit
-    tx.delete("event_date < '2025-01-01'")
-    tx.append(new_events)                          # pyarrow.Table
-```
-
----
-
-## Public API (v0.1)
-
-### connect
-
-```python
-def connect(dsn: str, **options) -> Adapter
-```
-
-- Detects backend by DSN scheme
-- Returns an adapter with declared capabilities
-
----
-
-## Adapter interfaces
-
-### Base Adapter
+### Adapter contracts
 
 ```python
 class Adapter:
-    capabilities: set[str]
-
+    capabilities: set[str]          # {"sql", "graph", "fts", "vector", "table"}
     def connect(self) -> None: ...
     def close(self) -> None: ...
-    def execute(self, query: str, **params) -> Result: ...
-```
 
----
+class Branch:                        # one store's part of a meta-transaction
+    def prepare(self, dat_txn: UUID) -> None: ...
+    def commit(self) -> None: ...    # idempotent; retried by recovery
+    def rollback(self) -> None: ...
+    two_phase: bool                  # True for PostgreSQL and drevo
 
-### SQLAdapter
-
-```python
-class SQLAdapter(Adapter):
-    def execute(
-        self,
-        query: str,
-        params: dict | None = None
-    ) -> Result
-```
-
----
-
-### GraphAdapter
-
-```python
-class GraphAdapter(Adapter):
-    def query(
-        self,
-        cypher: str,
-        **params
-    ) -> GraphResult
-```
-
----
-
-### VectorAdapter
-
-```python
-class VectorAdapter(Adapter):
-    def upsert(
-        self,
-        index: str,
-        points: list[VectorPoint]
-    ) -> None
-
-    def search(
-        self,
-        index: str,
-        vector: list[float],
-        limit: int = 10,
-        filter: dict | None = None
-    ) -> VectorResult
-```
-
----
-
-### FTSAdapter
-
-```python
-class FTSAdapter(Adapter):
-    def fts_search(
-        self,
-        query: str,
-        k: int = 10,
-        kind: str | None = None
-    ) -> Result
-```
-
----
-
-### TableAdapter
-
-```python
-class TableAdapter(Adapter):
-    def scan(
-        self,
-        table: str,
-        filter: str | None = None,
-        columns: list[str] | None = None,
-        snapshot_id: int | None = None,   # time travel
-        limit: int | None = None
-    ) -> Result
-
-    def append(self, table: str, data: "pyarrow.Table") -> None
-    def overwrite(self, table: str, data: "pyarrow.Table", filter: str | None = None) -> None
-    def delete(self, table: str, filter: str) -> None
-    def transaction(self, table: str) -> ContextManager[TableTransaction]
-    def snapshots(self, table: str) -> list[Snapshot]
-```
-
----
-
-### Composite adapters
-
-One backend can declare several capabilities:
-
-```python
-class DrevoAdapter(GraphAdapter, VectorAdapter, FTSAdapter):
-    capabilities = {"graph", "vector", "fts"}
-```
-
----
-
-## Result model
-
-```python
 class Result:
     def __iter__(self): ...
     def first(self): ...
     def all(self): ...
-    def to_arrow(self): ...   # optional; ClickHouse / Iceberg
+    def to_arrow(self): ...          # optional
+    raw: object                      # backend-specific data
 ```
 
-Backend-specific data is available via:
-```python
-result.raw
-```
+### Connection strings
+
+| DSN | Store | Driver |
+|---|---|---|
+| `postgresql://…` | PostgreSQL | `psycopg` |
+| `clickhouse://…` | ClickHouse | `clickhouse-connect` |
+| `drevo:///path.redb`, `drevo+mem://` | drevo, embedded | `drevo-py` |
+| `drevo+bolt://host:7687` | drevo, remote | `neo4j` driver |
+| `iceberg+rest://…`, `iceberg+sql://…`, `iceberg+glue://…` | Iceberg | `pyiceberg` |
 
 ---
 
 ## Package structure
 
 ```
-unifieddb/
+datorium/
 ├── core/
-│   ├── adapter.py
-│   ├── result.py
-│   └── capabilities.py
+│   ├── identity.py      # dat_id, UUIDv7
+│   ├── clock.py         # hybrid logical clock
+│   ├── mapping.py       # @entity, store mapping
+│   ├── repository.py
+│   ├── unit_of_work.py
+│   ├── coordinator.py   # commit protocol, recovery
+│   ├── journal.py
+│   └── result.py
 ├── adapters/
 │   ├── postgres.py
-│   ├── clickhouse.py
 │   ├── drevo.py
+│   ├── clickhouse.py
 │   └── iceberg.py
-└── connect.py
+└── migrations/
 ```
 
-Backend drivers are optional extras:
-
-```bash
-pip install "unifieddb[postgres]"     # psycopg
-pip install "unifieddb[clickhouse]"   # clickhouse-connect
-pip install "unifieddb[drevo]"        # drevo-py, neo4j
-pip install "unifieddb[iceberg]"      # pyiceberg[pyarrow]
-```
+Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
+`datorium[drevo]`, `datorium[iceberg]`. `drevo-py` is not on PyPI yet and is
+installed from source.
 
 ---
 
-## Scope v0.1
+## Roadmap
 
-✔ connect / close  
-✔ execute / query / search / fts_search / scan  
-✔ PostgreSQL + ClickHouse + drevo (embedded + Bolt) + Iceberg (scan / append / transaction)  
-✔ transactions within a single backend (PostgreSQL, drevo, Iceberg)  
+1. Package skeleton, CI (pytest, ruff, mypy).
+2. Core without stores: identity, HLC, DSN parsing, mapping, result model.
+3. PostgreSQL + drevo adapters; meta-transactions with 2PC; journal and
+   recovery, including crash tests between prepare and commit.
+4. Iceberg + ClickHouse branches: staged commit, dedup tokens, roll-forward.
+5. Bitemporal reads (`as_of`, `known_at`, `history`).
+6. Migrations.
+7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
+   bug tracker.
 
-✖ cross-backend transactions  
-✖ async  
-✖ schema API  
+Out of scope for v0.1: async API, savepoints / nested transactions, cross-store
+query planning.
