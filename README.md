@@ -20,7 +20,8 @@ The Python implementation is the reference: it doubles as the specification and
 prototype for later ports (Rust, Go). Everything below is described in
 language-neutral terms on purpose.
 
-> Status: design. No code yet. This README is the specification v0.1 is built against.
+> Status: design. Package skeleton only, no functionality yet. This README is the
+> specification v0.1 is built against.
 
 ---
 
@@ -423,3 +424,15 @@ installed from source.
 
 Out of scope for v0.1: async API, savepoints / nested transactions, cross-store
 query planning.
+
+---
+
+## Development
+
+```bash
+uv sync                  # dev environment
+uv run pytest            # tests
+uv run ruff check .      # lint
+uv run ruff format .     # format
+uv run mypy              # types (strict)
+```

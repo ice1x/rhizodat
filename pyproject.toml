@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "datorium"
+version = "0.1.0.dev0"
+description = "Bitemporal polyglot data layer over PostgreSQL, ClickHouse, drevo and Apache Iceberg"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "ice1x" }]
+keywords = ["database", "transactions", "bitemporal", "postgresql", "clickhouse", "iceberg", "graph"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+clickhouse = ["clickhouse-connect>=0.8"]
+# Remote drevo over Bolt. Embedded drevo needs drevo-py, which is not on PyPI
+# yet and is installed from source (github.com/ice1x/drevo, drevo-py/).
+drevo = ["neo4j>=5.20"]
+iceberg = ["pyiceberg>=0.9"]
+
+[project.urls]
+Repository = "https://github.com/ice1x/datorium"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "faker>=30",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/datorium"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# Spec examples in Markdown are aligned by hand.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "PT", "ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN401"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
