@@ -139,19 +139,38 @@ an `Order` is a meta-transaction with a single branch.
 ### Commit protocol (several branches)
 
 1. **Begin.** Generate `dat_txn`; journal record `ACTIVE`.
-2. **Work.** Run statements in the branches: PostgreSQL and drevo in open
-   transactions; ClickHouse rows buffered; Iceberg data files may be written
-   early (they stay invisible until a snapshot references them).
-3. **Prepare.** Assign `dat_tx_time` from the HLC. PostgreSQL `PREPARE
-   TRANSACTION`, drevo `prepare(gid)`, Iceberg: data files written and conflicts
-   pre-checked, ClickHouse: payload persisted (in the journal, or as a staged
-   file referenced by it). Journal record `PREPARED` with every branch listed.
-   Any failure here → roll everything back.
-4. **Decide.** Journal record `COMMITTED`. **This is the atomic commit point.**
-5. **Finish.** `COMMIT PREPARED` / `commit_prepared`; Iceberg snapshot commit;
-   ClickHouse insert with `insert_deduplication_token = dat_txn:branch`.
-   Iceberg and ClickHouse steps are idempotent and retried until they succeed.
-6. **Done.** Journal record `DONE`.
+2. **Work.** Run statements in all branches, in parallel: PostgreSQL and drevo
+   in open transactions, ClickHouse rows buffered, Iceberg data files written
+   (invisible until a snapshot references them).
+3. **Stage** (slow, holds no locks). Assign `dat_tx_time` from the HLC. Iceberg:
+   finish data files and pre-check conflicts. ClickHouse: persist the payload
+   (in the journal, or as a staged file referenced by it). Failures here are
+   the cheapest to abort, so everything likely to fail is checked here.
+4. **Prepare** (fast, holds locks). PostgreSQL `PREPARE TRANSACTION` and drevo
+   `prepare(gid)`, in parallel, **last**. Journal record `PREPARED` with every
+   branch listed. Any failure up to here → roll everything back.
+5. **Decide.** Journal record `COMMITTED`. **This is the atomic commit point.**
+6. **Finish.** First release locks: `COMMIT PREPARED` / `commit_prepared`. Then
+   the Iceberg snapshot commit and the ClickHouse insert with
+   `insert_deduplication_token = dat_txn:branch`. Every step is idempotent.
+7. **Done.** Journal record `DONE`.
+
+**Ordering rule: slow, lock-free work before prepare; lock-holding branches
+prepare last and commit first.** The window between prepare and commit must be
+as short as possible:
+
+- A prepared PostgreSQL transaction holds its row locks until `COMMIT PREPARED`.
+- A prepared drevo transaction raises the graph's **prepared fence**: while any
+  prepared transaction exists, every other commit to that graph fails fast with
+  a retryable `TransactionConflict` (reads keep working). See drevo
+  `docs/rfc-two-phase-commit.md`.
+- drevo's opt-in `DREVO_PREPARED_TX_TIMEOUT_SECS` heuristically rolls back a
+  transaction that stays prepared too long, overriding the coordinator. The
+  coordinator must finish well inside that timeout, and treats a refused late
+  commit as a heuristic outcome.
+
+Order within step 6 does not affect correctness (the decision is already
+durable); it only shortens how long other writers are blocked.
 
 ### Journal
 
@@ -174,6 +193,53 @@ A recovery worker scans the journal (and `list_prepared` / `pg_prepared_xacts`):
 | `ACTIVE` or `PREPARED` (no decision) | roll back prepared branches (presumed abort) |
 | `COMMITTED` (not `DONE`) | roll forward every branch, idempotently |
 | `DONE` | nothing; eligible for journal compaction |
+
+### Retries
+
+Retries follow one line: **before the decision a meta-transaction may be
+aborted and re-run; after the decision it may only be finished.**
+
+**Before the decision (steps 1–4): retry the whole Unit of Work.**
+
+- A transient failure in any branch aborts every branch, and the Unit of Work
+  is re-run from the start with a **new** `dat_txn` and a new `dat_tx_time`.
+  Retrying a single statement is not enough: reads made earlier in the work may
+  be stale.
+- So a retryable Unit of Work is a **function**, not a `with` block (see the
+  [API sketch](#api-sketch-v01)). A `with` block runs once and fails on the
+  first transient error.
+- Policy: maximum attempts, overall deadline, exponential backoff with **full
+  jitter**. Jitter matters: drevo's prepared fence makes concurrent writers
+  fail fast at the same moment, and without jitter they retry in lockstep.
+
+| Store | Retryable (transient) | Not retryable |
+|---|---|---|
+| PostgreSQL | `40001` serialization failure, `40P01` deadlock, connection loss before prepare | constraint violations, syntax / schema errors |
+| drevo | `TransactionConflict` (commit conflict or prepared fence), Bolt `TransientError`, HTTP `503` | constraint violations, Cypher errors |
+| Iceberg | commit conflict found by the pre-check, catalog unavailable | schema mismatch, validation errors |
+| ClickHouse | network errors, timeouts, too many parts | type / schema errors |
+| datorium | journal unreachable before the decision (→ presumed abort) | invariant / reference validation failures |
+
+**After the decision (steps 5–7): retry each branch until it is done, never abort.**
+
+- The coordinator retries in-process up to a short deadline, then hands the
+  transaction to the recovery worker, which keeps retrying with backoff.
+- `commit()` then returns `CommittedPending(dat_txn)`, **not an error**. The
+  transaction is committed; raising would make callers re-run it and write it
+  twice.
+- A transaction that stays unfinished past a threshold raises an alert; it is
+  never silently dropped.
+
+**Ambiguous outcomes.** A timeout on a commit call does not say whether it
+applied. The coordinator never guesses; it checks the store before retrying:
+
+| Store | How "already applied" is detected |
+|---|---|
+| PostgreSQL | gid absent from `pg_prepared_xacts` and the decision is `COMMITTED` → done (rows carry `dat_txn` for verification) |
+| drevo | `commit_prepared` on an unknown gid returns `UnknownGid` → already resolved |
+| Iceberg | a snapshot whose summary carries `dat_txn` exists → skip |
+| ClickHouse | `insert_deduplication_token` makes a repeated insert a no-op inside the dedup window; outside it (or with deduplication off, as on non-replicated MergeTree by default) the coordinator first checks for rows with this `dat_txn` |
+| Journal | a failed or timed-out `COMMITTED` write is read back; if the state cannot be read, the transaction is left to recovery, which decides from the journal once it is reachable |
 
 ### Guarantees
 
@@ -257,13 +323,19 @@ dat = Datorium(
 
 orders = dat.repository(Order)
 
-with dat.unit_of_work() as uow:          # one meta-transaction
-    order = Order(status="new", amount=Decimal("10.00"), customer=ref)
-    orders.add(order)
-    uow.commit()                          # 2PC across the touched stores
+@dat.transactional(retry=Retry(attempts=5, deadline=timedelta(seconds=10)))
+def place_order(uow, customer: Ref["Customer"]) -> Order:
+    order = Order(status="new", amount=Decimal("10.00"), customer=customer)
+    uow.repository(Order).add(order)
+    return order                          # commit on return; re-run on a transient error
 
-order = orders.get(order.dat_id, as_of=yesterday)
+outcome = place_order(customer=ref)       # Committed | CommittedPending; raises Aborted
+
+order = orders.get(outcome.value.dat_id, as_of=yesterday)
 ```
+
+A plain `with dat.unit_of_work() as uow:` block is also available; it runs once
+and does not retry.
 
 Native access stays available through adapters:
 
@@ -282,10 +354,13 @@ class Adapter:
     def close(self) -> None: ...
 
 class Branch:                        # one store's part of a meta-transaction
-    def prepare(self, dat_txn: UUID) -> None: ...
-    def commit(self) -> None: ...    # idempotent; retried by recovery
-    def rollback(self) -> None: ...
     two_phase: bool                  # True for PostgreSQL and drevo
+    def stage(self) -> None: ...     # slow, lock-free work (Iceberg files, ClickHouse payload)
+    def prepare(self, dat_txn: UUID) -> None: ...   # lock-holding; called last
+    def commit(self) -> None: ...    # idempotent; retried until done
+    def rollback(self) -> None: ...
+    def is_applied(self, dat_txn: UUID) -> bool: ...  # resolves ambiguous outcomes
+    def is_retryable(self, error: Exception) -> bool: ...
 
 class Result:
     def __iter__(self): ...
@@ -338,7 +413,7 @@ installed from source.
 
 1. Package skeleton, CI (pytest, ruff, mypy).
 2. Core without stores: identity, HLC, DSN parsing, mapping, result model.
-3. PostgreSQL + drevo adapters; meta-transactions with 2PC; journal and
+3. PostgreSQL + drevo adapters; meta-transactions with 2PC and retries; journal and
    recovery, including crash tests between prepare and commit.
 4. Iceberg + ClickHouse branches: staged commit, dedup tokens, roll-forward.
 5. Bitemporal reads (`as_of`, `known_at`, `history`).
