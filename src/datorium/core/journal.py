@@ -46,6 +46,10 @@ __all__ = [
     "MemoryJournal",
     "SqliteJournal",
     "State",
+    "check_transition",
+    "conflict_error",
+    "decode_branches",
+    "encode_branches",
     "open_journal",
 ]
 
@@ -121,14 +125,16 @@ def _system_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
-def _check_edge(expected: State, new: State, dat_tx_time: int | None) -> None:
+def check_transition(expected: State, new: State, dat_tx_time: int | None) -> None:
+    """Raise ``ValueError`` for an edge that is never legal, whatever is stored."""
     if new not in _LEGAL[expected]:
         raise ValueError(f"illegal journal transition {expected} -> {new}")
     if new is State.PREPARED and dat_tx_time is None:
         raise ValueError("PREPARED needs the dat_tx_time assigned at stage")
 
 
-def _conflict(dat_txn: uuid.UUID, expected: State, actual: State | None) -> JournalConflict:
+def conflict_error(dat_txn: uuid.UUID, expected: State, actual: State | None) -> JournalConflict:
+    """The error for a compare-and-set that found ``actual`` instead of ``expected``."""
     if actual is None:
         return JournalConflict(f"meta-transaction {dat_txn} is unknown to the journal")
     return JournalConflict(f"meta-transaction {dat_txn} is {actual}, expected {expected}")
@@ -159,11 +165,11 @@ class MemoryJournal:
         *,
         dat_tx_time: int | None = None,
     ) -> JournalRecord:
-        _check_edge(expected, new, dat_tx_time)
+        check_transition(expected, new, dat_tx_time)
         with self._lock:
             current = self._records.get(dat_txn)
             if current is None or current.state is not expected:
-                raise _conflict(dat_txn, expected, current.state if current else None)
+                raise conflict_error(dat_txn, expected, current.state if current else None)
             updated = replace(
                 current,
                 state=new,
@@ -217,7 +223,8 @@ CREATE INDEX IF NOT EXISTS dat_journal_pending ON dat_journal (state, updated_ms
 """
 
 
-def _encode_branches(branches: Iterable[BranchRecord]) -> str:
+def encode_branches(branches: Iterable[BranchRecord]) -> str:
+    """The ``branches`` column: JSON list, payloads base64."""
     return json.dumps(
         [
             {
@@ -231,7 +238,7 @@ def _encode_branches(branches: Iterable[BranchRecord]) -> str:
     )
 
 
-def _decode_branches(raw: str) -> tuple[BranchRecord, ...]:
+def decode_branches(raw: str) -> tuple[BranchRecord, ...]:
     return tuple(
         BranchRecord(
             store=b["store"],
@@ -270,7 +277,7 @@ class SqliteJournal:
             try:
                 self._db.execute(
                     f"INSERT INTO dat_journal ({self._COLUMNS}) VALUES (?, ?, NULL, ?, ?, ?)",
-                    (str(dat_txn), State.ACTIVE.value, _encode_branches(branches), now, now),
+                    (str(dat_txn), State.ACTIVE.value, encode_branches(branches), now, now),
                 )
             except sqlite3.IntegrityError as exc:
                 raise JournalConflict(f"meta-transaction {dat_txn} is already journaled") from exc
@@ -284,7 +291,7 @@ class SqliteJournal:
         *,
         dat_tx_time: int | None = None,
     ) -> JournalRecord:
-        _check_edge(expected, new, dat_tx_time)
+        check_transition(expected, new, dat_tx_time)
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -300,7 +307,7 @@ class SqliteJournal:
                 self._db.execute("ROLLBACK")
                 raise
         if cursor.rowcount != 1 or record is None:
-            raise _conflict(dat_txn, expected, record.state if record else None)
+            raise conflict_error(dat_txn, expected, record.state if record else None)
         return record
 
     def get(self, dat_txn: uuid.UUID) -> JournalRecord | None:
@@ -352,7 +359,7 @@ class SqliteJournal:
         return JournalRecord(
             dat_txn=uuid.UUID(dat_txn),
             state=State(state),
-            branches=_decode_branches(branches),
+            branches=decode_branches(branches),
             dat_tx_time=dat_tx_time,
             created_ms=created_ms,
             updated_ms=updated_ms,
@@ -370,8 +377,12 @@ def open_journal(dsn: str | None, *, wall_ms: Callable[[], int] = _system_ms) ->
     if parsed.store == "file":
         assert parsed.path is not None
         return SqliteJournal(parsed.path, wall_ms=wall_ms)
-    if parsed.store in ("postgres", "drevo"):
-        raise NotImplementedError(f"the {parsed.store} journal is not implemented yet")
+    if parsed.store == "postgres":
+        from datorium.adapters.postgres import PostgresJournal
+
+        return PostgresJournal(dsn, wall_ms=wall_ms)
+    if parsed.store == "drevo":
+        raise NotImplementedError("the drevo journal is not implemented yet")
     raise ValueError(
         f"{parsed.store} cannot hold the journal: it must be a shared ACID store "
         "(PostgreSQL or drevo)"

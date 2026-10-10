@@ -295,9 +295,15 @@ aborted and re-run; after the decision it may only be finished.**
 **Ambiguous outcomes.** A timeout on a commit call does not say whether it
 applied. The coordinator never guesses; it checks the store before retrying:
 
+Every two-phase branch writes an **applied marker** inside its own transaction
+at stage: a row `(dat_txn, dat_tx_time)` in the store's `dat_applied` table
+(PostgreSQL) or the equivalent in drevo. "Did this branch commit?" is then one
+key lookup, whatever tables the application wrote, and works for one-phase
+commits too.
+
 | Store | How "already applied" is detected |
 |---|---|
-| PostgreSQL | gid absent from `pg_prepared_xacts` and the decision is `COMMITTED` → done (rows carry `dat_txn` for verification) |
+| PostgreSQL | gid absent from `pg_prepared_xacts` and a `dat_applied` marker row for `dat_txn` exists → done; gid absent and no marker → heuristic outcome, reported, never "done" |
 | drevo | `commit_prepared` on an unknown gid returns `UnknownGid` → already resolved |
 | Iceberg | a snapshot whose summary carries `dat_txn` exists → skip |
 | ClickHouse | `insert_deduplication_token` makes a repeated insert a no-op inside the dedup window; outside it (or with deduplication off, as on non-replicated MergeTree by default) the coordinator first checks for rows with this `dat_txn` |
@@ -515,6 +521,15 @@ query planning.
 ---
 
 ## Development
+
+Store-backed tests run when a disposable database is configured, and are
+skipped otherwise. PostgreSQL needs prepared transactions enabled:
+
+```bash
+docker run -d --name datorium-test-pg -e POSTGRES_PASSWORD=datorium -e POSTGRES_DB=datorium \
+  -p 127.0.0.1:55440:5432 postgres:16-alpine -c max_prepared_transactions=50
+export DATORIUM_TEST_PG_DSN=postgresql://postgres:datorium@127.0.0.1:55440/datorium
+```
 
 ```bash
 uv sync                  # dev environment
