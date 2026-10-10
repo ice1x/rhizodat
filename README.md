@@ -95,6 +95,10 @@ Every record written by datorium carries service fields:
 UUIDv7 is time-ordered, which suits `ORDER BY` in ClickHouse, sorting in
 Iceberg and B-tree locality in PostgreSQL.
 
+UUIDv7 follows RFC 9562 with the 12-bit field used as a counter (section 6.2,
+method 1): ids from one generator are strictly increasing, also within one
+millisecond and when the wall clock steps back.
+
 Storage per store: PostgreSQL `uuid`, ClickHouse `UUID`, drevo node property,
 Iceberg `uuid` (falls back to `fixed[16]` where the engine lacks it).
 
@@ -265,6 +269,9 @@ datorium is **bitemporal**:
 - **Transaction time** (always on): when the layer recorded a version.
   `dat_tx_time` is a hybrid logical clock (HLC) timestamp, assigned at prepare.
   Wall clocks of different hosts are never compared directly.
+  Stored as one int64, `wall_ms << 16 | logical`, which sorts like the
+  timestamp. A received timestamp more than `max_offset_ms` (default 500 ms)
+  ahead of the local wall clock is refused rather than adopted.
 - **Valid time** (opt-in per entity type): `valid_from` / `valid_to`, when the
   fact holds in the real world.
 
@@ -373,13 +380,22 @@ class Result:
 
 ### Connection strings
 
-| DSN | Store | Driver |
-|---|---|---|
-| `postgresql://…` | PostgreSQL | `psycopg` |
-| `clickhouse://…` | ClickHouse | `clickhouse-connect` |
-| `drevo:///path.redb`, `drevo+mem://` | drevo, embedded | `drevo-py` |
-| `drevo+bolt://host:7687` | drevo, remote | `neo4j` driver |
-| `iceberg+rest://…`, `iceberg+sql://…`, `iceberg+glue://…` | Iceberg | `pyiceberg` |
+| DSN | Store | Driver | Default port |
+|---|---|---|---|
+| `postgresql://…` (alias `postgres://`) | PostgreSQL | `psycopg` | 5432 |
+| `clickhouse://…` | ClickHouse | `clickhouse-connect` | 8123 |
+| `drevo:///path.redb`, `drevo+mem://` | drevo, embedded | `drevo-py` | — |
+| `drevo+bolt://host:7687` | drevo, remote | `neo4j` driver | 7687 |
+| `iceberg+rest://…`, `iceberg+sql://…`, `iceberg+glue://…` | Iceberg | `pyiceberg` | — |
+| `file:///path` | development journal only | — | — |
+
+- Parsing never imports a driver. Scheme matching ignores case; user,
+  password and path are percent-decoded; a repeated query parameter is an error.
+- `drevo:///` and `file:///` take a local absolute path and no host;
+  `clickhouse://`, `drevo+bolt://` and `iceberg+rest://` require a host.
+- Passwords and query parameters whose name contains `pass`, `secret`, `token`,
+  `key` or `credential` are masked in every printed form and in errors; the
+  original string is handed only to the driver.
 
 ---
 
@@ -390,6 +406,7 @@ datorium/
 ├── core/
 │   ├── identity.py      # dat_id, UUIDv7
 │   ├── clock.py         # hybrid logical clock
+│   ├── dsn.py           # connection strings
 │   ├── mapping.py       # @entity, store mapping
 │   ├── repository.py
 │   ├── unit_of_work.py
