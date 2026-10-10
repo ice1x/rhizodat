@@ -41,6 +41,7 @@ dev = [
     "faker>=30",
     "ruff>=0.8",
     "mypy>=1.13",
+    "hypothesis>=6.120",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -48,7 +49,7 @@ packages = ["src/datorium"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--strict-markers", "--strict-config", "-ra"]
+addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
 xfail_strict = true
 filterwarnings = ["error"]
 
