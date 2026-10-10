@@ -20,8 +20,11 @@ The Python implementation is the reference: it doubles as the specification and
 prototype for later ports (Rust, Go). Everything below is described in
 language-neutral terms on purpose.
 
-> Status: design. Package skeleton only, no functionality yet. This README is the
-> specification v0.1 is built against.
+> Status: v0.1 in progress. Implemented: identity, HLC, DSNs, entity mapping,
+> results, the journal, the commit coordinator and recovery, PostgreSQL and drevo
+> adapters, Units of Work with retries. Not yet: repository persistence of
+> entities, ClickHouse and Iceberg, bitemporal reads, migrations. This README is
+> the specification v0.1 is built against.
 
 ---
 
@@ -415,11 +418,28 @@ order = orders.get(outcome.value.dat_id, as_of=yesterday)
 A plain `with dat.unit_of_work() as uow:` block is also available; it runs once
 and does not retry.
 
+Inside a Unit of Work, native statements run in that store's branch of the
+meta-transaction; the branch is opened the first time the store is touched:
+
+```python
+@dat.transactional
+def claim_task(uow, worker: str) -> int:
+    tasks = uow.store("pg")
+    row = tasks.execute("SELECT id FROM task WHERE claimed_by IS NULL LIMIT 1").one()
+    tasks.execute("UPDATE task SET claimed_by = %s WHERE id = %s", (worker, row["id"]))
+    uow.store("drevo").execute("MATCH (w:Worker {name: $w}) SET w.busy = true", {"w": worker})
+    return row["id"]                      # outcome.value
+```
+
+A transient failure in the work itself (e.g. a serialization failure) or before
+the decision re-runs the whole function with a new `dat_txn`; a domain error
+from the function propagates unchanged.
+
 Native access stays available through adapters:
 
 ```python
 dat.store("pg").execute("SELECT count(*) FROM orders WHERE status = %(s)s", {"s": "new"})
-dat.store("drevo").query("MATCH (o:Order)-[:related]->(x) RETURN x LIMIT 10")
+dat.store("drevo").execute("MATCH (o:Order)-[:related]->(x) RETURN x LIMIT 10")
 dat.store("iceberg").scan("analytics.orders", filter="amount > 100").to_arrow()
 ```
 

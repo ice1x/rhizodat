@@ -108,8 +108,16 @@ class PostgresStore:
 
     two_phase = True
 
-    def __init__(self, dsn: str, *, name: str = "pg", schema: str | None = None) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        name: str = "pg",
+        schema: str | None = None,
+        isolation: Isolation | None = None,
+    ) -> None:
         self._dsn = parse_dsn(dsn)
+        self._isolation = isolation
         if self._dsn.store != "postgres":
             raise ValueError(f"not a PostgreSQL connection string: {self._dsn}")
         self.name = name
@@ -139,7 +147,10 @@ class PostgresStore:
             return _result(conn.execute(sql, params))
 
     def branch(self, dat_txn: uuid.UUID, *, isolation: Isolation | None = None) -> "PostgresBranch":
-        return PostgresBranch(self.name, self._connector, dat_txn, isolation=isolation)
+        """A new branch; ``isolation`` defaults to the store's (the server default if unset)."""
+        return PostgresBranch(
+            self.name, self._connector, dat_txn, isolation=isolation or self._isolation
+        )
 
     def participant(self) -> "PostgresParticipant":
         with self._lock:
