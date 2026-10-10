@@ -204,15 +204,38 @@ durable); it only shortens how long other writers are blocked.
 - The journal is a coordination role, not a data master: it holds transaction
   states, not entity data.
 
+States and the only legal transitions:
+
+```
+ACTIVE ──► PREPARED ──► COMMITTED ──► DONE
+   │           │
+   └───────────┴──► ABORTED
+```
+
+- Every change is a **compare-and-set** from the expected state. A coordinator
+  writing `COMMITTED` and a recovery worker writing `ABORTED` for the same
+  `PREPARED` record cannot both succeed; the loser gets `JournalConflict`.
+- `PREPARED` carries the `dat_tx_time` assigned at stage. `ABORTED` and `DONE`
+  are final and may be compacted away.
+- Table layout, the same for every SQL journal:
+
+| Column | Type | |
+|---|---|---|
+| `dat_txn` | UUID | primary key |
+| `state` | text | one of the states above |
+| `dat_tx_time` | bigint | HLC, set at `PREPARED` |
+| `branches` | text | JSON list of `{store, gid, two_phase, payload}` (payload base64, e.g. a staged ClickHouse batch) |
+| `created_ms`, `updated_ms` | bigint | coordinator wall clock, used only to find stale records |
+
 ### Recovery
 
 A recovery worker scans the journal (and `list_prepared` / `pg_prepared_xacts`):
 
 | Journal state | Action |
 |---|---|
-| `ACTIVE` or `PREPARED` (no decision) | roll back prepared branches (presumed abort) |
+| `ACTIVE` or `PREPARED` (no decision), stale | write `ABORTED` (compare-and-set), then roll back prepared branches (presumed abort) |
 | `COMMITTED` (not `DONE`) | roll forward every branch, idempotently |
-| `DONE` | nothing; eligible for journal compaction |
+| `DONE` or `ABORTED` | nothing; eligible for journal compaction |
 
 ### Retries
 
