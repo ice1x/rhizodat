@@ -83,5 +83,6 @@ strict = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["pyarrow", "pyarrow.*"]
+# Optional at runtime: pyarrow, and drevo-py (built from source, only in the "drevo" group).
+module = ["pyarrow", "pyarrow.*", "drevo", "drevo.*"]
 ignore_missing_imports = true
