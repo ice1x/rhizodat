@@ -120,12 +120,14 @@ def editor(
     journal = PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall)
     ed = Editor(pg, graph, journal, wall, f"Ch{uuid.uuid4().hex[:8]}")
     yield ed
-    for gid in graph.participant().prepared_gids():
-        if gid.startswith("dat:"):
-            graph.participant().abort(BranchRecord("graph", gid, True))
-    journal.close()
-    graph.close()
-    pg.close()
+    try:
+        for gid in graph.participant().prepared_gids():
+            if gid.startswith("dat:"):
+                graph.participant().abort(BranchRecord("graph", gid, True))
+    finally:
+        journal.close()
+        graph.close()
+        pg.close()
 
 
 def test_chapter_and_its_character_graph_commit_together(editor: Editor, faker: Faker) -> None:

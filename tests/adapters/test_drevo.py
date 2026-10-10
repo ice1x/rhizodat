@@ -43,14 +43,16 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[DrevoStore
 
     s.branch = tracked  # type: ignore[method-assign]
     yield s
-    for branch in opened:  # a failed test must not leave the graph fenced
-        with contextlib.suppress(Exception):
-            branch.rollback()
-    participant = s.participant()
-    for gid in participant.prepared_gids():
-        if gid.startswith("dat:"):
-            participant.abort(BranchRecord("graph", gid, True))
-    s.close()
+    try:
+        for branch in opened:  # a failed test must not leave the graph fenced
+            with contextlib.suppress(Exception):
+                branch.rollback()
+        participant = s.participant()
+        for gid in participant.prepared_gids():
+            if gid.startswith("dat:"):
+                participant.abort(BranchRecord("graph", gid, True))
+    finally:
+        s.close()
 
 
 def label() -> str:
