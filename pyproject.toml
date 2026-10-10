@@ -42,6 +42,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "hypothesis>=6.120",
+    "pyarrow>=17",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -70,3 +71,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "PT", "ANN"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

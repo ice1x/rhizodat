@@ -123,9 +123,24 @@ class Order:
     status: str
     amount: Decimal
     customer: Ref["Customer"]
+    related: list[Ref["Order"]]
+    events: list[str]
+    snapshots: list[bytes]
 ```
 
 The narrow case is one store; the wide case is all four. Both use the same API.
+
+- Every declared field maps to exactly one store, and every mapped name is a
+  declared field. `ClassVar`s are not fields.
+- `dat_*` names are reserved; so are `valid_from` / `valid_to` when valid time
+  is on (`@entity(..., valid_time=True)`).
+- The type name stored as `dat_type` defaults to the class name; set
+  `name="tracker.Issue"` to keep it stable across renames and language ports.
+- `@entity` makes the class a keyword-only dataclass with a `dat_id` field (a
+  new UUIDv7 unless given).
+- A reference is `Ref[T]`, a value holding the target's `dat_id`, also inside
+  containers or `| None`. One field refers to one target type; a union of
+  several is rejected in v0.1.
 
 ---
 
@@ -370,13 +385,19 @@ class Branch:                        # one store's part of a meta-transaction
     def is_applied(self, dat_txn: UUID) -> bool: ...  # resolves ambiguous outcomes
     def is_retryable(self, error: Exception) -> bool: ...
 
-class Result:
+class Result:                        # single pass over rows (mappings)
+    columns: tuple[str, ...] | None
     def __iter__(self): ...
-    def first(self): ...
-    def all(self): ...
-    def to_arrow(self): ...          # optional
+    def first(self): ...             # first row or None; consumes
+    def one(self): ...               # exactly one row, else LookupError
+    def all(self): ...               # remaining rows
+    def to_arrow(self): ...          # backend's Arrow if native, else built (needs pyarrow)
+    def close(self): ...             # also a context manager
     raw: object                      # backend-specific data
 ```
+
+A result follows the store cursor: it is read once, and reading it again
+raises `ResultConsumedError`.
 
 ### Connection strings
 
