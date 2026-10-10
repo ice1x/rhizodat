@@ -38,13 +38,22 @@ class Wall:
 JournalFactory = Callable[[Wall], Journal]
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
 def make_journal(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[JournalFactory]:
     opened: list[Journal] = []
+    if request.param == "postgres":
+        from datorium.adapters.postgres import PostgresJournal
+
+        pg_dsn: str = request.getfixturevalue("pg_dsn")
+        pg_schema: str = request.getfixturevalue("pg_schema")
 
     def factory(wall: Wall) -> Journal:
         if request.param == "memory":
             journal: Journal = MemoryJournal(wall_ms=wall)
+        elif request.param == "postgres":
+            journal = PostgresJournal(
+                pg_dsn, schema=pg_schema, table=f"journal_{len(opened)}", wall_ms=wall
+            )
         else:
             journal = SqliteJournal(tmp_path / f"journal-{len(opened)}.db", wall_ms=wall)
         opened.append(journal)
@@ -293,10 +302,9 @@ def test_open_journal_rejects_a_store_that_cannot_be_a_journal() -> None:
         open_journal("clickhouse://localhost/x")
 
 
-@pytest.mark.parametrize("dsn", ["postgresql://localhost/app", "drevo:///tmp/x.redb"])
-def test_open_journal_for_stores_not_implemented_yet(dsn: str) -> None:
+def test_open_journal_for_drevo_is_not_implemented_yet() -> None:
     with pytest.raises(NotImplementedError):
-        open_journal(dsn)
+        open_journal("drevo:///tmp/x.redb")
 
 
 # --- model-based check -------------------------------------------------------

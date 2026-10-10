@@ -43,6 +43,7 @@ dev = [
     "mypy>=1.13",
     "hypothesis>=6.120",
     "pyarrow>=17",
+    "psycopg[binary]>=3.2",
 ]
 
 [tool.hatch.build.targets.wheel]
