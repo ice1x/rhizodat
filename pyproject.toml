@@ -44,7 +44,15 @@ dev = [
     "hypothesis>=6.120",
     "pyarrow>=17",
     "psycopg[binary]>=3.2",
+    "neo4j>=5.20",
 ]
+
+# Embedded drevo with two-phase commit; not on PyPI yet, so built from a pinned commit
+# (needs a Rust toolchain). Install with: uv sync --group drevo
+drevo = ["drevo-py"]
+
+[tool.uv.sources]
+drevo-py = { git = "https://github.com/ice1x/drevo", rev = "cf9c7664e573906f2f7e86bd15639b7c3be559fe", subdirectory = "drevo-py" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/datorium"]
@@ -75,5 +83,6 @@ strict = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["pyarrow", "pyarrow.*"]
+# Optional at runtime: pyarrow, and drevo-py (built from source, only in the "drevo" group).
+module = ["pyarrow", "pyarrow.*", "drevo", "drevo.*"]
 ignore_missing_imports = true

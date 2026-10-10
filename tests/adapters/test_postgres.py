@@ -33,10 +33,12 @@ def store(pg_dsn: str, pg_schema: str) -> Iterator[PostgresStore]:
 
     s.branch = tracked  # type: ignore[method-assign]
     yield s
-    for branch in opened:  # tests that fail half-way still release their transactions
-        with contextlib.suppress(Exception):
-            branch.rollback()
-    s.close()
+    try:
+        for branch in opened:  # tests that fail half-way still release their transactions
+            with contextlib.suppress(Exception):
+                branch.rollback()
+    finally:
+        s.close()
 
 
 def count(store: PostgresStore, sql: str = "SELECT count(*) AS n FROM orders") -> int:

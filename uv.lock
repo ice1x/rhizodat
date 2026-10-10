@@ -369,10 +369,14 @@ dev = [
     { name = "faker" },
     { name = "hypothesis" },
     { name = "mypy" },
+    { name = "neo4j" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyarrow" },
     { name = "pytest" },
     { name = "ruff" },
+]
+drevo = [
+    { name = "drevo-py" },
 ]
 
 [package.metadata]
@@ -389,11 +393,18 @@ dev = [
     { name = "faker", specifier = ">=30" },
     { name = "hypothesis", specifier = ">=6.120" },
     { name = "mypy", specifier = ">=1.13" },
+    { name = "neo4j", specifier = ">=5.20" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pyarrow", specifier = ">=17" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.8" },
 ]
+drevo = [{ name = "drevo-py", git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe" }]
+
+[[package]]
+name = "drevo-py"
+version = "0.1.0"
+source = { git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe#cf9c7664e573906f2f7e86bd15639b7c3be559fe" }
 
 [[package]]
 name = "faker"
