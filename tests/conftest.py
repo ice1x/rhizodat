@@ -7,6 +7,7 @@ from collections.abc import Iterator
 import pytest
 
 PG_ENV = "DATORIUM_TEST_PG_DSN"
+DREVO_BOLT_ENV = "DATORIUM_TEST_DREVO_BOLT"
 
 
 @pytest.fixture(scope="session")
@@ -41,3 +42,21 @@ def pg_schema(pg_dsn: str) -> Iterator[str]:
         ).fetchall():
             conn.execute(f"ROLLBACK PREPARED '{gid}'")
         conn.execute(f'DROP SCHEMA "{name}" CASCADE')
+
+
+def drevo_embedded_available() -> bool:
+    """drevo-py with two-phase commit (``uv sync --group drevo``)."""
+    try:
+        import drevo
+    except ImportError:
+        return False
+    return hasattr(drevo.Drevo, "list_prepared")
+
+
+@pytest.fixture(scope="session")
+def drevo_bolt_dsn() -> str:
+    """``drevo+bolt://`` DSN of a disposable drevo server (never a shared one: 2PC fences it)."""
+    dsn = os.environ.get(DREVO_BOLT_ENV)
+    if not dsn:
+        pytest.skip(f"set {DREVO_BOLT_ENV} to run drevo-over-Bolt tests")
+    return dsn

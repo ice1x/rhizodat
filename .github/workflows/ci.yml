@@ -51,5 +51,30 @@ jobs:
             -p 5432:5432 postgres:16-alpine -c max_prepared_transactions=50
           for i in $(seq 1 30); do docker exec pg pg_isready -U postgres -q && break; sleep 1; done
           echo "DATORIUM_TEST_PG_DSN=postgresql://postgres:datorium@localhost:5432/datorium" >> "$GITHUB_ENV"
+      - name: Start drevo (Bolt)
+        if: runner.os == 'Linux'
+        run: |
+          docker run -d --name drevo -e DREVO_ENGINE=native-durable -p 7687:7687 ice1x/drevo:latest
+          for i in $(seq 1 30); do (echo > /dev/tcp/localhost/7687) 2>/dev/null && break; sleep 1; done
+          echo "DATORIUM_TEST_DREVO_BOLT=drevo+bolt://localhost:7687" >> "$GITHUB_ENV"
       - run: uv sync --locked
       - run: uv run pytest
+
+  drevo-embedded:
+    # drevo-py is not on PyPI yet: build it from the pinned commit (Rust), cached by uv.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name pg -e POSTGRES_PASSWORD=datorium -e POSTGRES_DB=datorium \
+            -p 5432:5432 postgres:16-alpine -c max_prepared_transactions=50
+          for i in $(seq 1 30); do docker exec pg pg_isready -U postgres -q && break; sleep 1; done
+          echo "DATORIUM_TEST_PG_DSN=postgresql://postgres:datorium@localhost:5432/datorium" >> "$GITHUB_ENV"
+      - run: uv sync --locked --group drevo
+      - run: uv run --group drevo pytest tests/adapters/test_drevo.py tests/integration/test_postgres_drevo_meta_transactions.py

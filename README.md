@@ -60,6 +60,13 @@ table's metadata pointer to a new snapshot. drevo's 2PC is exposed in
 `drevo-py` (`prepare(gid)`, `commit_prepared`, `rollback_prepared`,
 `list_prepared`) and in `drevo.dbapi` (PEP 249 TPC).
 
+
+drevo takes part in a meta-transaction in two ways, with the same semantics:
+embedded (`drevo:///path.redb`, `drevo+mem://`) through drevo-py, or remote
+(`drevo+bolt://`) through any Neo4j driver, where 2PC is the `drevo.tx.prepare`,
+`commitPrepared`, `rollbackPrepared` and `listPrepared` procedures. Node
+`title`s are unique across a drevo graph, so map entity fields that are not
+unique to another property name.
 ---
 
 ## Architecture
@@ -529,6 +536,15 @@ skipped otherwise. PostgreSQL needs prepared transactions enabled:
 docker run -d --name datorium-test-pg -e POSTGRES_PASSWORD=datorium -e POSTGRES_DB=datorium \
   -p 127.0.0.1:55440:5432 postgres:16-alpine -c max_prepared_transactions=50
 export DATORIUM_TEST_PG_DSN=postgresql://postgres:datorium@127.0.0.1:55440/datorium
+```
+
+drevo over Bolt needs a **disposable** server (2PC raises the prepared fence and
+blocks other writers); embedded drevo needs drevo-py built from source (Rust):
+
+```bash
+docker run -d --name datorium-test-drevo -p 127.0.0.1:57687:7687 ice1x/drevo:latest
+export DATORIUM_TEST_DREVO_BOLT=drevo+bolt://127.0.0.1:57687
+uv sync --group drevo      # embedded drevo-py from the pinned commit
 ```
 
 ```bash
