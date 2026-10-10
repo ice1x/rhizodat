@@ -1,0 +1,67 @@
+"""IT task manager: workers claim tasks concurrently; serialization failures re-run the UoW."""
+
+import threading
+from collections.abc import Iterator
+
+import pytest
+from faker import Faker
+
+from datorium import Committed, Datorium, Retry, UnitOfWork
+from datorium.adapters.postgres import PostgresJournal, PostgresStore
+
+
+@pytest.fixture
+def dat(pg_dsn: str, pg_schema: str, faker: Faker) -> Iterator[Datorium]:
+    tasks = PostgresStore(pg_dsn, name="tasks", schema=pg_schema, isolation="serializable")
+    tasks.install()
+    tasks.execute("CREATE TABLE task (id int PRIMARY KEY, title text NOT NULL, claimed_by text)")
+    for i in range(20):
+        tasks.execute("INSERT INTO task (id, title) VALUES (%s, %s)", (i, faker.catch_phrase()))
+    d = Datorium(
+        stores={"tasks": tasks},
+        journal=PostgresJournal(pg_dsn, schema=pg_schema),
+        retry=Retry(attempts=30, deadline_s=30.0, base_delay_s=0.005, max_delay_s=0.05),
+    )
+    yield d
+    d.close()
+
+
+def test_concurrent_claims_never_double_book_a_task(dat: Datorium) -> None:
+    attempts: dict[str, int] = {}
+    lock = threading.Lock()
+
+    @dat.transactional
+    def claim(uow: UnitOfWork, worker: str) -> int:
+        with lock:
+            attempts[worker] = attempts.get(worker, 0) + 1
+        branch = uow.store("tasks")
+        row = branch.execute(
+            "SELECT id FROM task WHERE claimed_by IS NULL ORDER BY id LIMIT 1"
+        ).one()
+        branch.execute("UPDATE task SET claimed_by = %s WHERE id = %s", (worker, row["id"]))
+        return int(row["id"])
+
+    results: dict[str, int] = {}
+    barrier = threading.Barrier(8)
+
+    def worker(name: str) -> None:
+        barrier.wait()
+        outcome = claim(worker=name)
+        assert isinstance(outcome, Committed)
+        results[name] = outcome.value  # type: ignore[assignment]
+
+    threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 8
+    assert len(set(results.values())) == 8  # every worker got its own task
+    rows = (
+        dat.store("tasks")
+        .execute("SELECT id, claimed_by FROM task WHERE claimed_by IS NOT NULL ORDER BY id")
+        .all()
+    )
+    assert {r["claimed_by"]: r["id"] for r in rows} == results
+    assert sum(attempts.values()) > 8  # conflicts happened and were retried

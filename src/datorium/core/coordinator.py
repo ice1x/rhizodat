@@ -102,6 +102,8 @@ class Participant(Protocol):
 class Committed:
     dat_txn: uuid.UUID
     dat_tx_time: int | None
+    value: object = None
+    """What a ``transactional`` function returned."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +112,7 @@ class CommittedPending:
 
     dat_txn: uuid.UUID
     dat_tx_time: int | None
+    value: object = None
 
 
 class Aborted(Exception):

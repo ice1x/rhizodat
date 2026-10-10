@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from datorium.core.journal import BranchRecord, JournalRecord, MemoryJournal, State
+from datorium.core.result import Result
 
 
 class Transient(Exception):
@@ -74,6 +75,11 @@ class FakeBranch:
         self.state = "open"
         self.gid: str | None = None
         self.dat_txn: uuid.UUID | None = None
+
+    def execute(self, row: str, params: object = None) -> None:
+        """Buffer a row in this branch's open transaction."""
+        self.db.faults.hit(f"{self.store}.execute")
+        self.rows.append(row)
 
     def stage(self, dat_txn: uuid.UUID, dat_tx_time: int) -> bytes | None:
         self.db.faults.hit(f"{self.store}.stage")
@@ -184,3 +190,27 @@ class FaultyJournal(MemoryJournal):
         record = super().transition(dat_txn, expected, new, dat_tx_time=dat_tx_time)
         self.faults.hit(f"journal.{new}.after")
         return record
+
+
+class FakeStoreHandle:
+    """A FakeStore behind the ``Store`` protocol, as the facade sees real stores."""
+
+    def __init__(self, store: FakeStore) -> None:
+        self.db = store
+        self.name = store.name
+        self.two_phase = store.two_phase
+        self.closed = False
+
+    def branch(self, dat_txn: uuid.UUID) -> FakeBranch:
+        self.db.faults.hit(f"{self.name}.begin")
+        return FakeBranch(self.db, [])
+
+    def participant(self) -> FakeParticipant:
+        return FakeParticipant(self.db)
+
+    def execute(self, query: str, params: object = None) -> Result:
+        rows = [{"row": row} for rows in self.db.committed.values() for row in rows]
+        return Result(iter(rows), columns=("row",))
+
+    def close(self) -> None:
+        self.closed = True
