@@ -158,22 +158,30 @@ an `Order` is a meta-transaction with a single branch.
 
 ### Commit protocol (several branches)
 
-1. **Begin.** Generate `dat_txn`; journal record `ACTIVE`.
+1. **Begin.** Generate `dat_txn`.
 2. **Work.** Run statements in all branches, in parallel: PostgreSQL and drevo
    in open transactions, ClickHouse rows buffered, Iceberg data files written
    (invisible until a snapshot references them).
 3. **Stage** (slow, holds no locks). Assign `dat_tx_time` from the HLC. Iceberg:
-   finish data files and pre-check conflicts. ClickHouse: persist the payload
-   (in the journal, or as a staged file referenced by it). Failures here are
-   the cheapest to abort, so everything likely to fail is checked here.
+   finish data files and pre-check conflicts. ClickHouse: prepare the payload.
+   Failures here are the cheapest to abort, so everything likely to fail is
+   checked here. Then journal record `ACTIVE` with every branch and its gid,
+   plus staged payloads (e.g. the ClickHouse batch).
 4. **Prepare** (fast, holds locks). PostgreSQL `PREPARE TRANSACTION` and drevo
-   `prepare(gid)`, in parallel, **last**. Journal record `PREPARED` with every
-   branch listed. Any failure up to here → roll everything back.
-5. **Decide.** Journal record `COMMITTED`. **This is the atomic commit point.**
+   `prepare(gid)`, **last**. Journal record `PREPARED` with `dat_tx_time`. Any
+   failure up to here → journal `ABORTED`, roll everything back.
+5. **Decide.** Journal `PREPARED → COMMITTED` (compare-and-set). **This is the
+   atomic commit point.**
 6. **Finish.** First release locks: `COMMIT PREPARED` / `commit_prepared`. Then
    the Iceberg snapshot commit and the ClickHouse insert with
    `insert_deduplication_token = dat_txn:branch`. Every step is idempotent.
 7. **Done.** Journal record `DONE`.
+
+The journal record is written once the branch list is known (after staging),
+not at begin: before it exists nothing is prepared, so a crash leaves only open
+transactions that die with their connections and unreferenced Iceberg files.
+A branch's gid is `dat:<dat_txn>:<store>`; recovery recognises its own
+prepared transactions by that prefix.
 
 **Ordering rule: slow, lock-free work before prepare; lock-holding branches
 prepare last and commit first.** The window between prepare and commit must be
@@ -229,13 +237,21 @@ ACTIVE ──► PREPARED ──► COMMITTED ──► DONE
 
 ### Recovery
 
-A recovery worker scans the journal (and `list_prepared` / `pg_prepared_xacts`):
+A recovery worker (any host, run periodically) first sweeps the prepared
+transactions each store holds (`list_prepared` / `pg_prepared_xacts`): a
+`dat:` gid whose journal record is missing or `ABORTED` is rolled back. Then it
+handles journal records unchanged for `stale_after_ms` (default 30 s, well above
+a normal commit, so it does not race live coordinators; the compare-and-set
+settles it if it does):
 
 | Journal state | Action |
 |---|---|
 | `ACTIVE` or `PREPARED` (no decision), stale | write `ABORTED` (compare-and-set), then roll back prepared branches (presumed abort) |
 | `COMMITTED` (not `DONE`) | roll forward every branch, idempotently |
 | `DONE` or `ABORTED` | nothing; eligible for journal compaction |
+
+A decided transaction still unfinished after `alert_after_ms` (default 10 min)
+is reported as stuck; it is never dropped.
 
 ### Retries
 
@@ -270,6 +286,9 @@ aborted and re-run; after the decision it may only be finished.**
 - `commit()` then returns `CommittedPending(dat_txn)`, **not an error**. The
   transaction is committed; raising would make callers re-run it and write it
   twice.
+- If the `COMMITTED` write cannot be confirmed and the journal cannot be read
+  back, `commit()` raises `InDoubt(dat_txn)`: the outcome is unknown, the
+  Unit of Work must **not** be re-run, and recovery decides from the journal.
 - A transaction that stays unfinished past a threshold raises an alert; it is
   never silently dropped.
 
@@ -399,13 +418,20 @@ class Adapter:
     def connect(self) -> None: ...
     def close(self) -> None: ...
 
-class Branch:                        # one store's part of a meta-transaction
+class Branch:                        # one store's part of one Unit of Work
+    store: str
     two_phase: bool                  # True for PostgreSQL and drevo
-    def stage(self) -> None: ...     # slow, lock-free work (Iceberg files, ClickHouse payload)
-    def prepare(self, dat_txn: UUID) -> None: ...   # lock-holding; called last
-    def commit(self) -> None: ...    # idempotent; retried until done
-    def rollback(self) -> None: ...
-    def is_applied(self, dat_txn: UUID) -> bool: ...  # resolves ambiguous outcomes
+    def stage(self, dat_txn, dat_tx_time) -> bytes | None: ...  # slow, lock-free; payload for the journal
+    def prepare(self, gid: str) -> None: ...   # lock-holding; called last
+    def commit_one_phase(self) -> None: ...    # the only branch: native commit
+    def rollback(self) -> None: ...            # before the decision
+    def is_retryable(self, error: Exception) -> bool: ...
+
+class Participant:                   # the store after the decision and for recovery
+    def finish(self, branch, dat_txn, dat_tx_time) -> None: ...  # idempotent; unknown gid = done
+    def is_applied(self, branch, dat_txn) -> bool: ...           # resolves ambiguous outcomes
+    def abort(self, branch) -> None: ...                         # roll back a prepared gid
+    def prepared_gids(self) -> list[str]: ...
     def is_retryable(self, error: Exception) -> bool: ...
 
 class Result:                        # single pass over rows (mappings)
