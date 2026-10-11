@@ -6,6 +6,7 @@ after the decision one snapshot per table adds them, tagged with ``dat.txn``.
 """
 
 import datetime as dt
+import json
 import uuid
 from collections.abc import Iterator, Mapping
 from decimal import Decimal
@@ -43,18 +44,34 @@ SALES = Schema(
 )
 
 
-@pytest.fixture
-def dsn(tmp_path: Path) -> str:
+@pytest.fixture(params=["sql", "rest"])
+def dsn(request: pytest.FixtureRequest, tmp_path: Path) -> str:
+    """A SQLite catalog with a local warehouse, and a REST catalog over S3 (compose)."""
+    if request.param == "rest":
+        return str(request.getfixturevalue("iceberg_rest_dsn"))
     return f"iceberg+sql://{tmp_path / 'catalog.db'}?warehouse=file://{tmp_path / 'warehouse'}"
+
+
+def drop_namespace(s: IcebergStore) -> None:
+    """The REST catalog is shared by every test: leave it empty."""
+    if ("erp",) not in s.catalog.list_namespaces():
+        return
+    for identifier in s.catalog.list_tables("erp"):
+        s.catalog.drop_table(identifier)
+    s.catalog.drop_namespace("erp")
 
 
 @pytest.fixture
 def store(dsn: str) -> Iterator[IcebergStore]:
     s = IcebergStore(dsn, name="lake")
+    drop_namespace(s)
     s.catalog.create_namespace("erp")
     s.catalog.create_table("erp.sales", SALES)
     yield s
-    s.close()
+    try:
+        drop_namespace(s)
+    finally:
+        s.close()
 
 
 def sales(faker: Faker, n: int) -> list[dict[str, Any]]:
@@ -82,8 +99,16 @@ def record(branch: IcebergBranch, payload: bytes | None) -> BranchRecord:
     return BranchRecord("lake", gid_for(branch.dat_txn, "lake"), False, payload)
 
 
-def data_files(tmp_path: Path) -> list[Path]:
-    return sorted((tmp_path / "warehouse").rglob("dat-*.parquet"))
+def staged_files(payload: bytes) -> list[tuple[str, str]]:
+    return [(t["table"], f) for t in json.loads(payload)["tables"] for f in t["files"]]
+
+
+def existing(store: IcebergStore, payload: bytes) -> int:
+    """How many of the payload's data files exist, through the table's FileIO (local or S3)."""
+    return sum(
+        store.catalog.load_table(table).io.new_input(path).exists()
+        for table, path in staged_files(payload)
+    )
 
 
 # --- connection strings -----------------------------------------------------------
@@ -150,11 +175,11 @@ def test_execute_scans_a_table_with_a_filter(store: IcebergStore, faker: Faker) 
 # --- branch -------------------------------------------------------------------------
 
 
-def test_staged_files_are_invisible(store: IcebergStore, faker: Faker, tmp_path: Path) -> None:
+def test_staged_files_are_invisible(store: IcebergStore, faker: Faker) -> None:
     branch = store.branch(new_id())
     branch.append("erp.sales", sales(faker, 3))
-    branch.stage(branch.dat_txn, TS)
-    assert len(data_files(tmp_path)) == 1
+    payload = branch.stage(branch.dat_txn, TS)
+    assert existing(store, payload) == 1
     assert rows(store) == []
     assert snapshots(store) == 0
 
@@ -199,14 +224,13 @@ def test_arrow_tables_are_accepted(store: IcebergStore, faker: Faker) -> None:
     assert len(rows(store)) == 2
 
 
-def test_appends_to_one_table_become_one_file(
-    store: IcebergStore, faker: Faker, tmp_path: Path
-) -> None:
+def test_appends_to_one_table_become_one_file(store: IcebergStore, faker: Faker) -> None:
     branch = store.branch(new_id())
     branch.append("erp.sales", sales(faker, 2))
     branch.append("erp.sales", sales(faker, 1))
-    branch.stage(branch.dat_txn, TS)
-    assert len(data_files(tmp_path)) == 1
+    payload = branch.stage(branch.dat_txn, TS)
+    assert len(staged_files(payload)) == 1
+    assert existing(store, payload) == 1
 
 
 def test_reserved_columns_are_set_by_datorium(store: IcebergStore, faker: Faker) -> None:
@@ -250,34 +274,34 @@ def test_stage_fails_for_a_missing_table(store: IcebergStore, faker: Faker) -> N
     assert not branch.is_retryable(caught.value)
 
 
-def test_rollback_deletes_staged_files(store: IcebergStore, faker: Faker, tmp_path: Path) -> None:
+def test_rollback_deletes_staged_files(store: IcebergStore, faker: Faker) -> None:
     branch = store.branch(new_id())
     branch.append("erp.sales", sales(faker, 2))
-    branch.stage(branch.dat_txn, TS)
+    payload = branch.stage(branch.dat_txn, TS)
     branch.rollback()
-    assert data_files(tmp_path) == []
+    assert existing(store, payload) == 0
     branch.rollback()  # idempotent
 
 
 def test_rollback_after_an_applied_commit_keeps_the_files(
-    store: IcebergStore, faker: Faker, tmp_path: Path
+    store: IcebergStore, faker: Faker
 ) -> None:
     """A lost commit ack must never turn into deleting files a snapshot references."""
     branch = store.branch(new_id())
     branch.append("erp.sales", sales(faker, 2))
-    branch.stage(branch.dat_txn, TS)
+    payload = branch.stage(branch.dat_txn, TS)
     branch.commit_one_phase()
     branch.rollback()
-    assert len(data_files(tmp_path)) == 1
+    assert existing(store, payload) == 1
     assert len(rows(store)) == 2
 
 
 def test_rollback_keeps_files_when_the_outcome_is_unknown(
-    store: IcebergStore, faker: Faker, tmp_path: Path
+    store: IcebergStore, faker: Faker
 ) -> None:
     branch = store.branch(new_id())
     branch.append("erp.sales", sales(faker, 2))
-    branch.stage(branch.dat_txn, TS)
+    payload = branch.stage(branch.dat_txn, TS)
     participant = store.participant()
 
     def lost(*a: object, **k: object) -> None:
@@ -288,7 +312,7 @@ def test_rollback_keeps_files_when_the_outcome_is_unknown(
     with pytest.raises(ConnectionError):
         branch.commit_one_phase()
     branch.rollback()
-    assert len(data_files(tmp_path)) == 1  # left for orphan-file maintenance, never deleted blindly
+    assert existing(store, payload) == 1  # left for orphan-file maintenance, never deleted blindly
 
 
 def test_branch_is_not_two_phase(store: IcebergStore) -> None:
@@ -356,13 +380,11 @@ def test_finish_after_compaction_is_still_idempotent(store: IcebergStore, faker:
     assert len(rows(store)) == 3
 
 
-def test_abort_never_deletes_files_a_snapshot_references(
-    store: IcebergStore, faker: Faker, tmp_path: Path
-) -> None:
+def test_abort_never_deletes_files_a_snapshot_references(store: IcebergStore, faker: Faker) -> None:
     branch, payload = staged(store, faker)
     store.participant().finish(record(branch, payload), branch.dat_txn, TS)
     store.participant().abort(record(branch, payload))
-    assert len(data_files(tmp_path)) == 1
+    assert existing(store, payload) == 1
     assert len(rows(store)) == 3
 
 
@@ -377,12 +399,12 @@ def test_finish_skips_tables_already_committed(store: IcebergStore, faker: Faker
     assert (snapshots(store, "erp.sales"), snapshots(store, "erp.audit")) == (1, 1)
 
 
-def test_abort_deletes_staged_files(store: IcebergStore, faker: Faker, tmp_path: Path) -> None:
+def test_abort_deletes_staged_files(store: IcebergStore, faker: Faker) -> None:
     branch, payload = staged(store, faker)
     participant = store.participant()
     participant.abort(record(branch, payload))
     participant.abort(record(branch, payload))  # idempotent
-    assert data_files(tmp_path) == []
+    assert existing(store, payload) == 0
     assert participant.prepared_gids() == []
 
 
