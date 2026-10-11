@@ -425,8 +425,8 @@ def test_stores_from_connection_strings(tmp_path: object) -> None:
 
 
 def test_unsupported_store_kind_is_reported() -> None:
-    with pytest.raises(NotImplementedError, match="clickhouse"):
-        Datorium(stores={"ch": "clickhouse://localhost/a"})
+    with pytest.raises(NotImplementedError, match="iceberg"):
+        Datorium(stores={"lake": "iceberg+rest://catalog.local/warehouse"})
 
 
 def test_store_names_are_validated() -> None:

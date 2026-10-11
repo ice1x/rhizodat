@@ -28,3 +28,21 @@ services:
       interval: 1s
       timeout: 3s
       retries: 30
+
+  clickhouse:
+    # Opt-in: docker compose --profile clickhouse up -d --wait (CI enables every profile).
+    profiles: ["clickhouse"]
+    image: clickhouse/clickhouse-server:25.8.33.6-alpine
+    environment:
+      CLICKHOUSE_USER: datorium
+      CLICKHOUSE_PASSWORD: datorium
+      CLICKHOUSE_DB: datorium
+    ports: ["127.0.0.1:58123:8123"]
+    tmpfs: ["/var/lib/clickhouse"]
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8123/ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 60

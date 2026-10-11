@@ -366,6 +366,7 @@ postgres = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "clickhouse-connect" },
     { name = "faker" },
     { name = "hypothesis" },
     { name = "mypy" },
@@ -390,6 +391,7 @@ provides-extras = ["postgres", "clickhouse", "drevo", "iceberg"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "clickhouse-connect", specifier = ">=0.8" },
     { name = "faker", specifier = ">=30" },
     { name = "hypothesis", specifier = ">=6.120" },
     { name = "mypy", specifier = ">=1.13" },
