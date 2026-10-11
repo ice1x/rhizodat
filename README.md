@@ -598,9 +598,10 @@ One `compose.yaml` runs every store the tests need, locally and in CI alike
 - ✔ healthchecks, and `.env.test` with the test DSNs;
 - ✔ ClickHouse behind the `clickhouse` profile, so a test run starts only what
   it needs;
-- Iceberg is tested on SQL catalogs (SQLite, and the compose PostgreSQL) with a
-  local warehouse; an Iceberg REST catalog with object storage behind a profile
-  is next, to test the S3 file IO path;
+- ✔ Iceberg behind the `iceberg` profile: the Apache REST catalog fixture over
+  S3-compatible object storage (rustfs; the MinIO image is no longer on Docker
+  Hub), with a one-shot container creating the bucket. The adapter tests run
+  against it and against a SQLite catalog with a local warehouse;
 - toxiproxy in front of the stores for failure tests: kill a primary between
   prepare and commit, cut the network to the journal: added with those tests.
 
@@ -704,7 +705,7 @@ tmpfs, so every `up` starts empty):
 
 ```bash
 docker compose up -d --wait   # PostgreSQL (2PC enabled) and a disposable drevo
-docker compose --profile clickhouse up -d --wait   # ... and ClickHouse
+docker compose --profile clickhouse --profile iceberg up -d --wait   # every store
 uv sync --group drevo         # optional: embedded drevo-py from the pinned commit (Rust)
 uv run pytest
 docker compose down
@@ -714,8 +715,8 @@ The tests read store DSNs from the environment, else from `.env.test`. A DSN fro
 `.env.test` whose store is not running skips that store's tests with a hint; a
 DSN set in the environment is used as is, so a store that is down fails the run
 (CI exports `.env.test` for that reason). Point the tests at other stores with
-`DATORIUM_TEST_PG_DSN`, `DATORIUM_TEST_DREVO_BOLT` and
-`DATORIUM_TEST_CLICKHOUSE_DSN`. The drevo server must be
+`DATORIUM_TEST_PG_DSN`, `DATORIUM_TEST_DREVO_BOLT`,
+`DATORIUM_TEST_CLICKHOUSE_DSN` and `DATORIUM_TEST_ICEBERG_REST_DSN`. The drevo server must be
 **disposable**: 2PC raises the prepared fence and blocks other writers.
 
 ```bash

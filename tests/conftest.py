@@ -15,6 +15,7 @@ from stores import ENV_FILE, StoreUnavailable, load_env_file, resolve_dsn
 PG_ENV = "DATORIUM_TEST_PG_DSN"
 DREVO_BOLT_ENV = "DATORIUM_TEST_DREVO_BOLT"
 CLICKHOUSE_ENV = "DATORIUM_TEST_CLICKHOUSE_DSN"
+ICEBERG_REST_ENV = "DATORIUM_TEST_ICEBERG_REST_DSN"
 
 
 @pytest.fixture(scope="session")
@@ -93,6 +94,12 @@ def clickhouse_dsn(clickhouse_server_dsn: str) -> Iterator[str]:
         client.command(f"DROP DATABASE IF EXISTS `{name}` SYNC")
     finally:
         client.close()
+
+
+@pytest.fixture(scope="session")
+def iceberg_rest_dsn() -> str:
+    """``iceberg+rest://`` DSN of a disposable REST catalog over S3 (compose profile iceberg)."""
+    return _store_dsn(ICEBERG_REST_ENV)
 
 
 def _store_dsn(var: str) -> str:

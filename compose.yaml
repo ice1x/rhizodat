@@ -46,3 +46,58 @@ services:
       interval: 1s
       timeout: 3s
       retries: 60
+
+  # --- Iceberg: REST catalog over S3-compatible object storage (profile "iceberg") ---------
+  # Tests without the profile use SQL catalogs and a local warehouse; this one covers the
+  # REST catalog and S3 file IO. rustfs stands in for MinIO, whose image is no longer on
+  # Docker Hub.
+
+  s3:
+    profiles: ["iceberg"]
+    image: rustfs/rustfs:1.0.1
+    environment:
+      RUSTFS_ACCESS_KEY: datorium
+      RUSTFS_SECRET_KEY: datorium-secret
+    ports: ["127.0.0.1:59000:9000"]
+    tmpfs: ["/data:uid=10001,gid=10001", "/logs:uid=10001,gid=10001"]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:9000/health"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  s3-bucket:
+    # One-shot: create the warehouse bucket (S3 PUT signed with SigV4).
+    profiles: ["iceberg"]
+    image: curlimages/curl:8.22.0
+    depends_on:
+      s3: { condition: service_healthy }
+    command:
+      - -fsS
+      - -X
+      - PUT
+      - --aws-sigv4
+      - aws:amz:us-east-1:s3
+      - --user
+      - datorium:datorium-secret
+      - http://s3:9000/warehouse
+
+  iceberg-rest:
+    profiles: ["iceberg"]
+    image: apache/iceberg-rest-fixture:1.10.1
+    depends_on:
+      s3-bucket: { condition: service_completed_successfully }
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://s3:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: datorium
+      AWS_SECRET_ACCESS_KEY: datorium-secret
+      AWS_REGION: us-east-1
+    ports: ["127.0.0.1:58181:8181"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8181"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
