@@ -304,7 +304,7 @@ def test_open_journal_rejects_a_store_that_cannot_be_a_journal() -> None:
 
 def test_open_journal_for_drevo_is_not_implemented_yet() -> None:
     with pytest.raises(NotImplementedError):
-        open_journal("drevo:///tmp/x.redb")
+        open_journal("drevo:///tmp/x.drevo")
 
 
 # --- model-based check -------------------------------------------------------

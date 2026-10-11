@@ -109,7 +109,7 @@ def editor(
     if request.param == "bolt":
         dsn = request.getfixturevalue("drevo_bolt_dsn")
     elif drevo_embedded_available():
-        dsn = f"drevo://{tmp_path / 'story.redb'}"
+        dsn = f"drevo://{tmp_path / 'story.drevo'}"
     else:
         pytest.skip("drevo-py with 2PC is not installed")
     pg = PostgresStore(pg_dsn, name="pg", schema=pg_schema)

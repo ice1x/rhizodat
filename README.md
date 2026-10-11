@@ -16,9 +16,11 @@ every store it touches and gives ACID guarantees at the layer level. Every
 record carries transaction time (and optionally valid time), so any entity can
 be read **as of** any moment.
 
-The Python implementation is the reference: it doubles as the specification and
-prototype for later ports (Rust, Go). Everything below is described in
-language-neutral terms on purpose.
+The Python implementation is the executable specification. The critical core
+(commit protocol, journal, recovery, clock, identity) is to be implemented once
+in Rust and shared by every language through bindings (see
+[Plan](#plan)). Everything below is described in language-neutral terms on
+purpose.
 
 > Status: v0.1 in progress. Implemented: identity, HLC, DSNs, entity mapping,
 > results, the journal, the commit coordinator and recovery, PostgreSQL and drevo
@@ -65,7 +67,8 @@ table's metadata pointer to a new snapshot. drevo's 2PC is exposed in
 
 
 drevo takes part in a meta-transaction in two ways, with the same semantics:
-embedded (`drevo:///path.redb`, `drevo+mem://`) through drevo-py, or remote
+embedded (`drevo:///path/graph.drevo`; `drevo+mem://` for tests only, it is drevo's
+in-memory test oracle) through drevo-py, or remote
 (`drevo+bolt://`) through any Neo4j driver, where 2PC is the `drevo.tx.prepare`,
 `commitPrepared`, `rollbackPrepared` and `listPrepared` procedures. Node
 `title`s are unique across a drevo graph, so map entity fields that are not
@@ -395,7 +398,7 @@ from datorium import Datorium
 dat = Datorium(
     stores={
         "pg":         "postgresql://user:pass@localhost/app",
-        "drevo":      "drevo:///data/graph.redb",
+        "drevo":      "drevo:///data/graph.drevo",
         "clickhouse": "clickhouse://localhost:8123/analytics",
         "iceberg":    "iceberg+rest://localhost:8181/warehouse",
     },
@@ -487,7 +490,7 @@ raises `ResultConsumedError`.
 |---|---|---|---|
 | `postgresql://…` (alias `postgres://`) | PostgreSQL | `psycopg` | 5432 |
 | `clickhouse://…` | ClickHouse | `clickhouse-connect` | 8123 |
-| `drevo:///path.redb`, `drevo+mem://` | drevo, embedded | `drevo-py` | — |
+| `drevo:///path/graph.drevo`, `drevo+mem://` (tests only) | drevo, embedded | `drevo-py` | — |
 | `drevo+bolt://host:7687` | drevo, remote | `neo4j` driver | 7687 |
 | `iceberg+rest://…`, `iceberg+sql://…`, `iceberg+glue://…` | Iceberg | `pyiceberg` | — |
 | `file:///path` | development journal only | — | — |
@@ -530,20 +533,130 @@ installed from source.
 
 ---
 
-## Roadmap
+## Plan
 
-1. Package skeleton, CI (pytest, ruff, mypy).
-2. Core without stores: identity, HLC, DSN parsing, mapping, result model.
-3. PostgreSQL + drevo adapters; meta-transactions with 2PC and retries; journal and
-   recovery, including crash tests between prepare and commit.
-4. Iceberg + ClickHouse branches: staged commit, dedup tokens, roll-forward.
-5. Bitemporal reads (`as_of`, `known_at`, `history`).
+### v0.1 roadmap (Python, the executable specification)
+
+1. ✔ Package skeleton, CI (pytest, ruff, mypy).
+2. ✔ Core without stores: identity, HLC, DSN parsing, mapping, result model.
+3. ✔ PostgreSQL + drevo adapters; meta-transactions with 2PC and retries; journal
+   and recovery, including crash tests between prepare and commit; Unit of Work
+   and `transactional`.
+4. Docker Compose for development and tests (below), then Iceberg + ClickHouse
+   branches: staged commit, dedup tokens, roll-forward.
+5. Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
+   entity parts and repository persistence.
 6. Migrations.
 7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
    bug tracker.
 
 Out of scope for v0.1: async API, savepoints / nested transactions, cross-store
 query planning.
+
+### Docker Compose for development and tests
+
+One `compose.yaml` runs every store the tests need, locally and in CI alike
+(`docker compose up -d --wait`, then `uv run pytest`):
+
+- PostgreSQL with `max_prepared_transactions > 0`;
+- drevo, built from a pinned commit until a multi-arch image with 2PC is
+  published ([ice1x/drevo#591](https://github.com/ice1x/drevo/issues/591));
+- ClickHouse, and an Iceberg REST catalog with MinIO as object storage, behind a
+  profile so a test run starts only what it needs;
+- healthchecks, and one `.env` with the test DSNs;
+- toxiproxy in front of the stores for failure tests: kill a primary between
+  prepare and commit, cut the network to the journal.
+
+Compose is for development, tests and demos on one host. It is not the
+production deployment.
+
+### Rust core
+
+The parts that must behave identically everywhere move to one Rust
+implementation instead of separate ports per language:
+
+| Part | Why Rust |
+|---|---|
+| Commit protocol, journal, recovery | one implementation instead of N ports of a subtle protocol; states and outcomes enforced by types |
+| HLC, UUIDv7, gid | shared by every binding, bit-for-bit identical |
+| Parallel prepare / finish | async (tokio) shortens the lock window and drevo's prepared fence |
+| Embedded drevo | drevo is Rust: use `drevo-core` directly, without drevo-py or Bolt |
+| Recovery worker, server | long-running processes with predictable memory and latency |
+
+Speed of the coordinator itself is not the reason: commit latency is set by
+network round trips to the journal and the stores, not by CPU.
+
+Steps:
+
+1. **Conformance suite as data** (JSON / YAML), run by every implementation:
+   UUIDv7, HLC encoding and gid vectors, the journal transition table, and the
+   crash matrix (failure point × outcome after recovery) now covered by the
+   Python property tests.
+2. **Driver check** before committing to a store in Rust: `tokio-postgres`
+   (`PREPARE TRANSACTION` is plain SQL), `neo4rs` (Bolt), the ClickHouse crate,
+   and `iceberg-rust`, whose write path is expected to be less mature than
+   pyiceberg. A store whose Rust driver is not ready stays on Python for now.
+3. **`datorium-core` crate**: protocol, journal, recovery, HLC, identity, tested
+   on fake stores like the Python core.
+4. **Rust adapters**: PostgreSQL, drevo (embedded through `drevo-core`, and
+   Bolt), the PostgreSQL journal.
+5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
+   core without changing its public API; a C ABI (cbindgen) for Go. Open
+   questions to settle first: Python callbacks (`transactional` functions) into
+   an async core and the GIL, and results across the boundary (Arrow).
+6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
+   suite against both implementations.
+
+Order: after step 4 of the v0.1 roadmap (or at least after the Iceberg driver
+check), so the port carries a finished protocol, including the non-2PC
+branches, rather than a moving target.
+
+### Production deployment
+
+Every store is reached over the network, so clustered stores work unchanged; the
+guarantees then depend on how each store fails over.
+
+- **Journal**: the `COMMITTED` record is the atomic commit point. Its store must
+  replicate **synchronously** (PostgreSQL `synchronous_commit = on` with a
+  synchronous standby, or a quorum, e.g. Patroni). With asynchronous replication
+  a failover can lose a decision, and recovery would presume abort for a
+  transaction that is partly committed.
+- **PostgreSQL**: two-phase commit goes to the primary. Prepared transactions are
+  in the WAL and survive failover to a synchronous standby; with an asynchronous
+  one a prepared branch can be lost, which the `dat_applied` check reports as a
+  heuristic outcome.
+- **ClickHouse**: `ReplicatedMergeTree` for deduplication tokens; the
+  "already applied" check reads with sequential consistency or after quorum
+  inserts.
+- **drevo**: the server over Bolt, not the embedded mode. A prepared transaction
+  survives a restart (restored from the WAL); its behaviour on failover to a
+  replica is still to be confirmed with drevo.
+- **Iceberg**: a highly available catalog; commit conflicts after the decision
+  are retried.
+- **Latency**: a commit over several stores costs four journal writes plus a
+  prepare and a commit per two-phase store. Keep the journal close to the
+  coordinators. While a drevo transaction is prepared, all other writes to that
+  graph wait, so graph write throughput is bounded by the prepare→commit window.
+- **Clocks**: NTP on every host; the HLC absorbs the remaining skew and refuses
+  timestamps beyond `max_offset_ms`.
+- **Operations**: per-call timeouts, connection pools, metrics and alerts for
+  stuck transactions and fence duration, and recovery as its own process.
+  Deployed with container images and a Helm chart; managed databases are fine.
+
+### Server mode (after v0.1)
+
+An optional `datorium-server` on top of the same core: clients in any language,
+one place for coordination, recovery and connection pools, and no single-process
+limit of embedded drevo. It adds a network hop and must run as several
+instances (the journal's compare-and-set already makes concurrent coordinators
+safe). The open design question is the transaction model over the network:
+
+- **sessions** (`begin` / `execute` / `commit`): flexible, but an idle client
+  holds locks and the drevo fence until a timeout;
+- **one request per Unit of Work**: safe, but no application logic between
+  statements.
+
+The library stays the core; the server is built on it, not instead of it.
 
 ---
 

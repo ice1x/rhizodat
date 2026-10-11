@@ -70,10 +70,10 @@ def test_bug_tracker_on_a_laptop_uses_embedded_stores(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     root = tmp_path_factory.mktemp("tracker")
-    graph = parse_dsn(f"drevo://{root / 'graph.redb'}")
+    graph = parse_dsn(f"drevo://{root / 'graph.drevo'}")
     journal = parse_dsn(f"file://{root / 'journal.db'}")
     tests_graph = parse_dsn("drevo+mem://")
 
-    assert (graph.transport, graph.path) == ("embedded", str(root / "graph.redb"))
+    assert (graph.transport, graph.path) == ("embedded", str(root / "graph.drevo"))
     assert (journal.store, journal.path) == ("file", str(root / "journal.db"))
     assert tests_graph.transport == "memory"
