@@ -49,7 +49,7 @@ jobs:
       - name: Start the test stores
         if: runner.os == 'Linux'
         run: |
-          docker compose --profile clickhouse --profile iceberg up -d --wait
+          docker compose --profile clickhouse --profile iceberg --profile faults up -d --wait
           grep -v '^#' .env.test >> "$GITHUB_ENV"
       - run: uv sync --locked
       - run: uv run pytest

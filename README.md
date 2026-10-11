@@ -602,8 +602,11 @@ One `compose.yaml` runs every store the tests need, locally and in CI alike
   S3-compatible object storage (rustfs; the MinIO image is no longer on Docker
   Hub), with a one-shot container creating the bucket. The adapter tests run
   against it and against a SQLite catalog with a local warehouse;
-- toxiproxy in front of the stores for failure tests: kill a primary between
-  prepare and commit, cut the network to the journal: added with those tests.
+- ✔ toxiproxy behind the `faults` profile: tests create proxies through its API
+  and cut the network to the journal or a store at a chosen protocol step (the
+  journal before / after the decision, PostgreSQL, ClickHouse or drevo after it)
+  and check `InDoubt` / `CommittedPending` and what recovery does once the
+  network is back.
 
 Compose is for development, tests and demos on one host. It is not the
 production deployment.
@@ -705,7 +708,7 @@ tmpfs, so every `up` starts empty):
 
 ```bash
 docker compose up -d --wait   # PostgreSQL (2PC enabled) and a disposable drevo
-docker compose --profile clickhouse --profile iceberg up -d --wait   # every store
+docker compose --profile '*' up -d --wait   # every store, plus toxiproxy
 uv sync --group drevo         # optional: embedded drevo-py from the pinned commit (Rust)
 uv run pytest
 docker compose down
@@ -716,7 +719,8 @@ The tests read store DSNs from the environment, else from `.env.test`. A DSN fro
 DSN set in the environment is used as is, so a store that is down fails the run
 (CI exports `.env.test` for that reason). Point the tests at other stores with
 `DATORIUM_TEST_PG_DSN`, `DATORIUM_TEST_DREVO_BOLT`,
-`DATORIUM_TEST_CLICKHOUSE_DSN` and `DATORIUM_TEST_ICEBERG_REST_DSN`. The drevo server must be
+`DATORIUM_TEST_CLICKHOUSE_DSN`, `DATORIUM_TEST_ICEBERG_REST_DSN` and
+`DATORIUM_TEST_TOXIPROXY`. The drevo server must be
 **disposable**: 2PC raises the prepared fence and blocks other writers.
 
 ```bash

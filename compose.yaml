@@ -101,3 +101,19 @@ services:
       interval: 1s
       timeout: 3s
       retries: 60
+
+  # --- network faults (profile "faults") ------------------------------------------------------
+  # Tests create proxies through the API (127.0.0.1:58474) and point stores at the listen
+  # ports, then cut or slow the connection at a chosen protocol step.
+
+  toxiproxy:
+    profiles: ["faults"]
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    ports:
+      - "127.0.0.1:58474:8474"
+      - "127.0.0.1:58401-58404:58401-58404"
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
