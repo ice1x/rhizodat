@@ -1,6 +1,7 @@
 """Journal of multi-branch meta-transactions: states, compare-and-set, scans."""
 
 import threading
+import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -38,7 +39,7 @@ class Wall:
 JournalFactory = Callable[[Wall], Journal]
 
 
-@pytest.fixture(params=["memory", "sqlite", "postgres"])
+@pytest.fixture(params=["memory", "sqlite", "postgres", "drevo", "drevo-bolt"])
 def make_journal(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[JournalFactory]:
     opened: list[Journal] = []
     if request.param == "postgres":
@@ -46,6 +47,18 @@ def make_journal(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Jou
 
         pg_dsn: str = request.getfixturevalue("pg_dsn")
         pg_schema: str = request.getfixturevalue("pg_schema")
+    if request.param.startswith("drevo"):
+        from conftest import drevo_embedded_available
+        from datorium.adapters.drevo import DrevoJournal
+
+        if request.param == "drevo-bolt":
+            drevo_dsn: str = request.getfixturevalue("drevo_bolt_dsn")
+        elif drevo_embedded_available():
+            drevo_dsn = f"drevo://{tmp_path / 'journal.drevo'}"
+        else:
+            pytest.skip("drevo-py with 2PC is not installed")
+        # A label per journal keeps tests apart on a shared drevo server.
+        label = f"DatJournal{uuid.uuid4().hex[:10]}"
 
     def factory(wall: Wall) -> Journal:
         if request.param == "memory":
@@ -54,6 +67,8 @@ def make_journal(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Jou
             journal = PostgresJournal(
                 pg_dsn, schema=pg_schema, table=f"journal_{len(opened)}", wall_ms=wall
             )
+        elif request.param.startswith("drevo"):
+            journal = DrevoJournal(drevo_dsn, label=f"{label}_{len(opened)}", wall_ms=wall)
         else:
             journal = SqliteJournal(tmp_path / f"journal-{len(opened)}.db", wall_ms=wall)
         opened.append(journal)
@@ -246,6 +261,19 @@ def test_pending_is_ordered_oldest_first_and_limited(journal: Journal, wall: Wal
     assert [r.dat_txn for r in journal.pending(updated_before_ms=wall.ms, limit=3)] == txns[:3]
 
 
+def test_pending_orders_by_last_update_not_by_creation(journal: Journal, wall: Wall) -> None:
+    first = begin(journal)
+    wall.ms += 1
+    second = begin(journal)
+    wall.ms += 1
+    journal.transition(first.dat_txn, State.ACTIVE, State.PREPARED, dat_tx_time=1)
+    wall.ms += 1
+    assert [r.dat_txn for r in journal.pending(updated_before_ms=wall.ms)] == [
+        second.dat_txn,
+        first.dat_txn,
+    ]
+
+
 def test_forget_removes_only_finished_transactions(journal: Journal) -> None:
     active = begin(journal)
     aborted = begin(journal)
@@ -302,9 +330,24 @@ def test_open_journal_rejects_a_store_that_cannot_be_a_journal() -> None:
         open_journal("clickhouse://localhost/x")
 
 
-def test_open_journal_for_drevo_is_not_implemented_yet() -> None:
-    with pytest.raises(NotImplementedError):
-        open_journal("drevo:///tmp/x.drevo")
+def test_open_journal_for_drevo(tmp_path: Path) -> None:
+    from conftest import drevo_embedded_available
+    from datorium.adapters.drevo import DrevoJournal
+
+    if not drevo_embedded_available():
+        pytest.skip("drevo-py with 2PC is not installed")
+    journal = open_journal(f"drevo://{tmp_path / 'journal.drevo'}")
+    assert isinstance(journal, DrevoJournal)
+    record = begin(journal)
+    assert journal.get(record.dat_txn) == record
+    journal.close()
+
+
+def test_drevo_journal_label_is_validated() -> None:
+    from datorium.adapters.drevo import DrevoJournal
+
+    with pytest.raises(ValueError, match="label"):
+        DrevoJournal("drevo+bolt://127.0.0.1:1", label="X) DETACH DELETE (n")
 
 
 # --- model-based check -------------------------------------------------------
