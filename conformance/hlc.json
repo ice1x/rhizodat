@@ -1,0 +1,296 @@
+{
+  "description": "Hybrid logical clock. A timestamp is one int64: wall_ms << 16 | logical, wall_ms < 2**47. Each step sets the local wall clock and runs now() or update(remote); expect is the issued timestamp or a named error (clock_skew: remote ahead by more than max_offset_ms, state unchanged; logical_overflow).",
+  "cases": [
+    {
+      "name": "wall clock advancing resets logical",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 0,
+            "encoded": 115343360000000000
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1760000000005,
+          "expect": {
+            "wall_ms": 1760000000005,
+            "logical": 0,
+            "encoded": 115343360000327680
+          }
+        }
+      ]
+    },
+    {
+      "name": "same or earlier wall time ticks logical",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 0,
+            "encoded": 115343360000000000
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 1,
+            "encoded": 115343360000000001
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1759999999990,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 2,
+            "encoded": 115343360000000002
+          }
+        }
+      ]
+    },
+    {
+      "name": "receive from a peer ahead within the offset",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 0,
+            "encoded": 115343360000000000
+          }
+        },
+        {
+          "op": "update",
+          "wall_ms": 1760000000000,
+          "remote": {
+            "wall_ms": 1760000000300,
+            "logical": 4
+          },
+          "expect": {
+            "wall_ms": 1760000000300,
+            "logical": 5,
+            "encoded": 115343360019660805
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1760000000001,
+          "expect": {
+            "wall_ms": 1760000000300,
+            "logical": 6,
+            "encoded": 115343360019660806
+          }
+        }
+      ]
+    },
+    {
+      "name": "receive with equal walls takes the max logical plus one",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 0,
+            "encoded": 115343360000000000
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 1,
+            "encoded": 115343360000000001
+          }
+        },
+        {
+          "op": "update",
+          "wall_ms": 1759999999999,
+          "remote": {
+            "wall_ms": 1760000000000,
+            "logical": 7
+          },
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 8,
+            "encoded": 115343360000000008
+          }
+        }
+      ]
+    },
+    {
+      "name": "receive from a peer behind keeps the local time",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "now",
+          "wall_ms": 1760000000050,
+          "expect": {
+            "wall_ms": 1760000000050,
+            "logical": 0,
+            "encoded": 115343360003276800
+          }
+        },
+        {
+          "op": "update",
+          "wall_ms": 1760000000050,
+          "remote": {
+            "wall_ms": 1760000000000,
+            "logical": 9
+          },
+          "expect": {
+            "wall_ms": 1760000000050,
+            "logical": 1,
+            "encoded": 115343360003276801
+          }
+        }
+      ]
+    },
+    {
+      "name": "local physical time ahead of both resets logical",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 0,
+            "encoded": 115343360000000000
+          }
+        },
+        {
+          "op": "update",
+          "wall_ms": 1760000000100,
+          "remote": {
+            "wall_ms": 1760000000010,
+            "logical": 3
+          },
+          "expect": {
+            "wall_ms": 1760000000100,
+            "logical": 0,
+            "encoded": 115343360006553600
+          }
+        }
+      ]
+    },
+    {
+      "name": "first event is a receive",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "update",
+          "wall_ms": 1760000000000,
+          "remote": {
+            "wall_ms": 1760000000000,
+            "logical": 2
+          },
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 3,
+            "encoded": 115343360000000003
+          }
+        }
+      ]
+    },
+    {
+      "name": "peer too far ahead is rejected and changes nothing",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 0,
+            "encoded": 115343360000000000
+          }
+        },
+        {
+          "op": "update",
+          "wall_ms": 1760000000000,
+          "remote": {
+            "wall_ms": 1760000000501,
+            "logical": 0
+          },
+          "expect": {
+            "error": "clock_skew"
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 1,
+            "encoded": 115343360000000001
+          }
+        }
+      ]
+    },
+    {
+      "name": "zero offset tolerance",
+      "max_offset_ms": 0,
+      "steps": [
+        {
+          "op": "update",
+          "wall_ms": 1760000000000,
+          "remote": {
+            "wall_ms": 1760000000001,
+            "logical": 0
+          },
+          "expect": {
+            "error": "clock_skew"
+          }
+        }
+      ]
+    },
+    {
+      "name": "logical counter overflow is an error, not a wrap",
+      "max_offset_ms": 500,
+      "steps": [
+        {
+          "op": "update",
+          "wall_ms": 1760000000000,
+          "remote": {
+            "wall_ms": 1760000000000,
+            "logical": 65534
+          },
+          "expect": {
+            "wall_ms": 1760000000000,
+            "logical": 65535,
+            "encoded": 115343360000065535
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "error": "logical_overflow"
+          }
+        },
+        {
+          "op": "now",
+          "wall_ms": 1760000000000,
+          "expect": {
+            "error": "logical_overflow"
+          }
+        }
+      ]
+    }
+  ]
+}

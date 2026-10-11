@@ -1,0 +1,253 @@
+{
+  "description": "UUIDv7 per RFC 9562 with a 12-bit monotonic counter (method 1). Each step sets the wall clock and queues the random values the generator must request, in order and with exactly these bit widths: 11 bits seed the counter on a new millisecond, 62 bits fill rand_b on every id. A step with repeat runs that many times with the same clock and random values; its expectation is for the last run.",
+  "cases": [
+    {
+      "name": "first id: counter seeded from 11 random bits",
+      "steps": [
+        {
+          "clock_ms": 1718292338296,
+          "random": [
+            {
+              "bits": 11,
+              "value": 1445
+            },
+            {
+              "bits": 62,
+              "value": 3074457345618258602
+            }
+          ],
+          "uuid": "01901234-5678-75a5-aaaa-aaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "name": "same millisecond increments the counter",
+      "steps": [
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 11,
+              "value": 7
+            },
+            {
+              "bits": 62,
+              "value": 1
+            }
+          ],
+          "uuid": "0199c82c-c000-7007-8000-000000000001"
+        },
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 62,
+              "value": 2
+            }
+          ],
+          "uuid": "0199c82c-c000-7008-8000-000000000002"
+        },
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 62,
+              "value": 3
+            }
+          ],
+          "uuid": "0199c82c-c000-7009-8000-000000000003"
+        }
+      ]
+    },
+    {
+      "name": "clock going backwards keeps monotonicity",
+      "steps": [
+        {
+          "clock_ms": 1760000000500,
+          "random": [
+            {
+              "bits": 11,
+              "value": 0
+            },
+            {
+              "bits": 62,
+              "value": 9
+            }
+          ],
+          "uuid": "0199c82c-c1f4-7000-8000-000000000009"
+        },
+        {
+          "clock_ms": 1760000000100,
+          "random": [
+            {
+              "bits": 62,
+              "value": 10
+            }
+          ],
+          "uuid": "0199c82c-c1f4-7001-8000-00000000000a"
+        }
+      ]
+    },
+    {
+      "name": "counter overflow borrows the next millisecond",
+      "steps": [
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 11,
+              "value": 2047
+            },
+            {
+              "bits": 62,
+              "value": 0
+            }
+          ],
+          "uuid": "0199c82c-c000-77ff-8000-000000000000"
+        },
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 62,
+              "value": 1
+            }
+          ],
+          "repeat": 2047,
+          "uuid": "0199c82c-c000-7ffe-8000-000000000001"
+        },
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 62,
+              "value": 2
+            }
+          ],
+          "uuid": "0199c82c-c000-7fff-8000-000000000002"
+        },
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 11,
+              "value": 3
+            },
+            {
+              "bits": 62,
+              "value": 4611686018427387903
+            }
+          ],
+          "uuid": "0199c82c-c001-7003-bfff-ffffffffffff"
+        }
+      ]
+    },
+    {
+      "name": "new millisecond reseeds the counter",
+      "steps": [
+        {
+          "clock_ms": 1760000000000,
+          "random": [
+            {
+              "bits": 11,
+              "value": 100
+            },
+            {
+              "bits": 62,
+              "value": 0
+            }
+          ],
+          "uuid": "0199c82c-c000-7064-8000-000000000000"
+        },
+        {
+          "clock_ms": 1760000000001,
+          "random": [
+            {
+              "bits": 11,
+              "value": 1
+            },
+            {
+              "bits": 62,
+              "value": 0
+            }
+          ],
+          "uuid": "0199c82c-c001-7001-8000-000000000000"
+        }
+      ]
+    },
+    {
+      "name": "largest timestamp",
+      "steps": [
+        {
+          "clock_ms": 281474976710655,
+          "random": [
+            {
+              "bits": 11,
+              "value": 0
+            },
+            {
+              "bits": 62,
+              "value": 0
+            }
+          ],
+          "uuid": "ffffffff-ffff-7000-8000-000000000000"
+        }
+      ]
+    },
+    {
+      "name": "counter overflow at the largest timestamp exhausts the generator",
+      "steps": [
+        {
+          "clock_ms": 281474976710655,
+          "random": [
+            {
+              "bits": 11,
+              "value": 2047
+            },
+            {
+              "bits": 62,
+              "value": 0
+            }
+          ],
+          "uuid": "ffffffff-ffff-77ff-8000-000000000000"
+        },
+        {
+          "clock_ms": 281474976710655,
+          "random": [
+            {
+              "bits": 62,
+              "value": 0
+            }
+          ],
+          "repeat": 2048,
+          "uuid": "ffffffff-ffff-7fff-8000-000000000000"
+        },
+        {
+          "clock_ms": 281474976710655,
+          "random": [],
+          "error": "timestamp_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "negative clock is rejected",
+      "steps": [
+        {
+          "clock_ms": -1,
+          "random": [],
+          "error": "invalid_clock"
+        }
+      ]
+    },
+    {
+      "name": "clock beyond 48 bits is rejected",
+      "steps": [
+        {
+          "clock_ms": 281474976710656,
+          "random": [],
+          "error": "invalid_clock"
+        }
+      ]
+    }
+  ]
+}
