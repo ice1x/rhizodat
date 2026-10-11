@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from no_skips import pytest_runtest_makereport  # noqa: F401 - DATORIUM_TEST_NO_SKIPS
 from stores import ENV_FILE, StoreUnavailable, load_env_file, resolve_dsn
 
 if TYPE_CHECKING:

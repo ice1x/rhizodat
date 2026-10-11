@@ -55,9 +55,13 @@ jobs:
       - run: uv run pytest
 
   drevo-embedded:
-    # drevo-py is not on PyPI yet: build it from the pinned commit (Rust), cached by uv.
+    # The full suite with every store and embedded drevo, where nothing may skip: a skip
+    # here means a test silently stopped running. drevo-py is not on PyPI yet: it is
+    # built from the pinned commit (Rust), cached by uv.
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DATORIUM_TEST_NO_SKIPS: "1"
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
@@ -66,7 +70,7 @@ jobs:
           enable-cache: true
       - name: Start the test stores
         run: |
-          docker compose up -d --wait
+          docker compose --profile clickhouse --profile iceberg --profile faults up -d --wait
           grep -v '^#' .env.test >> "$GITHUB_ENV"
       - run: uv sync --locked --group drevo
-      - run: uv run --group drevo pytest tests/adapters/test_drevo.py tests/integration/test_postgres_drevo_meta_transactions.py
+      - run: uv run --group drevo pytest
