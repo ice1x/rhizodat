@@ -23,9 +23,9 @@ in Rust and shared by every language through bindings (see
 purpose.
 
 > Status: v0.1 in progress. Implemented: identity, HLC, DSNs, entity mapping,
-> results, the journal, the commit coordinator and recovery, PostgreSQL and drevo
-> adapters, Units of Work with retries. Not yet: repository persistence of
-> entities, ClickHouse and Iceberg, bitemporal reads, migrations. This README is
+> results, the journal, the commit coordinator and recovery, PostgreSQL, drevo
+> and ClickHouse adapters, Units of Work with retries. Not yet: repository
+> persistence of entities, Iceberg, bitemporal reads, migrations. This README is
 > the specification v0.1 is built against.
 
 ---
@@ -73,6 +73,17 @@ in-memory test oracle) through drevo-py, or remote
 `commitPrepared`, `rollbackPrepared` and `listPrepared` procedures. Node
 `title`s are unique across a drevo graph, so map entity fields that are not
 unique to another property name.
+
+ClickHouse has no transactions, so its branch only buffers rows
+(`uow.store("ch").insert(table, rows)`). Stage checks every batch against the
+table schema and `max_rows_per_table` (default 100 000), adds `dat_txn` and
+`dat_tx_time` to each row and puts the batch into the journal; the rows are
+inserted after the decision, by the coordinator or by recovery. Tables written
+through datorium need `dat_txn UUID` and `dat_tx_time Int64` columns, ideally
+with a `bloom_filter` skip index on `dat_txn`; batches are JSON in the journal,
+with tagged UUID, Decimal, bytes, date and datetime values (a time zone becomes
+its UTC offset).
+
 ---
 
 ## Architecture
@@ -319,7 +330,7 @@ commits too.
 | PostgreSQL | gid absent from `pg_prepared_xacts` and a `dat_applied` marker row for `dat_txn` exists → done; gid absent and no marker → heuristic outcome, reported, never "done" |
 | drevo | `commit_prepared` on an unknown gid returns `UnknownGid` → already resolved |
 | Iceberg | a snapshot whose summary carries `dat_txn` exists → skip |
-| ClickHouse | `insert_deduplication_token` makes a repeated insert a no-op inside the dedup window; outside it (or with deduplication off, as on non-replicated MergeTree by default) the coordinator first checks for rows with this `dat_txn` |
+| ClickHouse | an applied marker `(dat_txn, dat_tx_time)` in `dat_applied` (ReplacingMergeTree), written after every batch. Before a batch the participant counts the table's rows with this `dat_txn`: none → insert, all → skip, some (a crash left part of an insert) → lightweight `DELETE` of them and insert again. Each insert also carries `insert_deduplication_token = <gid>:<n>` for replicated tables; correctness does not depend on the dedup window |
 | Journal | a failed or timed-out `COMMITTED` write is read back; if the state cannot be read, the transaction is left to recovery, which decides from the journal once it is reachable |
 
 ### Guarantees
@@ -542,9 +553,11 @@ installed from source.
 3. ✔ PostgreSQL + drevo adapters; meta-transactions with 2PC and retries; journal
    and recovery, including crash tests between prepare and commit; Unit of Work
    and `transactional`.
-4. ✔ Docker Compose for development and tests (below): PostgreSQL and drevo.
-   Next: Iceberg + ClickHouse branches (staged commit, dedup tokens,
-   roll-forward), adding their services to compose.
+4. ✔ Docker Compose for development and tests (below).
+   ✔ ClickHouse branch: buffered rows, schema check at stage, rows in the
+   journal, idempotent insert after the decision, roll-forward by recovery.
+   Next: the Iceberg branch (staged data files, snapshot commit after the
+   decision, roll-forward), with its services in compose.
 5. Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
    entity parts and repository persistence.
 6. Migrations.
@@ -564,8 +577,10 @@ One `compose.yaml` runs every store the tests need, locally and in CI alike
   (`ice1x/drevo:0.0.43`, [ice1x/drevo#591](https://github.com/ice1x/drevo/issues/591)),
   so CI now tests drevo over Bolt too;
 - ✔ healthchecks, and `.env.test` with the test DSNs;
-- ClickHouse, and an Iceberg REST catalog with object storage, behind a profile
-  so a test run starts only what it needs: added together with their adapters;
+- ✔ ClickHouse behind the `clickhouse` profile, so a test run starts only what
+  it needs;
+- an Iceberg REST catalog with object storage, behind a profile: added together
+  with its adapter;
 - toxiproxy in front of the stores for failure tests: kill a primary between
   prepare and commit, cut the network to the journal: added with those tests.
 
@@ -669,6 +684,7 @@ tmpfs, so every `up` starts empty):
 
 ```bash
 docker compose up -d --wait   # PostgreSQL (2PC enabled) and a disposable drevo
+docker compose --profile clickhouse up -d --wait   # ... and ClickHouse
 uv sync --group drevo         # optional: embedded drevo-py from the pinned commit (Rust)
 uv run pytest
 docker compose down
@@ -678,7 +694,8 @@ The tests read store DSNs from the environment, else from `.env.test`. A DSN fro
 `.env.test` whose store is not running skips that store's tests with a hint; a
 DSN set in the environment is used as is, so a store that is down fails the run
 (CI exports `.env.test` for that reason). Point the tests at other stores with
-`DATORIUM_TEST_PG_DSN` and `DATORIUM_TEST_DREVO_BOLT`. The drevo server must be
+`DATORIUM_TEST_PG_DSN`, `DATORIUM_TEST_DREVO_BOLT` and
+`DATORIUM_TEST_CLICKHOUSE_DSN`. The drevo server must be
 **disposable**: 2PC raises the prepared fence and blocks other writers.
 
 ```bash

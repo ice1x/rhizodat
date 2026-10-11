@@ -35,6 +35,10 @@ def open_store(name: str, dsn: str) -> Store:
         from datorium.adapters.drevo import DrevoStore
 
         return DrevoStore(dsn, name=name)
+    if kind == "clickhouse":
+        from datorium.adapters.clickhouse import ClickHouseStore
+
+        return ClickHouseStore(dsn, name=name)
     raise NotImplementedError(f"the {kind} adapter is not implemented yet (roadmap step 4)")
 
 

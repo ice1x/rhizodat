@@ -14,6 +14,7 @@ from stores import ENV_FILE, StoreUnavailable, load_env_file, resolve_dsn
 
 PG_ENV = "DATORIUM_TEST_PG_DSN"
 DREVO_BOLT_ENV = "DATORIUM_TEST_DREVO_BOLT"
+CLICKHOUSE_ENV = "DATORIUM_TEST_CLICKHOUSE_DSN"
 
 
 @pytest.fixture(scope="session")
@@ -60,6 +61,38 @@ def drevo_embedded_available() -> bool:
 def drevo_bolt_dsn() -> str:
     """``drevo+bolt://`` DSN of a disposable drevo server (never a shared one: 2PC fences it)."""
     return _store_dsn(DREVO_BOLT_ENV)
+
+
+@pytest.fixture(scope="session")
+def clickhouse_server_dsn() -> str:
+    """DSN of a disposable ClickHouse; tests get their own database (``clickhouse_dsn``)."""
+    return _store_dsn(CLICKHOUSE_ENV)
+
+
+@pytest.fixture
+def clickhouse_dsn(clickhouse_server_dsn: str) -> Iterator[str]:
+    """``clickhouse_server_dsn`` pointing at a fresh database, dropped afterwards."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    import clickhouse_connect
+
+    from datorium.core.dsn import parse_dsn
+
+    server = parse_dsn(clickhouse_server_dsn)
+    name = f"dat_test_{uuid.uuid4().hex[:12]}"
+    client = clickhouse_connect.get_client(
+        host=server.host,
+        port=server.port,
+        username=server.user or "default",
+        password=server.password or "",
+        autogenerate_session_id=False,
+    )
+    client.command(f"CREATE DATABASE `{name}`")
+    yield urlunsplit(urlsplit(clickhouse_server_dsn)._replace(path=f"/{name}"))
+    try:
+        client.command(f"DROP DATABASE IF EXISTS `{name}` SYNC")
+    finally:
+        client.close()
 
 
 def _store_dsn(var: str) -> str:

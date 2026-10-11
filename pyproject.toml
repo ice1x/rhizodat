@@ -45,6 +45,7 @@ dev = [
     "pyarrow>=17",
     "psycopg[binary]>=3.2",
     "neo4j>=5.20",
+    "clickhouse-connect>=0.8",
 ]
 
 # Embedded drevo with two-phase commit; not on PyPI yet, so built from a pinned commit
