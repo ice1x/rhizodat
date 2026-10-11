@@ -429,6 +429,14 @@ def test_unsupported_store_kind_is_reported() -> None:
         Datorium(stores={"lake": "iceberg+glue://eu-west-1/warehouse"})
 
 
+def test_a_drevo_journal_cannot_share_a_graph_with_a_drevo_store() -> None:
+    """The store's prepared fence would block the coordinator's own journal writes."""
+    with pytest.raises(ValueError, match="separate drevo graph"):
+        Datorium(
+            stores={"graph": "drevo+bolt://graph.local:7687"}, journal="drevo+bolt://graph.local"
+        )
+
+
 def test_store_names_are_validated() -> None:
     with pytest.raises(ValueError, match="store name"):
         Datorium(stores={"bad:name": "drevo+mem://"})

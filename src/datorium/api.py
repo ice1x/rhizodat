@@ -44,6 +44,28 @@ def open_store(name: str, dsn: str) -> Store:
     return IcebergStore(dsn, name=name)
 
 
+def _check_journal_graph(journal: str, stores: Mapping[str, "str | Store"]) -> None:
+    """A drevo journal in the graph of a drevo store would be blocked by its prepared fence."""
+    from datorium.core.dsn import parse_dsn
+
+    if parse_dsn(journal).store != "drevo":
+        return
+    from datorium.adapters.drevo import graph_location
+
+    where = graph_location(journal)
+    if where is None:
+        return
+    for name, store in stores.items():
+        other = (
+            graph_location(store) if isinstance(store, str) else getattr(store, "location", None)
+        )
+        if other == where:
+            raise ValueError(
+                f"the journal must live in a separate drevo graph: store {name!r} uses the same"
+                " one, and its prepared fence would block the coordinator's journal writes"
+            )
+
+
 class Datorium:
     def __init__(
         self,
@@ -60,6 +82,8 @@ class Datorium:
         for name in stores:
             if not _STORE_NAME.match(name):
                 raise ValueError(f"invalid store name {name!r}: letters, digits, '_', '.', '-'")
+        if isinstance(journal, str):
+            _check_journal_graph(journal, stores)
         self._stores: dict[str, Store] = {
             name: open_store(name, s) if isinstance(s, str) else s for name, s in stores.items()
         }

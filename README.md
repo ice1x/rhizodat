@@ -23,9 +23,10 @@ in Rust and shared by every language through bindings (see
 purpose.
 
 > Status: v0.1 in progress. Implemented: identity, HLC, DSNs, entity mapping,
-> results, the journal, the commit coordinator and recovery, PostgreSQL, drevo
-> ClickHouse and Iceberg adapters, Units of Work with retries. Not yet:
-> repository persistence of entities, bitemporal reads, migrations. This README is
+> results, the journal, the commit coordinator and recovery, PostgreSQL, drevo,
+> ClickHouse and Iceberg adapters, journals in PostgreSQL and drevo, Units of
+> Work with retries. Not yet: repository persistence of entities, bitemporal
+> reads, migrations. This README is
 > the specification v0.1 is built against.
 
 ---
@@ -245,6 +246,13 @@ durable); it only shortens how long other writers are blocked.
   that crashed.
 - A local file (`journal="file:///…"`) is allowed only explicitly, for
   development and single-process embedded use.
+- A drevo journal keeps one node per meta-transaction (label `DatJournal` by
+  default, `title` = `<label>:<dat_txn>` for uniqueness); each compare-and-set
+  is one drevo transaction, and drevo rejects the second of two concurrent
+  writers. It must be a **separate graph** from every drevo store of the
+  deployment: a prepared branch raises its graph's fence, which would block the
+  coordinator's own `PREPARED` / `COMMITTED` writes. `Datorium` refuses such a
+  configuration.
 - The journal is a coordination role, not a data master: it holds transaction
   states, not entity data.
 

@@ -382,7 +382,9 @@ def open_journal(dsn: str | None, *, wall_ms: Callable[[], int] = _system_ms) ->
 
         return PostgresJournal(dsn, wall_ms=wall_ms)
     if parsed.store == "drevo":
-        raise NotImplementedError("the drevo journal is not implemented yet")
+        from datorium.adapters.drevo import DrevoJournal
+
+        return DrevoJournal(dsn, wall_ms=wall_ms)
     raise ValueError(
         f"{parsed.store} cannot hold the journal: it must be a shared ACID store "
         "(PostgreSQL or drevo)"
