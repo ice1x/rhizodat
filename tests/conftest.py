@@ -7,15 +7,20 @@ A store's DSN comes from the environment, else from ``.env.test`` (the stores in
 import os
 import uuid
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 
 from stores import ENV_FILE, StoreUnavailable, load_env_file, resolve_dsn
 
+if TYPE_CHECKING:
+    from toxiproxy import Toxiproxy
+
 PG_ENV = "DATORIUM_TEST_PG_DSN"
 DREVO_BOLT_ENV = "DATORIUM_TEST_DREVO_BOLT"
 CLICKHOUSE_ENV = "DATORIUM_TEST_CLICKHOUSE_DSN"
 ICEBERG_REST_ENV = "DATORIUM_TEST_ICEBERG_REST_DSN"
+TOXIPROXY_ENV = "DATORIUM_TEST_TOXIPROXY"
 
 
 @pytest.fixture(scope="session")
@@ -100,6 +105,18 @@ def clickhouse_dsn(clickhouse_server_dsn: str) -> Iterator[str]:
 def iceberg_rest_dsn() -> str:
     """``iceberg+rest://`` DSN of a disposable REST catalog over S3 (compose profile iceberg)."""
     return _store_dsn(ICEBERG_REST_ENV)
+
+
+@pytest.fixture(scope="session")
+def toxiproxy() -> "Toxiproxy":
+    """The toxiproxy API (compose profile faults) for real network failures."""
+    from toxiproxy import Toxiproxy, http_reachable
+
+    try:
+        url = resolve_dsn(TOXIPROXY_ENV, os.environ, load_env_file(ENV_FILE), http_reachable)
+    except StoreUnavailable as exc:
+        pytest.skip(str(exc))
+    return Toxiproxy(url)
 
 
 def _store_dsn(var: str) -> str:
