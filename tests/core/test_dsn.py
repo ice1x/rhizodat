@@ -53,15 +53,15 @@ def test_clickhouse_requires_a_host() -> None:
 
 
 def test_drevo_embedded_file() -> None:
-    dsn = parse_dsn("drevo:///data/graph.redb")
+    dsn = parse_dsn("drevo:///data/graph.drevo")
     assert (dsn.store, dsn.transport) == ("drevo", "embedded")
-    assert dsn.path == "/data/graph.redb"
+    assert dsn.path == "/data/graph.drevo"
     assert dsn.host is None
 
 
 def test_drevo_embedded_path_must_be_absolute_and_local() -> None:
     with pytest.raises(DSNError, match="drevo:///"):
-        parse_dsn("drevo://data/graph.redb")
+        parse_dsn("drevo://data/graph.drevo")
 
 
 def test_drevo_embedded_needs_a_path() -> None:
@@ -77,7 +77,7 @@ def test_drevo_in_memory() -> None:
 
 def test_drevo_in_memory_takes_no_location() -> None:
     with pytest.raises(DSNError, match="drevo\\+mem://"):
-        parse_dsn("drevo+mem:///tmp/x.redb")
+        parse_dsn("drevo+mem:///tmp/x.drevo")
 
 
 def test_drevo_bolt_default_port() -> None:

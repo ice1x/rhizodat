@@ -7,8 +7,8 @@ DSN                                                 store       transport
 ==================================================  ==========  ===========
 ``postgresql://user:pass@host:5432/db?sslmode=…``   postgres    —
 ``clickhouse://user:pass@host:8123/db``             clickhouse  —
-``drevo:///abs/path.redb``                          drevo       embedded
-``drevo+mem://``                                    drevo       memory
+``drevo:///abs/path.drevo``                         drevo       embedded
+``drevo+mem://`` (tests only)                       drevo       memory
 ``drevo+bolt://user:pass@host:7687``                drevo       bolt
 ``iceberg+rest://host:8181/warehouse``              iceberg     rest
 ``iceberg+sql://…``, ``iceberg+glue://…``           iceberg     sql, glue

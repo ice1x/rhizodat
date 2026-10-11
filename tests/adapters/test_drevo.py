@@ -31,7 +31,7 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[DrevoStore
     elif not drevo_embedded_available():
         pytest.skip("drevo-py with 2PC is not installed: uv sync --group drevo")
     else:
-        dsn = "drevo+mem://" if request.param == "memory" else f"drevo://{tmp_path / 'graph.redb'}"
+        dsn = "drevo+mem://" if request.param == "memory" else f"drevo://{tmp_path / 'graph.drevo'}"
     s = DrevoStore(dsn, name="graph")
     opened: list[DrevoBranch] = []
     original = s.branch
@@ -159,7 +159,7 @@ def test_non_transient_errors_are_not_retryable(store: DrevoStore) -> None:
 def test_embedded_file_store_keeps_prepared_state_across_reopen(tmp_path: Path) -> None:
     if not drevo_embedded_available():
         pytest.skip("drevo-py with 2PC is not installed")
-    dsn = f"drevo://{tmp_path / 'graph.redb'}"
+    dsn = f"drevo://{tmp_path / 'graph.drevo'}"
     first = DrevoStore(dsn, name="graph")
     lbl, txn = label(), new_id()
     gid = gid_for(txn, "graph")

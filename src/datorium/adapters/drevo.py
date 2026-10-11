@@ -1,6 +1,6 @@
 """drevo adapter, a two-phase branch: embedded (``drevo-py``) or remote over Bolt (``neo4j``).
 
-- ``drevo:///abs/path.redb`` / ``drevo+mem://`` open the graph in-process with
+- ``drevo:///abs/path.drevo`` / ``drevo+mem://`` open the graph in-process with
   drevo-py: ``Transaction.prepare(gid)``, ``Drevo.commit_prepared`` /
   ``rollback_prepared`` / ``list_prepared``.
 - ``drevo+bolt://host:7687`` talks to a drevo server with any Neo4j driver;
