@@ -1,0 +1,30 @@
+# Stores for development and tests: docker compose up -d --wait, then uv run pytest.
+# DSNs are in .env.test; ports are bound to 127.0.0.1 only. Not a production deployment.
+name: datorium-test
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # Two-phase commit needs prepared transactions, off by default.
+    command: ["postgres", "-c", "max_prepared_transactions=50"]
+    environment:
+      POSTGRES_PASSWORD: datorium
+      POSTGRES_DB: datorium
+    ports: ["127.0.0.1:55440:5432"]
+    tmpfs: ["/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "datorium"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  drevo:
+    # 0.0.43: multi-arch, with the drevo.tx.* two-phase commit procedures.
+    image: ice1x/drevo:0.0.43
+    ports: ["127.0.0.1:57687:7687"]
+    tmpfs: ["/data:uid=999,gid=999"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

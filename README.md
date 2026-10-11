@@ -542,8 +542,9 @@ installed from source.
 3. ✔ PostgreSQL + drevo adapters; meta-transactions with 2PC and retries; journal
    and recovery, including crash tests between prepare and commit; Unit of Work
    and `transactional`.
-4. Docker Compose for development and tests (below), then Iceberg + ClickHouse
-   branches: staged commit, dedup tokens, roll-forward.
+4. ✔ Docker Compose for development and tests (below): PostgreSQL and drevo.
+   Next: Iceberg + ClickHouse branches (staged commit, dedup tokens,
+   roll-forward), adding their services to compose.
 5. Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
    entity parts and repository persistence.
 6. Migrations.
@@ -558,14 +559,15 @@ query planning.
 One `compose.yaml` runs every store the tests need, locally and in CI alike
 (`docker compose up -d --wait`, then `uv run pytest`):
 
-- PostgreSQL with `max_prepared_transactions > 0`;
-- drevo, built from a pinned commit until a multi-arch image with 2PC is
-  published ([ice1x/drevo#591](https://github.com/ice1x/drevo/issues/591));
-- ClickHouse, and an Iceberg REST catalog with MinIO as object storage, behind a
-  profile so a test run starts only what it needs;
-- healthchecks, and one `.env` with the test DSNs;
+- ✔ PostgreSQL with `max_prepared_transactions > 0`;
+- ✔ drevo from the pinned multi-arch image with the `drevo.tx.*` 2PC procedures
+  (`ice1x/drevo:0.0.43`, [ice1x/drevo#591](https://github.com/ice1x/drevo/issues/591)),
+  so CI now tests drevo over Bolt too;
+- ✔ healthchecks, and `.env.test` with the test DSNs;
+- ClickHouse, and an Iceberg REST catalog with object storage, behind a profile
+  so a test run starts only what it needs: added together with their adapters;
 - toxiproxy in front of the stores for failure tests: kill a primary between
-  prepare and commit, cut the network to the journal.
+  prepare and commit, cut the network to the journal: added with those tests.
 
 Compose is for development, tests and demos on one host. It is not the
 production deployment.
@@ -662,27 +664,25 @@ The library stays the core; the server is built on it, not instead of it.
 
 ## Development
 
-Store-backed tests run when a disposable database is configured, and are
-skipped otherwise. PostgreSQL needs prepared transactions enabled:
+`compose.yaml` runs the stores the tests need (ports on 127.0.0.1 only, data in
+tmpfs, so every `up` starts empty):
 
 ```bash
-docker run -d --name datorium-test-pg -e POSTGRES_PASSWORD=datorium -e POSTGRES_DB=datorium \
-  -p 127.0.0.1:55440:5432 postgres:16-alpine -c max_prepared_transactions=50
-export DATORIUM_TEST_PG_DSN=postgresql://postgres:datorium@127.0.0.1:55440/datorium
+docker compose up -d --wait   # PostgreSQL (2PC enabled) and a disposable drevo
+uv sync --group drevo         # optional: embedded drevo-py from the pinned commit (Rust)
+uv run pytest
+docker compose down
 ```
 
-drevo over Bolt needs a **disposable** server (2PC raises the prepared fence and
-blocks other writers); embedded drevo needs drevo-py built from source (Rust):
-
-```bash
-docker run -d --name datorium-test-drevo -p 127.0.0.1:57687:7687 ice1x/drevo:latest
-export DATORIUM_TEST_DREVO_BOLT=drevo+bolt://127.0.0.1:57687
-uv sync --group drevo      # embedded drevo-py from the pinned commit
-```
+The tests read store DSNs from the environment, else from `.env.test`. A DSN from
+`.env.test` whose store is not running skips that store's tests with a hint; a
+DSN set in the environment is used as is, so a store that is down fails the run
+(CI exports `.env.test` for that reason). Point the tests at other stores with
+`DATORIUM_TEST_PG_DSN` and `DATORIUM_TEST_DREVO_BOLT`. The drevo server must be
+**disposable**: 2PC raises the prepared fence and blocks other writers.
 
 ```bash
 uv sync                  # dev environment
-uv run pytest            # tests
 uv run ruff check .      # lint
 uv run ruff format .     # format
 uv run mypy              # types (strict)
