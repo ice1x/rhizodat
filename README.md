@@ -638,9 +638,10 @@ network round trips to the journal and the stores, not by CPU.
 Steps:
 
 1. **Conformance suite as data** (JSON / YAML), run by every implementation:
-   UUIDv7, HLC encoding and gid vectors, the journal transition table, and the
-   crash matrix (failure point × outcome after recovery) now covered by the
-   Python property tests.
+   ✔ UUIDv7, HLC, gid, the journal transition table and DSN vectors in
+   [`conformance/`](conformance/), run against the Python reference. Still to
+   add: the crash matrix (failure point × outcome after recovery) now covered
+   by the Python property tests.
 2. **Driver check** before committing to a store in Rust: `tokio-postgres`
    (`PREPARE TRANSACTION` is plain SQL), `neo4rs` (Bolt), the ClickHouse crate,
    and `iceberg-rust`, whose write path is expected to be less mature than

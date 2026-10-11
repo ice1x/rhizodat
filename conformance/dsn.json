@@ -1,0 +1,307 @@
+{
+  "description": "Connection string parsing. Schemes match case-insensitively; user, password and path are percent-decoded; a repeated query parameter is an error. redacted masks the password and every query parameter whose name contains pass, secret, token, key or credential with ***. Errors never echo secrets.",
+  "cases": [
+    {
+      "raw": "postgresql://app:s3cret@db.local:6432/orders?sslmode=require",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "db.local",
+        "port": 6432,
+        "user": "app",
+        "password": "s3cret",
+        "path": "/orders",
+        "database": "orders",
+        "params": {
+          "sslmode": "require"
+        },
+        "redacted": "postgresql://app:***@db.local:6432/orders?sslmode=require"
+      }
+    },
+    {
+      "raw": "postgres://localhost/app",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "localhost",
+        "port": 5432,
+        "user": null,
+        "password": null,
+        "path": "/app",
+        "database": "app",
+        "params": {},
+        "redacted": "postgres://localhost/app"
+      }
+    },
+    {
+      "raw": "postgresql:///app?host=/var/run/postgresql",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": null,
+        "port": null,
+        "user": null,
+        "password": null,
+        "path": "/app",
+        "database": "app",
+        "params": {
+          "host": "/var/run/postgresql"
+        },
+        "redacted": "postgresql:///app?host=/var/run/postgresql"
+      }
+    },
+    {
+      "raw": "POSTGRESQL://u@H:1/d",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "h",
+        "port": 1,
+        "user": "u",
+        "password": null,
+        "path": "/d",
+        "database": "d",
+        "params": {},
+        "redacted": "postgresql://u@H:1/d"
+      }
+    },
+    {
+      "raw": "clickhouse://localhost/analytics",
+      "expect": {
+        "store": "clickhouse",
+        "transport": null,
+        "host": "localhost",
+        "port": 8123,
+        "user": null,
+        "password": null,
+        "path": "/analytics",
+        "database": "analytics",
+        "params": {},
+        "redacted": "clickhouse://localhost/analytics"
+      }
+    },
+    {
+      "raw": "clickhouse://u:p%40ss@ch:9000/db?secure=true",
+      "expect": {
+        "store": "clickhouse",
+        "transport": null,
+        "host": "ch",
+        "port": 9000,
+        "user": "u",
+        "password": "p@ss",
+        "path": "/db",
+        "database": "db",
+        "params": {
+          "secure": "true"
+        },
+        "redacted": "clickhouse://u:***@ch:9000/db?secure=true"
+      }
+    },
+    {
+      "raw": "drevo:///data/graph.drevo",
+      "expect": {
+        "store": "drevo",
+        "transport": "embedded",
+        "host": null,
+        "port": null,
+        "user": null,
+        "password": null,
+        "path": "/data/graph.drevo",
+        "database": "data/graph.drevo",
+        "params": {},
+        "redacted": "drevo:///data/graph.drevo"
+      }
+    },
+    {
+      "raw": "drevo+mem://",
+      "expect": {
+        "store": "drevo",
+        "transport": "memory",
+        "host": null,
+        "port": null,
+        "user": null,
+        "password": null,
+        "path": null,
+        "database": null,
+        "params": {},
+        "redacted": "drevo+mem://"
+      }
+    },
+    {
+      "raw": "drevo+bolt://neo:pw@graph.local:7687",
+      "expect": {
+        "store": "drevo",
+        "transport": "bolt",
+        "host": "graph.local",
+        "port": 7687,
+        "user": "neo",
+        "password": "pw",
+        "path": null,
+        "database": null,
+        "params": {},
+        "redacted": "drevo+bolt://neo:***@graph.local:7687"
+      }
+    },
+    {
+      "raw": "drevo+bolt://graph.local",
+      "expect": {
+        "store": "drevo",
+        "transport": "bolt",
+        "host": "graph.local",
+        "port": 7687,
+        "user": null,
+        "password": null,
+        "path": null,
+        "database": null,
+        "params": {},
+        "redacted": "drevo+bolt://graph.local"
+      }
+    },
+    {
+      "raw": "iceberg+rest://catalog.local:8181/warehouse?token=abc&s3.endpoint=http://s3:9000",
+      "expect": {
+        "store": "iceberg",
+        "transport": "rest",
+        "host": "catalog.local",
+        "port": 8181,
+        "user": null,
+        "password": null,
+        "path": "/warehouse",
+        "database": "warehouse",
+        "params": {
+          "token": "abc",
+          "s3.endpoint": "http://s3:9000"
+        },
+        "redacted": "iceberg+rest://catalog.local:8181/warehouse?token=***&s3.endpoint=http://s3:9000"
+      }
+    },
+    {
+      "raw": "iceberg+sql:///srv/catalog.db?warehouse=file:///w",
+      "expect": {
+        "store": "iceberg",
+        "transport": "sql",
+        "host": null,
+        "port": null,
+        "user": null,
+        "password": null,
+        "path": "/srv/catalog.db",
+        "database": "srv/catalog.db",
+        "params": {
+          "warehouse": "file:///w"
+        },
+        "redacted": "iceberg+sql:///srv/catalog.db?warehouse=file:///w"
+      }
+    },
+    {
+      "raw": "iceberg+glue://eu-west-1/lake",
+      "expect": {
+        "store": "iceberg",
+        "transport": "glue",
+        "host": "eu-west-1",
+        "port": null,
+        "user": null,
+        "password": null,
+        "path": "/lake",
+        "database": "lake",
+        "params": {},
+        "redacted": "iceberg+glue://eu-west-1/lake"
+      }
+    },
+    {
+      "raw": "file:///var/lib/datorium/journal.db",
+      "expect": {
+        "store": "file",
+        "transport": null,
+        "host": null,
+        "port": null,
+        "user": null,
+        "password": null,
+        "path": "/var/lib/datorium/journal.db",
+        "database": "var/lib/datorium/journal.db",
+        "params": {},
+        "redacted": "file:///var/lib/datorium/journal.db"
+      }
+    },
+    {
+      "raw": "file:///tmp/a%20b.db",
+      "expect": {
+        "store": "file",
+        "transport": null,
+        "host": null,
+        "port": null,
+        "user": null,
+        "password": null,
+        "path": "/tmp/a b.db",
+        "database": "tmp/a b.db",
+        "params": {},
+        "redacted": "file:///tmp/a%20b.db"
+      }
+    },
+    {
+      "raw": "mysql://localhost/app",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "iceberg://catalog/w",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "clickhouse:///analytics",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "drevo://data/graph.drevo",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "drevo://",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "drevo+mem:///x",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "postgresql://h:0/d",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "postgresql://h:99999/d",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "postgresql://h/d?a=1&a=2",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "iceberg+rest:///w",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "localhost:5432",
+      "expect": {
+        "error": true
+      }
+    }
+  ]
+}

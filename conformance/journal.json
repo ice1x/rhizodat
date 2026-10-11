@@ -1,0 +1,140 @@
+{
+  "description": "Journal states and the only legal compare-and-set edges. PREPARED must carry the dat_tx_time assigned at stage. ABORTED and DONE are final.",
+  "states": [
+    "ACTIVE",
+    "PREPARED",
+    "COMMITTED",
+    "ABORTED",
+    "DONE"
+  ],
+  "transitions": [
+    {
+      "from": "ACTIVE",
+      "to": "ACTIVE",
+      "legal": false
+    },
+    {
+      "from": "ACTIVE",
+      "to": "PREPARED",
+      "legal": true
+    },
+    {
+      "from": "ACTIVE",
+      "to": "COMMITTED",
+      "legal": false
+    },
+    {
+      "from": "ACTIVE",
+      "to": "ABORTED",
+      "legal": true
+    },
+    {
+      "from": "ACTIVE",
+      "to": "DONE",
+      "legal": false
+    },
+    {
+      "from": "PREPARED",
+      "to": "ACTIVE",
+      "legal": false
+    },
+    {
+      "from": "PREPARED",
+      "to": "PREPARED",
+      "legal": false
+    },
+    {
+      "from": "PREPARED",
+      "to": "COMMITTED",
+      "legal": true
+    },
+    {
+      "from": "PREPARED",
+      "to": "ABORTED",
+      "legal": true
+    },
+    {
+      "from": "PREPARED",
+      "to": "DONE",
+      "legal": false
+    },
+    {
+      "from": "COMMITTED",
+      "to": "ACTIVE",
+      "legal": false
+    },
+    {
+      "from": "COMMITTED",
+      "to": "PREPARED",
+      "legal": false
+    },
+    {
+      "from": "COMMITTED",
+      "to": "COMMITTED",
+      "legal": false
+    },
+    {
+      "from": "COMMITTED",
+      "to": "ABORTED",
+      "legal": false
+    },
+    {
+      "from": "COMMITTED",
+      "to": "DONE",
+      "legal": true
+    },
+    {
+      "from": "ABORTED",
+      "to": "ACTIVE",
+      "legal": false
+    },
+    {
+      "from": "ABORTED",
+      "to": "PREPARED",
+      "legal": false
+    },
+    {
+      "from": "ABORTED",
+      "to": "COMMITTED",
+      "legal": false
+    },
+    {
+      "from": "ABORTED",
+      "to": "ABORTED",
+      "legal": false
+    },
+    {
+      "from": "ABORTED",
+      "to": "DONE",
+      "legal": false
+    },
+    {
+      "from": "DONE",
+      "to": "ACTIVE",
+      "legal": false
+    },
+    {
+      "from": "DONE",
+      "to": "PREPARED",
+      "legal": false
+    },
+    {
+      "from": "DONE",
+      "to": "COMMITTED",
+      "legal": false
+    },
+    {
+      "from": "DONE",
+      "to": "ABORTED",
+      "legal": false
+    },
+    {
+      "from": "DONE",
+      "to": "DONE",
+      "legal": false
+    }
+  ],
+  "requires_dat_tx_time": [
+    "PREPARED"
+  ]
+}
