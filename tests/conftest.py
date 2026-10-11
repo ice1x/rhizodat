@@ -1,10 +1,16 @@
-"""Shared fixtures. Store-backed tests run only when a test database is configured."""
+"""Shared fixtures. Store-backed tests run when their store is configured or running.
+
+A store's DSN comes from the environment, else from ``.env.test`` (the stores in
+``compose.yaml``); see ``stores.py``.
+"""
 
 import os
 import uuid
 from collections.abc import Iterator
 
 import pytest
+
+from stores import ENV_FILE, StoreUnavailable, load_env_file, resolve_dsn
 
 PG_ENV = "DATORIUM_TEST_PG_DSN"
 DREVO_BOLT_ENV = "DATORIUM_TEST_DREVO_BOLT"
@@ -13,10 +19,7 @@ DREVO_BOLT_ENV = "DATORIUM_TEST_DREVO_BOLT"
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
     """DSN of a disposable PostgreSQL with ``max_prepared_transactions > 0``."""
-    dsn = os.environ.get(PG_ENV)
-    if not dsn:
-        pytest.skip(f"set {PG_ENV} to run PostgreSQL tests")
-    return dsn
+    return _store_dsn(PG_ENV)
 
 
 @pytest.fixture
@@ -56,7 +59,11 @@ def drevo_embedded_available() -> bool:
 @pytest.fixture(scope="session")
 def drevo_bolt_dsn() -> str:
     """``drevo+bolt://`` DSN of a disposable drevo server (never a shared one: 2PC fences it)."""
-    dsn = os.environ.get(DREVO_BOLT_ENV)
-    if not dsn:
-        pytest.skip(f"set {DREVO_BOLT_ENV} to run drevo-over-Bolt tests")
-    return dsn
+    return _store_dsn(DREVO_BOLT_ENV)
+
+
+def _store_dsn(var: str) -> str:
+    try:
+        return resolve_dsn(var, os.environ, load_env_file(ENV_FILE))
+    except StoreUnavailable as exc:
+        pytest.skip(str(exc))
