@@ -641,10 +641,17 @@ Steps:
    ✔ UUIDv7, HLC, gid, the journal transition table, DSN vectors and the crash
    matrix (failure point × state left × outcome after recovery) in
    [`conformance/`](conformance/), run against the Python reference.
-2. **Driver check** before committing to a store in Rust: `tokio-postgres`
-   (`PREPARE TRANSACTION` is plain SQL), `neo4rs` (Bolt), the ClickHouse crate,
-   and `iceberg-rust`, whose write path is expected to be less mature than
-   pyiceberg. A store whose Rust driver is not ready stays on Python for now.
+2. ✔ **Driver check** (2026-10-12, spikes against the compose stores): every
+   step the protocol needs works in all four drivers; none stays on Python.
+
+   | Store | Crate | Verdict | Caveats for the port |
+   |---|---|---|---|
+   | PostgreSQL | `tokio-postgres` 0.7.18 | ready | gids are SQL literals in `PREPARE TRANSACTION` (quoted by hand); `SqlState` gives `42704` / `40001`; connection loss is `is_closed()` without a code |
+   | drevo (Bolt) | `neo4rs` 0.9.0-rc.10 | ready with caveats | release candidate; Bolt 4.4; the prepared fence is a `Transient` error; an unknown gid is still recognised by its message only ([ice1x/drevo#590](https://github.com/ice1x/drevo/issues/590)); no default timeout on pool checkout, and result streams hold pooled connections until dropped |
+   | ClickHouse | `clickhouse` 0.15.2 | ready with caveats | server error codes are parsed from the `Code: N.` message; journal batches need the formatted insert (`JSONEachRow`), not typed rows |
+   | Iceberg | `iceberg` 0.10.1 + REST catalog + `iceberg-storage-opendal` | ready with caveats | 0.x API; snapshot summary properties, staged Parquet writes, fast append, snapshot listing, `FileIO::delete` and uuid columns work; building a `DataFile` from a path is crate-private, so the Rust journal payload carries the `DataFile` JSON (`serialize_data_file_to_json`, column statistics kept); the commit already rejects files referenced by the table; tables written by Rust read back in pyiceberg |
+
+   Embedded drevo will use `drevo-core` directly and is checked with step 4.
 3. **`datorium-core` crate**: protocol, journal, recovery, HLC, identity, tested
    on fake stores like the Python core.
 4. **Rust adapters**: PostgreSQL, drevo (embedded through `drevo-core`, and
