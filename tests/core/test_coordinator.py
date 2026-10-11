@@ -124,6 +124,29 @@ def test_single_branch_lost_ack_is_resolved_by_asking_the_store(clock: Clock) ->
     assert world.applied(txn) == {"pg": True}
 
 
+def test_single_branch_lost_ack_check_sees_the_staged_payload(clock: Clock) -> None:
+    """A non-2PC store (Iceberg) needs its payload to know where to look."""
+    world = World()
+    store = world.store("lake", two_phase=False)
+    store.lose_commit_ack = 1
+    seen: list[bytes | None] = []
+    participant = world.participants()["lake"]
+    original = participant.is_applied
+
+    def spy(branch: object, dat_txn: uuid.UUID) -> bool:
+        seen.append(branch.payload)  # type: ignore[attr-defined]
+        return original(branch, dat_txn)  # type: ignore[arg-type]
+
+    participant.is_applied = spy  # type: ignore[method-assign]
+    txn = new_id()
+    outcome = Coordinator(
+        journal=None, participants={"lake": participant}, clock=HybridLogicalClock()
+    ).commit(txn, world.branches())
+    assert isinstance(outcome, Committed)
+    assert len(seen) == 1
+    assert seen[0] is not None
+
+
 # --- several branches: happy path --------------------------------------------------
 
 

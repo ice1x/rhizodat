@@ -24,8 +24,8 @@ purpose.
 
 > Status: v0.1 in progress. Implemented: identity, HLC, DSNs, entity mapping,
 > results, the journal, the commit coordinator and recovery, PostgreSQL, drevo
-> and ClickHouse adapters, Units of Work with retries. Not yet: repository
-> persistence of entities, Iceberg, bitemporal reads, migrations. This README is
+> ClickHouse and Iceberg adapters, Units of Work with retries. Not yet:
+> repository persistence of entities, bitemporal reads, migrations. This README is
 > the specification v0.1 is built against.
 
 ---
@@ -83,6 +83,18 @@ through datorium need `dat_txn UUID` and `dat_tx_time Int64` columns, ideally
 with a `bloom_filter` skip index on `dat_txn`; batches are JSON in the journal,
 with tagged UUID, Decimal, bytes, date and datetime values (a time zone becomes
 its UTC offset).
+
+An Iceberg branch buffers appends (`uow.store("lake").append(table, rows)`,
+mappings or a `pyarrow.Table`). Stage converts them to the table's Arrow schema,
+adds `dat_txn` and `dat_tx_time`, and writes one Parquet data file per table
+under the table's `data/` location; the journal carries the file paths, not the
+rows. After the decision each table gets one snapshot adding the files
+(`add_files`), tagged `dat.txn` / `dat.tx_time` in its summary. Tables need
+`dat_txn` (`uuid` or `string`) and `dat_tx_time` (`long`) columns. Only appends
+for now; catalogs: `iceberg+rest://` and `iceberg+sql://` (PostgreSQL or
+SQLite), Glue later. A branch over several tables commits one snapshot per
+table: atomic with the rest of the meta-transaction by roll-forward, not by a
+multi-table Iceberg commit.
 
 ---
 
@@ -329,7 +341,7 @@ commits too.
 |---|---|
 | PostgreSQL | gid absent from `pg_prepared_xacts` and a `dat_applied` marker row for `dat_txn` exists → done; gid absent and no marker → heuristic outcome, reported, never "done" |
 | drevo | `commit_prepared` on an unknown gid returns `UnknownGid` → already resolved |
-| Iceberg | a snapshot whose summary carries `dat_txn` exists → skip |
+| Iceberg | a snapshot whose summary carries `dat.txn` exists, or the current snapshot already references the staged files (the tagged snapshot may have been expired) → skip. Staged files are deleted on abort, never while a snapshot may reference them; after an ambiguous one-phase commit they are kept for orphan-file maintenance |
 | ClickHouse | an applied marker `(dat_txn, dat_tx_time)` in `dat_applied` (ReplacingMergeTree), written after every batch. Before a batch the participant counts the table's rows with this `dat_txn`: none → insert, all → skip, some (a crash left part of an insert) → lightweight `DELETE` of them and insert again. Each insert also carries `insert_deduplication_token = <gid>:<n>` for replicated tables; correctness does not depend on the dedup window |
 | Journal | a failed or timed-out `COMMITTED` write is read back; if the state cannot be read, the transaction is left to recovery, which decides from the journal once it is reachable |
 
@@ -342,8 +354,9 @@ commits too.
 | **I** | Native isolation inside each store. Across stores, readers that go through datorium filter by committed `dat_txn` and `dat_tx_time`, so they do not see half-applied meta-transactions. Direct reads that bypass datorium can. |
 | **D** | Durability of each store plus the journal; a decided transaction survives crashes of the application, the coordinator host, or a store (recovery finishes it). |
 
-Known limit: an Iceberg `overwrite`/`delete` may conflict with a concurrent
-writer after the decision. Conflicts are pre-checked at prepare; a residual
+Known limit (once `overwrite`/`delete` are supported; appends never conflict):
+an Iceberg `overwrite`/`delete` may conflict with a concurrent writer after the
+decision. Conflicts are pre-checked at prepare; a residual
 conflict is retried and, if it cannot be resolved, reported as a heuristic
 outcome for that branch.
 
@@ -454,7 +467,7 @@ Native access stays available through adapters:
 ```python
 dat.store("pg").execute("SELECT count(*) FROM orders WHERE status = %(s)s", {"s": "new"})
 dat.store("drevo").execute("MATCH (o:Order)-[:related]->(x) RETURN x LIMIT 10")
-dat.store("iceberg").scan("analytics.orders", filter="amount > 100").to_arrow()
+dat.store("iceberg").execute("analytics.orders", {"row_filter": "amount > 100"}).to_arrow()
 ```
 
 ### Adapter contracts
@@ -506,6 +519,11 @@ raises `ResultConsumedError`.
 | `iceberg+rest://…`, `iceberg+sql://…`, `iceberg+glue://…` | Iceberg | `pyiceberg` | — |
 | `file:///path` | development journal only | — | — |
 
+- Iceberg: `iceberg+rest://host:8181/<warehouse>` (`secure=true` for HTTPS);
+  `iceberg+sql://user:pass@host:5432/db?warehouse=s3://…` keeps the catalog in
+  PostgreSQL, `iceberg+sql:///abs/catalog.db?warehouse=file:///…` in SQLite.
+  Other query parameters become pyiceberg catalog properties (`s3.endpoint`,
+  `credential`, …).
 - Parsing never imports a driver. Scheme matching ignores case; user,
   password and path are percent-decoded; a repeated query parameter is an error.
 - `drevo:///` and `file:///` take a local absolute path and no host;
@@ -556,8 +574,9 @@ installed from source.
 4. ✔ Docker Compose for development and tests (below).
    ✔ ClickHouse branch: buffered rows, schema check at stage, rows in the
    journal, idempotent insert after the decision, roll-forward by recovery.
-   Next: the Iceberg branch (staged data files, snapshot commit after the
-   decision, roll-forward), with its services in compose.
+   ✔ Iceberg branch: data files written at stage, their paths in the journal,
+   one tagged snapshot per table after the decision, roll-forward by recovery,
+   staged files deleted on abort.
 5. Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
    entity parts and repository persistence.
 6. Migrations.
@@ -579,8 +598,9 @@ One `compose.yaml` runs every store the tests need, locally and in CI alike
 - ✔ healthchecks, and `.env.test` with the test DSNs;
 - ✔ ClickHouse behind the `clickhouse` profile, so a test run starts only what
   it needs;
-- an Iceberg REST catalog with object storage, behind a profile: added together
-  with its adapter;
+- Iceberg is tested on SQL catalogs (SQLite, and the compose PostgreSQL) with a
+  local warehouse; an Iceberg REST catalog with object storage behind a profile
+  is next, to test the S3 file IO path;
 - toxiproxy in front of the stores for failure tests: kill a primary between
   prepare and commit, cut the network to the journal: added with those tests.
 

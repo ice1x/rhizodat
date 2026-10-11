@@ -198,11 +198,13 @@ class Coordinator:
 
     def _commit_one_phase(self, dat_txn: uuid.UUID, branch: Branch) -> Committed:
         ts = self._clock.now().encode()
+        payload = None
         try:
-            branch.stage(dat_txn, ts)
+            payload = branch.stage(dat_txn, ts)
             branch.commit_one_phase()
         except Exception as exc:
-            record = BranchRecord(branch.store, gid_for(dat_txn, branch.store), branch.two_phase)
+            gid = gid_for(dat_txn, branch.store)
+            record = BranchRecord(branch.store, gid, branch.two_phase, payload)
             if self._applied(record, dat_txn):
                 return Committed(dat_txn, ts)
             self.rollback(dat_txn, [branch])
