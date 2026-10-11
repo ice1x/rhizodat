@@ -186,5 +186,86 @@ def test_dsn(case: dict[str, Any]) -> None:
 
 
 def test_every_vector_file_is_exercised() -> None:
-    used = {"uuid7.json", "hlc.json", "gid.json", "journal.json", "dsn.json"}
+    used = {"uuid7.json", "hlc.json", "gid.json", "journal.json", "dsn.json", "crash_matrix.json"}
     assert {p.name for p in VECTORS.glob("*.json")} == used
+
+
+# --- crash matrix ----------------------------------------------------------------------
+
+CRASH = load("crash_matrix.json")
+
+
+class _Wall:
+    def __init__(self) -> None:
+        self.ms = 1_000_000
+
+    def __call__(self) -> int:
+        return self.ms
+
+
+def steps(seen: list[str]) -> list[str]:
+    return [point for point in seen if not point.endswith(".after")]
+
+
+@pytest.mark.parametrize("case", CRASH["cases"], ids=[str(c["crash_at"]) for c in CRASH["cases"]])
+def test_crash_matrix(case: dict[str, Any]) -> None:
+    from datorium.core.coordinator import Committed, Coordinator, Recovery
+    from datorium.core.identity import new_id
+    from datorium.core.retry import Retry
+    from fakes import Crash, FaultyJournal, World
+
+    world = World()
+    for store in CRASH["stores"]:
+        world.store(store["name"], two_phase=store["two_phase"])
+    wall = _Wall()
+    journal = FaultyJournal(world.faults, wall)
+    if case["crash_at"] is not None:
+        world.faults.add(case["crash_at"], Crash())
+    txn = new_id()
+    coordinator = Coordinator(
+        journal=journal,
+        participants=world.participants(),
+        clock=HybridLogicalClock(),
+        finish=Retry(attempts=1, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0),
+        sleep=lambda s: None,
+    )
+    try:
+        result = coordinator.commit(txn, world.branches())
+        commit = "committed" if isinstance(result, Committed) else "committed_pending"
+    except Crash:
+        commit = "crashed"
+    assert commit == case["commit"]
+
+    def snapshot() -> dict[str, Any]:
+        record = journal.get(txn)
+        return {
+            "journal": record.state.value if record else None,
+            "prepared": sorted(world.leftover_prepared()),
+            "applied": sorted(s for s, done in world.applied(txn).items() if done),
+        }
+
+    assert snapshot() == case["after_crash"]
+    assert steps(world.faults.seen) == case["trace"]
+
+    world.faults.plan.clear()
+    world.faults.seen.clear()
+    wall.ms += CRASH["stale_after_ms"] + 1
+    report = Recovery(
+        journal=journal,
+        participants=world.participants(),
+        stale_after_ms=CRASH["stale_after_ms"],
+        wall_ms=wall,
+    ).run_once()
+    action = (
+        "aborted" if txn in report.aborted else "finished" if txn in report.finished else "none"
+    )
+    assert action == case["recovery"]
+    assert steps(world.faults.seen) == case["recovery_trace"]
+    after = snapshot()
+    everything = sorted(s["name"] for s in CRASH["stores"])
+    assert after["applied"] in ([], everything), "recovery must end all-or-nothing"
+    assert {
+        "journal": after["journal"],
+        "applied": "all" if after["applied"] else "none",
+        "prepared": after["prepared"],
+    } == case["after_recovery"]

@@ -1,0 +1,711 @@
+{
+  "description": "Crash matrix: one meta-transaction over pg and graph (two-phase) and clickhouse (one-phase, applied after the decision), journal required. The process dies (a BaseException, nothing is caught or rolled back) at crash_at, then one recovery run happens after stale_after_ms with every fault healed. after_crash is the state the crash leaves; after_recovery must be all-or-nothing.",
+  "stores": [
+    {
+      "name": "pg",
+      "two_phase": true
+    },
+    {
+      "name": "clickhouse",
+      "two_phase": false
+    },
+    {
+      "name": "graph",
+      "two_phase": true
+    }
+  ],
+  "fault_points": "<store>.stage | <store>.prepare[.after] | <store>.finish[.after] | journal.<STATE>[.after]: the crash happens when the coordinator is about to call (or has just returned from) that step; journal.ACTIVE is the record's creation, journal.<STATE> a compare-and-set into STATE. The coordinator finishes each branch once (no in-process retries). trace and recovery_trace list the steps reached, in order (the step that crashed included, .after points omitted): lock-free branches stage first, lock holders prepare last and finish first.",
+  "stale_after_ms": 30000,
+  "cases": [
+    {
+      "crash_at": null,
+      "commit": "committed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_crash": {
+        "journal": "DONE",
+        "prepared": [],
+        "applied": [
+          "clickhouse",
+          "graph",
+          "pg"
+        ]
+      },
+      "recovery": "none",
+      "recovery_trace": [],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "pg.stage",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage"
+      ],
+      "after_crash": {
+        "journal": null,
+        "prepared": [],
+        "applied": []
+      },
+      "recovery": "none",
+      "recovery_trace": [],
+      "after_recovery": {
+        "journal": null,
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "clickhouse.stage",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage"
+      ],
+      "after_crash": {
+        "journal": null,
+        "prepared": [],
+        "applied": []
+      },
+      "recovery": "none",
+      "recovery_trace": [],
+      "after_recovery": {
+        "journal": null,
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "graph.stage",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage"
+      ],
+      "after_crash": {
+        "journal": null,
+        "prepared": [],
+        "applied": []
+      },
+      "recovery": "none",
+      "recovery_trace": [],
+      "after_recovery": {
+        "journal": null,
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.ACTIVE",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE"
+      ],
+      "after_crash": {
+        "journal": null,
+        "prepared": [],
+        "applied": []
+      },
+      "recovery": "none",
+      "recovery_trace": [],
+      "after_recovery": {
+        "journal": null,
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.ACTIVE.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE"
+      ],
+      "after_crash": {
+        "journal": "ACTIVE",
+        "prepared": [],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "pg.prepare",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare"
+      ],
+      "after_crash": {
+        "journal": "ACTIVE",
+        "prepared": [],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "pg.prepare.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare"
+      ],
+      "after_crash": {
+        "journal": "ACTIVE",
+        "prepared": [
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "graph.prepare",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare"
+      ],
+      "after_crash": {
+        "journal": "ACTIVE",
+        "prepared": [
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "graph.prepare.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare"
+      ],
+      "after_crash": {
+        "journal": "ACTIVE",
+        "prepared": [
+          "graph",
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.PREPARED",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED"
+      ],
+      "after_crash": {
+        "journal": "ACTIVE",
+        "prepared": [
+          "graph",
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.PREPARED.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED"
+      ],
+      "after_crash": {
+        "journal": "PREPARED",
+        "prepared": [
+          "graph",
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.COMMITTED",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED"
+      ],
+      "after_crash": {
+        "journal": "PREPARED",
+        "prepared": [
+          "graph",
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "aborted",
+      "recovery_trace": [
+        "journal.ABORTED",
+        "pg.abort",
+        "clickhouse.abort",
+        "graph.abort"
+      ],
+      "after_recovery": {
+        "journal": "ABORTED",
+        "applied": "none",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.COMMITTED.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [
+          "graph",
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "pg.finish",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [
+          "graph",
+          "pg"
+        ],
+        "applied": []
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "pg.finish.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [
+          "graph"
+        ],
+        "applied": [
+          "pg"
+        ]
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "graph.finish",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish",
+        "graph.finish"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [
+          "graph"
+        ],
+        "applied": [
+          "pg"
+        ]
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "graph.finish.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish",
+        "graph.finish"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [],
+        "applied": [
+          "graph",
+          "pg"
+        ]
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "clickhouse.finish",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [],
+        "applied": [
+          "graph",
+          "pg"
+        ]
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "clickhouse.finish.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [],
+        "applied": [
+          "clickhouse",
+          "graph",
+          "pg"
+        ]
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.DONE",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_crash": {
+        "journal": "COMMITTED",
+        "prepared": [],
+        "applied": [
+          "clickhouse",
+          "graph",
+          "pg"
+        ]
+      },
+      "recovery": "finished",
+      "recovery_trace": [
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    },
+    {
+      "crash_at": "journal.DONE.after",
+      "commit": "crashed",
+      "trace": [
+        "clickhouse.stage",
+        "pg.stage",
+        "graph.stage",
+        "journal.ACTIVE",
+        "pg.prepare",
+        "graph.prepare",
+        "journal.PREPARED",
+        "journal.COMMITTED",
+        "pg.finish",
+        "graph.finish",
+        "clickhouse.finish",
+        "journal.DONE"
+      ],
+      "after_crash": {
+        "journal": "DONE",
+        "prepared": [],
+        "applied": [
+          "clickhouse",
+          "graph",
+          "pg"
+        ]
+      },
+      "recovery": "none",
+      "recovery_trace": [],
+      "after_recovery": {
+        "journal": "DONE",
+        "applied": "all",
+        "prepared": []
+      }
+    }
+  ]
+}
