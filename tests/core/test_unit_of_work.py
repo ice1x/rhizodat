@@ -425,8 +425,8 @@ def test_stores_from_connection_strings(tmp_path: object) -> None:
 
 
 def test_unsupported_store_kind_is_reported() -> None:
-    with pytest.raises(NotImplementedError, match="iceberg"):
-        Datorium(stores={"lake": "iceberg+rest://catalog.local/warehouse"})
+    with pytest.raises(NotImplementedError, match="glue"):
+        Datorium(stores={"lake": "iceberg+glue://eu-west-1/warehouse"})
 
 
 def test_store_names_are_validated() -> None:
