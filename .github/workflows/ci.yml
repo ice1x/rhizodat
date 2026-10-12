@@ -27,6 +27,25 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
 
+  rust:
+    # datorium-core: the same conformance vectors as the Python reference.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.85"]
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component clippy,rustfmt
+      - run: rustup default ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+      - if: matrix.toolchain == 'stable'
+        run: cargo fmt --check
+      - if: matrix.toolchain == 'stable'
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
   test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15

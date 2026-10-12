@@ -652,8 +652,16 @@ Steps:
    | Iceberg | `iceberg` 0.10.1 + REST catalog + `iceberg-storage-opendal` | ready with caveats | 0.x API; snapshot summary properties, staged Parquet writes, fast append, snapshot listing, `FileIO::delete` and uuid columns work; building a `DataFile` from a path is crate-private, so the Rust journal payload carries the `DataFile` JSON (`serialize_data_file_to_json`, column statistics kept); the commit already rejects files referenced by the table; tables written by Rust read back in pyiceberg |
 
    Embedded drevo will use `drevo-core` directly and is checked with step 4.
-3. **`datorium-core` crate**: protocol, journal, recovery, HLC, identity, tested
-   on fake stores like the Python core.
+3. **`datorium-core` crate** ([`crates/datorium-core`](crates/datorium-core)):
+   protocol, journal, recovery, HLC, identity, tested on fake stores like the
+   Python core.
+   ✔ Identity (UUIDv7), HLC, gids, the journal state machine and DSN parsing,
+   passing the same vectors as Python. Writing them found two gaps in the
+   reference, now fixed and pinned by new vectors: another spelling of a
+   `dat_txn` (upper case, braces, no hyphens) was taken for a datorium gid, and
+   an unbalanced IPv6 bracket in a DSN raised a bare `ValueError`.
+   Next: the journal interface with an in-memory journal, the coordinator and
+   recovery, replaying `crash_matrix.json`.
 4. **Rust adapters**: PostgreSQL, drevo (embedded through `drevo-core`, and
    Bolt), the PostgreSQL journal.
 5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
@@ -743,4 +751,13 @@ uv sync                  # dev environment
 uv run ruff check .      # lint
 uv run ruff format .     # format
 uv run mypy              # types (strict)
+```
+
+The Rust core is a Cargo workspace at the repository root (stable Rust, MSRV
+1.85); its tests include the vectors in `conformance/`:
+
+```bash
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 ```

@@ -104,7 +104,10 @@ def _is_secret(key: str) -> bool:
 
 
 def parse_dsn(raw: str) -> DSN:
-    parts = urlsplit(raw)
+    try:
+        parts = urlsplit(raw)
+    except ValueError as exc:  # an unbalanced IPv6 bracket
+        raise DSNError(f"invalid host in {_scheme_hint(raw)!r} connection string") from exc
     scheme = parts.scheme.lower()
     if scheme not in _SCHEMES or not raw.lower().startswith(f"{scheme}://"):
         supported = ", ".join(f"{s}://" for s in _SCHEMES)
