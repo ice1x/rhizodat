@@ -49,8 +49,10 @@ jobs:
       - if: matrix.toolchain == 'stable'
         run: cargo fmt --check
       - if: matrix.toolchain == 'stable'
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      # --all-features includes embedded drevo (datorium-drevo/embedded), built from the
+      # pinned drevo commit.
+      - run: cargo test --locked --all-features
 
   test:
     runs-on: ${{ matrix.os }}

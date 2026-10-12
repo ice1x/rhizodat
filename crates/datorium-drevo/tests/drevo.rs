@@ -1,11 +1,13 @@
-//! datorium-drevo against a real server: the compose `drevo` service (Bolt).
+//! datorium-drevo against real graphs: the compose `drevo` service over Bolt,
+//! and (with the `embedded` feature) the engine embedded in the test process.
+//! Every scenario runs on both.
 //!
-//! The DSN comes from `DATORIUM_TEST_DREVO_BOLT`, else from `.env.test`; one
-//! from `.env.test` whose server is not running skips the test with a hint.
-//! The tests take turns (one lock for the whole binary): a prepared branch
-//! raises drevo's fence, which rejects every other commit to the graph. Each
-//! test labels its nodes and names its stores after a fresh tag, and removes
-//! what it left.
+//! The Bolt DSN comes from `DATORIUM_TEST_DREVO_BOLT`, else from `.env.test`;
+//! one from `.env.test` whose server is not running skips the Bolt variants
+//! with a hint. Bolt tests take turns (one lock for the binary): a prepared
+//! branch raises drevo's fence, which rejects every other commit to the graph.
+//! Each test labels its nodes and names its stores after a fresh tag, and
+//! removes what it left; an embedded graph is the test's own.
 
 use std::error::Error;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -19,12 +21,11 @@ use datorium_core::dsn::parse_dsn;
 use datorium_core::gid::gid_for;
 use datorium_core::identity::IdGenerator;
 use datorium_core::journal::{BranchRecord, Journal, JournalError, State};
-use datorium_core::recovery::Recovery;
+use datorium_core::recovery::{Recovery, RecoveryReport};
 use datorium_core::store::{BoxError, Branch, Participant, Participants};
 use datorium_core::timer::TokioTimer;
-use datorium_drevo::{DrevoBranch, DrevoJournal, DrevoStore, HeuristicOutcome, is_retryable};
+use datorium_drevo::{DrevoBranch, DrevoJournal, DrevoStore, HeuristicOutcome, params};
 use datorium_postgres::{PostgresJournal, PostgresStore};
-use neo4rs::query;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
@@ -70,27 +71,62 @@ fn new_id() -> Uuid {
     IdGenerator::new().generate().unwrap()
 }
 
+/// Which graph a scenario runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Bolt,
+    #[cfg_attr(not(feature = "embedded"), allow(dead_code))]
+    Embedded,
+}
+
 struct Graph {
-    dsn: String,
+    target: Target,
+    /// The DSN another host would use (Bolt only).
+    dsn: Option<String>,
     tag: String,
     store: DrevoStore,
     txns: Vec<Uuid>,
-    _turn: MutexGuard<'static, ()>,
+    _turn: Option<MutexGuard<'static, ()>>,
 }
 
 impl Graph {
-    async fn new() -> Option<Self> {
-        let dsn = dsn("DATORIUM_TEST_DREVO_BOLT")?;
-        let turn = FENCE.lock().await;
+    async fn new(target: Target) -> Option<Self> {
         let tag = format!("RsT{}", &new_id().simple().to_string()[20..]);
-        let store = DrevoStore::new(&dsn, &format!("graph_{tag}")).unwrap();
+        let name = format!("graph_{tag}");
+        let (dsn, store, turn) = match target {
+            Target::Bolt => {
+                let dsn = dsn("DATORIUM_TEST_DREVO_BOLT")?;
+                let turn = FENCE.lock().await;
+                let store = DrevoStore::new(&dsn, &name).unwrap();
+                (Some(dsn), store, Some(turn))
+            }
+            Target::Embedded => (None, DrevoStore::new("drevo+mem://", &name).unwrap(), None),
+        };
         Some(Self {
+            target,
             dsn,
             tag,
             store,
             txns: Vec::new(),
             _turn: turn,
         })
+    }
+
+    /// The same graph as another host (Bolt) or another component of this
+    /// process (embedded: one process opens a graph once) would see it.
+    fn elsewhere(&self) -> DrevoStore {
+        match &self.dsn {
+            Some(dsn) => DrevoStore::new(dsn, self.store.name()).unwrap(),
+            None => self.store.clone(),
+        }
+    }
+
+    fn journal(&self) -> DrevoJournal {
+        let label = format!("{}J", self.tag);
+        match &self.dsn {
+            Some(dsn) => DrevoJournal::new(dsn, &label).unwrap(),
+            None => DrevoJournal::in_graph_of(&self.store, &label).unwrap(),
+        }
     }
 
     fn txn(&mut self) -> Uuid {
@@ -106,10 +142,13 @@ impl Graph {
     async fn count(&self, label: &str) -> i64 {
         let found = self
             .store
-            .read(query(&format!("MATCH (n:{label}) RETURN count(n) AS n")))
+            .read(
+                &format!("MATCH (n:{label}) RETURN count(n) AS n"),
+                params![],
+            )
             .await
             .unwrap();
-        found[0].get("n").unwrap()
+        found[0].int("n").unwrap()
     }
 
     async fn ours_prepared(&self) -> Vec<String> {
@@ -121,17 +160,18 @@ impl Graph {
 
     async fn branch_with_task(&self, title: &str) -> DrevoBranch {
         let mut branch = self.store.branch().await.unwrap();
+        let cypher = format!("CREATE (:{} {{title: $title}})", self.tag);
         branch
-            .rows(
-                query(&format!("CREATE (:{} {{title: $title}})", self.tag))
-                    .param("title", format!("{}:{title}", self.tag)),
-            )
+            .run(&cypher, params![("title", format!("{}:{title}", self.tag))])
             .await
             .unwrap();
         branch
     }
 
     async fn drop(self) {
+        if self.target == Target::Embedded {
+            return; // the graph goes with the store
+        }
         let participant = self.store.participant();
         for gid in self.ours_prepared().await {
             participant
@@ -141,37 +181,60 @@ impl Graph {
         }
         for label in [self.tag.clone(), format!("{}J", self.tag)] {
             self.store
-                .write(query(&format!("MATCH (n:{label}) DETACH DELETE n")))
+                .write(&format!("MATCH (n:{label}) DETACH DELETE n"), params![])
                 .await
                 .unwrap();
         }
         for txn in &self.txns {
-            let q = query("MATCH (m:DatApplied {dat_txn: $t}) DETACH DELETE m")
-                .param("t", txn.to_string());
-            self.store.write(q).await.unwrap();
+            let cypher = "MATCH (m:DatApplied {dat_txn: $t}) DETACH DELETE m";
+            self.store
+                .write(cypher, params![("t", txn.to_string())])
+                .await
+                .unwrap();
         }
     }
 }
 
-macro_rules! graph {
-    () => {
-        match Graph::new().await {
-            Some(g) => g,
-            None => return,
+/// Run `scenario` on Bolt and, with the `embedded` feature, on an embedded graph.
+macro_rules! on_both {
+    ($($scenario:ident),* $(,)?) => {$(
+        mod $scenario {
+            #[tokio::test(flavor = "multi_thread")]
+            async fn bolt() {
+                super::$scenario(super::Target::Bolt).await;
+            }
+
+            #[cfg(feature = "embedded")]
+            #[tokio::test(flavor = "multi_thread")]
+            async fn embedded() {
+                super::$scenario(super::Target::Embedded).await;
+            }
         }
-    };
+    )*};
 }
+
+on_both!(
+    journal_compare_and_set_and_scans,
+    journal_reads_nodes_written_by_the_python_reference,
+    prepared_branch_is_committed_by_the_participant_idempotently,
+    aborted_gid_is_gone_and_finishing_it_is_a_heuristic_outcome,
+    one_phase_commit_and_rollback_of_an_open_branch,
+    the_prepared_fence_rejects_other_writers_with_a_retryable_error,
+    a_bug_and_its_graph_link_commit_together,
+    a_crash_after_the_graph_prepared_is_presumed_aborted_elsewhere,
+    a_crash_after_the_decision_is_rolled_forward_elsewhere,
+);
 
 // --- journal ---------------------------------------------------------------------------
 
-#[tokio::test(flavor = "multi_thread")]
-async fn journal_compare_and_set_and_scans() {
-    let mut g = graph!();
+async fn journal_compare_and_set_and_scans(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
     let wall = Arc::new(std::sync::atomic::AtomicI64::new(1_000));
     let journal = {
         let wall = wall.clone();
-        DrevoJournal::new(&g.dsn, &format!("{}J", g.tag))
-            .unwrap()
+        g.journal()
             .with_wall(move || wall.load(std::sync::atomic::Ordering::SeqCst))
     };
     let txn = g.txn();
@@ -245,24 +308,27 @@ async fn journal_compare_and_set_and_scans() {
     g.drop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn journal_reads_nodes_written_by_the_python_reference() {
-    let mut g = graph!();
+async fn journal_reads_nodes_written_by_the_python_reference(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
     let label = format!("{}J", g.tag);
-    let journal = DrevoJournal::new(&g.dsn, &label).unwrap();
+    let journal = g.journal();
     let txn = g.txn();
     // What datorium.adapters.drevo.DrevoJournal writes, in Python's JSON spelling.
     let branches = format!(
         r#"[{{"store": "pg", "gid": "dat:{txn}:pg", "two_phase": true, "payload": null}}]"#
     );
-    let q = query(&format!(
+    let cypher = format!(
         "CREATE (:{label} {{title: $title, dat_txn: $t, state: 'COMMITTED', dat_tx_time: 5, branches: $b, \
          created_ms: 1, updated_ms: 2}})"
-    ))
-    .param("title", format!("{label}:{txn}"))
-    .param("t", txn.to_string())
-    .param("b", branches);
-    g.store.write(q).await.unwrap();
+    );
+    let p = params![
+        ("title", format!("{label}:{txn}")),
+        ("t", txn.to_string()),
+        ("b", branches)
+    ];
+    g.store.write(&cypher, p).await.unwrap();
     let record = journal.get(txn).await.unwrap().unwrap();
     assert_eq!(
         (record.state, record.dat_tx_time, record.updated_ms),
@@ -277,15 +343,17 @@ async fn journal_reads_nodes_written_by_the_python_reference() {
 
 // --- branch and participant ------------------------------------------------------------
 
-#[tokio::test(flavor = "multi_thread")]
-async fn prepared_branch_is_committed_by_the_participant_idempotently() {
-    let mut g = graph!();
+async fn prepared_branch_is_committed_by_the_participant_idempotently(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
     let txn = g.txn();
     let gid = g.gid(txn);
     let mut branch = g.branch_with_task("login fails").await;
     branch.stage(txn, 42).await.unwrap();
     branch.prepare(&gid).await.unwrap();
     assert_eq!(g.ours_prepared().await, std::slice::from_ref(&gid));
+    assert_eq!(g.count(&g.tag).await, 0, "prepared is invisible");
 
     let participant = g.store.participant();
     let record = BranchRecord::new(g.store.name(), &gid, true);
@@ -298,9 +366,10 @@ async fn prepared_branch_is_committed_by_the_participant_idempotently() {
     g.drop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn aborted_gid_is_gone_and_finishing_it_is_a_heuristic_outcome() {
-    let mut g = graph!();
+async fn aborted_gid_is_gone_and_finishing_it_is_a_heuristic_outcome(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
     let txn = g.txn();
     let gid = g.gid(txn);
     let mut branch = g.branch_with_task("crash on save").await;
@@ -317,9 +386,10 @@ async fn aborted_gid_is_gone_and_finishing_it_is_a_heuristic_outcome() {
     g.drop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn one_phase_commit_and_rollback_of_an_open_branch() {
-    let mut g = graph!();
+async fn one_phase_commit_and_rollback_of_an_open_branch(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
     let mut kept = g.branch_with_task("kept").await;
     kept.stage(g.txn(), 1).await.unwrap();
     kept.commit_one_phase().await.unwrap();
@@ -329,21 +399,28 @@ async fn one_phase_commit_and_rollback_of_an_open_branch() {
     g.drop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_prepared_fence_rejects_other_writers_with_a_retryable_error() {
-    let mut g = graph!();
+async fn the_prepared_fence_rejects_other_writers_with_a_retryable_error(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
     let txn = g.txn();
     let gid = g.gid(txn);
     let mut branch = g.branch_with_task("holds the fence").await;
     branch.stage(txn, 1).await.unwrap();
     branch.prepare(&gid).await.unwrap();
 
-    let writer = g
+    let started = std::time::Instant::now();
+    let err = g
         .store
-        .write(query(&format!("CREATE (:{} {{title: 'late'}})", g.tag)))
-        .await;
-    let err = writer.expect_err("the fence is up");
-    assert!(is_retryable(&err), "{err}");
+        .write(&format!("CREATE (:{} {{title: 'late'}})", g.tag), params![])
+        .await
+        .unwrap_err();
+    assert!(g.store.is_retryable(err.as_ref()), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the fence is reported, not waited on"
+    );
+    assert_eq!(g.count(&g.tag).await, 0, "reads pass the fence");
 
     g.store
         .participant()
@@ -351,10 +428,48 @@ async fn the_prepared_fence_rejects_other_writers_with_a_retryable_error() {
         .await
         .unwrap();
     g.store
-        .write(query(&format!("CREATE (:{} {{title: 'after'}})", g.tag)))
+        .write(
+            &format!("CREATE (:{} {{title: 'after'}})", g.tag),
+            params![],
+        )
         .await
         .unwrap();
     g.drop().await;
+}
+
+#[cfg(feature = "embedded")]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_embedded_prepared_transaction_survives_a_restart() {
+    let dir = std::env::temp_dir().join(format!("datorium-drevo-{}", new_id().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dsn = format!("drevo://{}", dir.join("graph.drevo").display());
+    let txn = new_id();
+    let gid = gid_for(txn, "graph");
+    {
+        let store = DrevoStore::new(&dsn, "graph").unwrap();
+        let mut branch = store.branch().await.unwrap();
+        branch
+            .run("CREATE (:Task {title: 'survives'})", params![])
+            .await
+            .unwrap();
+        branch.stage(txn, 1).await.unwrap();
+        branch.prepare(&gid).await.unwrap();
+    } // the process "dies": the graph is closed with the transaction prepared
+
+    let store = DrevoStore::new(&dsn, "graph").unwrap();
+    assert_eq!(
+        store.participant().prepared_gids().await.unwrap(),
+        std::slice::from_ref(&gid)
+    );
+    let record = BranchRecord::new("graph", &gid, true);
+    store.participant().finish(&record, txn, 1).await.unwrap();
+    let found = store
+        .read("MATCH (t:Task) RETURN count(t) AS n", params![])
+        .await
+        .unwrap();
+    assert_eq!(found[0].int("n").unwrap(), 1);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // --- a bug tracker over PostgreSQL and drevo ---------------------------------------------
@@ -398,23 +513,26 @@ struct Tracker {
 }
 
 impl Tracker {
-    async fn new() -> Option<Self> {
+    async fn new(target: Target) -> Option<Self> {
         let pg_dsn = dsn("DATORIUM_TEST_PG_DSN")?;
-        let graph = Graph::new().await?;
+        let graph = Graph::new(target).await?;
         let (admin, conn) = tokio_postgres::connect(&pg_dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
         tokio::spawn(conn);
         let schema = graph.tag.to_lowercase();
-        let bugs_schema = format!("{schema}_bugs");
         admin
             .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; CREATE SCHEMA {bugs_schema}"
+                "CREATE SCHEMA {schema}; CREATE SCHEMA {schema}_bugs"
             ))
             .await
             .unwrap();
-        let bugs = PostgresStore::new(&pg_dsn, &format!("bugs_{}", graph.tag), Some(&bugs_schema))
-            .unwrap();
+        let bugs = PostgresStore::new(
+            &pg_dsn,
+            &format!("bugs_{}", graph.tag),
+            Some(&format!("{schema}_bugs")),
+        )
+        .unwrap();
         bugs.install().await.unwrap();
         bugs.connect()
             .await
@@ -452,15 +570,15 @@ impl Tracker {
         )
     }
 
-    /// Recovery on "another host": its own connections.
-    async fn recover(&self) -> datorium_core::recovery::RecoveryReport {
+    /// Recovery with its own connections.
+    async fn recover(&self) -> RecoveryReport {
         let bugs = PostgresStore::new(
             &self.pg_dsn,
             self.bugs.name(),
             Some(&format!("{}_bugs", self.schema)),
         )
         .unwrap();
-        let graph = DrevoStore::new(&self.graph.dsn, self.graph.store.name()).unwrap();
+        let graph = self.graph.elsewhere();
         let journal = Arc::new(
             PostgresJournal::open(&self.pg_dsn, Some(&self.schema), "dat_journal")
                 .await
@@ -518,9 +636,8 @@ impl Tracker {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_bug_and_its_graph_link_commit_together() {
-    let Some(mut t) = Tracker::new().await else {
+async fn a_bug_and_its_graph_link_commit_together(target: Target) {
+    let Some(mut t) = Tracker::new(target).await else {
         return;
     };
     let txn = t.graph.txn();
@@ -539,9 +656,8 @@ async fn a_bug_and_its_graph_link_commit_together() {
     t.drop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_crash_after_the_graph_prepared_is_presumed_aborted_elsewhere() {
-    let Some(mut t) = Tracker::new().await else {
+async fn a_crash_after_the_graph_prepared_is_presumed_aborted_elsewhere(target: Target) {
+    let Some(mut t) = Tracker::new(target).await else {
         return;
     };
     let mut branches = t.bug_and_duplicate_link().await;
@@ -564,9 +680,8 @@ async fn a_crash_after_the_graph_prepared_is_presumed_aborted_elsewhere() {
     t.drop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_crash_after_the_decision_is_rolled_forward_elsewhere() {
-    let Some(mut t) = Tracker::new().await else {
+async fn a_crash_after_the_decision_is_rolled_forward_elsewhere(target: Target) {
+    let Some(mut t) = Tracker::new(target).await else {
         return;
     };
     let txn = t.graph.txn();
