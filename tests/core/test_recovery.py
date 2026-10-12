@@ -197,6 +197,20 @@ def test_unfinished_branch_stays_pending_and_alerts_when_stuck(
     assert record.state is State.COMMITTED
 
 
+def test_stuck_is_measured_from_the_start_of_the_transaction_not_the_last_change(
+    world: World, journal: FaultyJournal, wall: Wall
+) -> None:
+    world.faults.add("pg.finish", Permanent("schema mismatch"), times=1_000)
+    txn = new_id()
+    journal.begin(txn, [BranchRecord("pg", gid_for(txn, "pg"), True)])
+    wall.ms += 590_000  # a slow Unit of Work: decided long after it began
+    journal.transition(txn, State.ACTIVE, State.PREPARED, dat_tx_time=1)
+    journal.transition(txn, State.PREPARED, State.COMMITTED)
+    wall.ms += STALE_MS + 1
+    report = make_recovery(world, journal, wall, alert_after_ms=600_000).run_once()
+    assert (report.unfinished, report.stuck) == ([txn], [txn])
+
+
 def test_recovery_and_a_live_coordinator_cannot_both_decide(
     world: World, journal: FaultyJournal, wall: Wall
 ) -> None:

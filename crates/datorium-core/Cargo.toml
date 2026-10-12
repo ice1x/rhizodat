@@ -9,10 +9,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait = "0.1"
 getrandom = "0.3"
 uuid = "1"
 
 [dev-dependencies]
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+proptest = "1"
 serde_json = "1"
 
 [lints]

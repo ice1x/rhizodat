@@ -660,8 +660,16 @@ Steps:
    reference, now fixed and pinned by new vectors: another spelling of a
    `dat_txn` (upper case, braces, no hyphens) was taken for a datorium gid, and
    an unbalanced IPv6 bracket in a DSN raised a bare `ValueError`.
-   Next: the journal interface with an in-memory journal, the coordinator and
-   recovery, replaying `crash_matrix.json`.
+   ✔ The journal interface with an in-memory journal, the coordinator and
+   recovery, async and runtime-agnostic (the binding passes a `Timer`). Their
+   tests are the port of the Python ones on the same fakes, including the
+   all-or-nothing property test, and `crash_matrix.json` replays with
+   identical step traces. A crash is a panic (or a dropped future), which the
+   core never catches. The port found one more gap, fixed in both: when the
+   coordinator gave up deciding and the journal then could not be read, the
+   reference raised the driver's error instead of `InDoubt`.
+   Branches are still prepared and finished one by one, as the traces pin
+   down; parallel prepare / finish comes with the Rust adapters.
 4. **Rust adapters**: PostgreSQL, drevo (embedded through `drevo-core`, and
    Bolt), the PostgreSQL journal.
 5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the

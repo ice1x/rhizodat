@@ -287,7 +287,10 @@ class Coordinator:
         try:
             journal.transition(dat_txn, State.PREPARED, State.ABORTED)
         except JournalConflict:
-            current = journal.get(dat_txn)
+            try:
+                current = journal.get(dat_txn)
+            except Exception as read_exc:
+                raise InDoubt(dat_txn) from read_exc
             if current is not None and current.state is State.COMMITTED:
                 return current
         except Exception as exc:
