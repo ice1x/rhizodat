@@ -672,6 +672,16 @@ Steps:
    down; parallel prepare / finish comes with the Rust adapters.
 4. **Rust adapters**: PostgreSQL, drevo (embedded through `drevo-core`, and
    Bolt), the PostgreSQL journal.
+   ✔ [`crates/datorium-postgres`](crates/datorium-postgres) (tokio-postgres):
+   the two-phase store, its participant and the PostgreSQL journal, on the
+   same tables as the Python adapter. The journal's `branches` text is pinned
+   in `conformance/journal.json`, so either implementation recovers the
+   other's records. Tested against the compose PostgreSQL, including a
+   meta-transaction over two stores, a crash after prepare (presumed abort)
+   and a crash after the decision (roll-forward), both recovered by a worker
+   with its own connections. Stores must not share a schema: their branches
+   would insert the same `dat_txn` into one `dat_applied` and wait for each
+   other.
 5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
    core without changing its public API; a C ABI (cbindgen) for Go. Open
    questions to settle first: Python callbacks (`transactional` functions) into
@@ -762,7 +772,9 @@ uv run mypy              # types (strict)
 ```
 
 The Rust core is a Cargo workspace at the repository root (stable Rust, MSRV
-1.85); its tests include the vectors in `conformance/`:
+1.85); its tests include the vectors in `conformance/`, and the
+`datorium-postgres` tests use the compose PostgreSQL (skipped with a hint when
+it is not running, unless `DATORIUM_TEST_PG_DSN` is set):
 
 ```bash
 cargo test
