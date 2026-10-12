@@ -698,6 +698,20 @@ Steps:
    one drevo-py uses), with typed two-phase errors; every drevo scenario runs
    on Bolt and embedded, and a durable embedded graph keeps a prepared
    transaction across a restart. Step 4 is complete.
+
+   Beyond step 4, so that no store stays on Python:
+   ✔ [`crates/datorium-clickhouse`](crates/datorium-clickhouse) (`clickhouse`
+   crate): the one-phase branch applied after the decision, with the same
+   count / delete / reinsert idempotency, deduplication tokens and
+   `dat_applied` marker as the Python adapter. Its journal payload is the
+   shared row format, now in `datorium_core::rows` and pinned by
+   [`conformance/rows.json`](conformance/rows.json): a Python payload is
+   applied by the Rust participant and the reverse (checked both ways). Rows
+   travel as `JSONEachRow` (columns are known only at run time) with
+   `date_time_input_format = best_effort`; since JSON strings are UTF-8, a
+   bytes value must be valid UTF-8 there and anything else is refused at
+   stage. The ClickHouse crate needs Rust 1.89, now the workspace MSRV.
+   Next: Iceberg in Rust.
 5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
    core without changing its public API; a C ABI (cbindgen) for Go. Open
    questions to settle first: Python callbacks (`transactional` functions) into
@@ -788,7 +802,7 @@ uv run mypy              # types (strict)
 ```
 
 The Rust core is a Cargo workspace at the repository root (stable Rust, MSRV
-1.85); its tests include the vectors in `conformance/`, and the adapter crates'
+1.89); its tests include the vectors in `conformance/`, and the adapter crates'
 tests use the compose PostgreSQL and drevo (skipped with a hint when a store is
 not running, unless `DATORIUM_TEST_PG_DSN` / `DATORIUM_TEST_DREVO_BOLT` is set):
 

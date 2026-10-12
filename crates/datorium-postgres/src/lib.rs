@@ -340,10 +340,10 @@ impl Branch for PostgresBranch {
 
     async fn rollback(&mut self) -> Result<(), BoxError> {
         let Some(gid) = &self.gid else {
-            if let Some(client) = self.client.take() {
-                if !client.is_closed() {
-                    client.batch_execute("ROLLBACK").await?;
-                }
+            if let Some(client) = self.client.take()
+                && !client.is_closed()
+            {
+                client.batch_execute("ROLLBACK").await?;
             }
             return Ok(());
         };

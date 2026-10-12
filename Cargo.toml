@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/datorium-core", "crates/datorium-drevo", "crates/datorium-postgres"]
+members = ["crates/datorium-clickhouse", "crates/datorium-core", "crates/datorium-drevo", "crates/datorium-postgres"]
 
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ice1x/datorium"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
