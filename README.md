@@ -682,6 +682,17 @@ Steps:
    with its own connections. Stores must not share a schema: their branches
    would insert the same `dat_txn` into one `dat_applied` and wait for each
    other.
+   ✔ [`crates/datorium-drevo`](crates/datorium-drevo) (neo4rs, Bolt): the
+   two-phase graph store, its participant and the drevo journal, on the same
+   nodes as the Python adapter; tested against the compose drevo, including
+   the prepared fence and a bug tracker over PostgreSQL and drevo with crashes
+   after prepare and after the decision. neo4rs retries a failed auto-commit
+   statement on transient errors for up to 60 seconds, which would hide the
+   fence from datorium's retry policy: writes therefore run in explicit
+   transactions (never retried), while reads and the `drevo.tx.*` procedures
+   stay in auto-commit mode, since under the fence drevo rejects the commit of
+   any explicit transaction and accepts the procedures only outside one.
+   Embedded drevo (through `drevo-core`) is still to come.
 5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
    core without changing its public API; a C ABI (cbindgen) for Go. Open
    questions to settle first: Python callbacks (`transactional` functions) into
@@ -772,9 +783,9 @@ uv run mypy              # types (strict)
 ```
 
 The Rust core is a Cargo workspace at the repository root (stable Rust, MSRV
-1.85); its tests include the vectors in `conformance/`, and the
-`datorium-postgres` tests use the compose PostgreSQL (skipped with a hint when
-it is not running, unless `DATORIUM_TEST_PG_DSN` is set):
+1.85); its tests include the vectors in `conformance/`, and the adapter crates'
+tests use the compose PostgreSQL and drevo (skipped with a hint when a store is
+not running, unless `DATORIUM_TEST_PG_DSN` / `DATORIUM_TEST_DREVO_BOLT` is set):
 
 ```bash
 cargo test
