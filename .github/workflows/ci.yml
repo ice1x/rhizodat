@@ -40,12 +40,12 @@ jobs:
       - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component clippy,rustfmt
       - run: rustup default ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
-      # datorium-postgres tests run against the compose PostgreSQL; the exported DSN makes
-      # a server that is down fail the run instead of skipping.
-      - name: Start PostgreSQL
+      # The adapter crates' tests run against the compose PostgreSQL and drevo; the exported
+      # DSNs make a store that is down fail the run instead of skipping.
+      - name: Start PostgreSQL and drevo
         run: |
-          docker compose up -d --wait postgres
-          grep '^DATORIUM_TEST_PG_DSN=' .env.test >> "$GITHUB_ENV"
+          docker compose up -d --wait postgres drevo
+          grep -E '^DATORIUM_TEST_(PG_DSN|DREVO_BOLT)=' .env.test >> "$GITHUB_ENV"
       - if: matrix.toolchain == 'stable'
         run: cargo fmt --check
       - if: matrix.toolchain == 'stable'
