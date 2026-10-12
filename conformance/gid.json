@@ -1,5 +1,5 @@
 {
-  "description": "Branch global ids: dat:<dat_txn>:<store>. parse returns null for anything not produced by gid_for.",
+  "description": "Branch global ids: dat:<dat_txn>:<store>, dat_txn in the canonical lowercase hyphenated form. parse returns null for anything not produced by gid_for, including other spellings of the same UUID.",
   "gid_for": [
     {
       "dat_txn": "01920000-0000-7000-8000-000000000001",
@@ -54,6 +54,26 @@
     },
     {
       "gid": "DAT:01920000-0000-7000-8000-000000000001:pg",
+      "result": null
+    },
+    {
+      "gid": "dat:0199C82C-C000-7007-8000-00000000000A:pg",
+      "result": null
+    },
+    {
+      "gid": "dat:{01920000-0000-7000-8000-000000000001}:pg",
+      "result": null
+    },
+    {
+      "gid": "dat:01920000000070008000000000000001:pg",
+      "result": null
+    },
+    {
+      "gid": "dat:urn:uuid:01920000-0000-7000-8000-000000000001:pg",
+      "result": null
+    },
+    {
+      "gid": "dat:0192000-00000-7000-8000-000000000001:pg",
       "result": null
     }
   ]

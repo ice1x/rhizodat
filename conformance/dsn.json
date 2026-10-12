@@ -302,6 +302,145 @@
       "expect": {
         "error": true
       }
+    },
+    {
+      "raw": "postgresql://h/d\tb\n",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "h",
+        "port": 5432,
+        "user": null,
+        "password": null,
+        "path": "/db",
+        "database": "db",
+        "params": {},
+        "redacted": "postgresql://h/db"
+      }
+    },
+    {
+      "raw": "postgresql://h/db ",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "h",
+        "port": 5432,
+        "user": null,
+        "password": null,
+        "path": "/db ",
+        "database": "db ",
+        "params": {},
+        "redacted": "postgresql://h/db "
+      }
+    },
+    {
+      "raw": "postgresql://[::1]:5/x",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "::1",
+        "port": 5,
+        "user": null,
+        "password": null,
+        "path": "/x",
+        "database": "x",
+        "params": {},
+        "redacted": "postgresql://[::1]:5/x"
+      }
+    },
+    {
+      "raw": "postgresql://u:@h/x",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "h",
+        "port": 5432,
+        "user": "u",
+        "password": "",
+        "path": "/x",
+        "database": "x",
+        "params": {},
+        "redacted": "postgresql://u:***@h/x"
+      }
+    },
+    {
+      "raw": "postgresql://:p@h/x",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "h",
+        "port": 5432,
+        "user": null,
+        "password": "p",
+        "path": "/x",
+        "database": "x",
+        "params": {},
+        "redacted": "postgresql://:***@h/x"
+      }
+    },
+    {
+      "raw": "postgresql://h:/x",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "h",
+        "port": 5432,
+        "user": null,
+        "password": null,
+        "path": "/x",
+        "database": "x",
+        "params": {},
+        "redacted": "postgresql://h:/x"
+      }
+    },
+    {
+      "raw": "postgresql://a@b@h/x?k=a+b&tok=1&x",
+      "expect": {
+        "store": "postgres",
+        "transport": null,
+        "host": "h",
+        "port": 5432,
+        "user": "a@b",
+        "password": null,
+        "path": "/x",
+        "database": "x",
+        "params": {
+          "k": "a b",
+          "tok": "1",
+          "x": ""
+        },
+        "redacted": "postgresql://a@b@h/x?k=a b&tok=1&x="
+      }
+    },
+    {
+      "raw": "clickhouse://h/x?a=%zz&b=%C3%A9",
+      "expect": {
+        "store": "clickhouse",
+        "transport": null,
+        "host": "h",
+        "port": 8123,
+        "user": null,
+        "password": null,
+        "path": "/x",
+        "database": "x",
+        "params": {
+          "a": "%zz",
+          "b": "é"
+        },
+        "redacted": "clickhouse://h/x?a=%zz&b=é"
+      }
+    },
+    {
+      "raw": "postgresql://h:5x/d",
+      "expect": {
+        "error": true
+      }
+    },
+    {
+      "raw": "postgresql://[::1/x",
+      "expect": {
+        "error": true
+      }
     }
   ]
 }

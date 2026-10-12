@@ -139,16 +139,21 @@ def gid_for(dat_txn: uuid.UUID, store: str) -> str:
 
 
 def parse_gid(gid: str) -> tuple[uuid.UUID, str] | None:
-    """``(dat_txn, store)`` for a datorium gid, ``None`` for anything else."""
+    """``(dat_txn, store)`` for a datorium gid, ``None`` for anything else.
+
+    Only the spelling ``gid_for`` writes is ours: another spelling of the same
+    UUID (upper case, braces, no hyphens) is a foreign gid.
+    """
     if not gid.startswith(_GID_PREFIX):
         return None
     txn, sep, store = gid[len(_GID_PREFIX) :].partition(":")
     if not sep or not store:
         return None
     try:
-        return uuid.UUID(txn), store
+        parsed = uuid.UUID(txn)
     except ValueError:
         return None
+    return (parsed, store) if str(parsed) == txn else None
 
 
 class Coordinator:

@@ -1,0 +1,19 @@
+[package]
+name = "datorium-core"
+version = "0.0.0"
+description = "The datorium protocol core: identity, HLC, gids, journal, recovery"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+getrandom = "0.3"
+uuid = "1"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
