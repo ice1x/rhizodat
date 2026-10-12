@@ -16,7 +16,10 @@ use datorium_core::coordinator::{Coordinator, Outcome};
 use datorium_core::dsn::parse_dsn;
 use datorium_core::gid::{gid_for, parse_gid};
 use datorium_core::identity::{IdError, IdGenerator};
-use datorium_core::journal::{Journal, State, TransitionError, check_transition};
+use datorium_core::journal::{
+    BranchRecord, Journal, State, TransitionError, check_transition, decode_branches,
+    encode_branches,
+};
 use datorium_core::recovery::Recovery;
 use datorium_core::retry::Retry;
 use datorium_core::timer::NoWait;
@@ -251,6 +254,43 @@ fn journal_transitions() {
             Err(TransitionError::MissingTxTime)
         );
     }
+}
+
+#[test]
+fn journal_branches_column() {
+    for case in load("journal.json")["branches_column"].as_array().unwrap() {
+        let name = text(&case["name"]);
+        let want: Vec<BranchRecord> = case["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| BranchRecord {
+                store: text(&b["store"]).to_owned(),
+                gid: text(&b["gid"]).to_owned(),
+                two_phase: b["two_phase"].as_bool().unwrap(),
+                payload: b["payload_hex"].as_str().map(|h| {
+                    (0..h.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+                        .collect()
+                }),
+            })
+            .collect();
+        assert_eq!(
+            decode_branches(text(&case["column"])).unwrap(),
+            want,
+            "{name}"
+        );
+        assert_eq!(
+            decode_branches(&encode_branches(&want)).unwrap(),
+            want,
+            "{name}"
+        );
+    }
+    assert!(decode_branches("{}").is_err());
+    assert!(
+        decode_branches(r#"[{"store":"a","gid":"g","two_phase":false,"payload":"!"}]"#).is_err()
+    );
 }
 
 // --- DSN -------------------------------------------------------------------------------

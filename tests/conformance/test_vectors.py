@@ -22,7 +22,13 @@ from datorium.core.clock import (
 from datorium.core.coordinator import gid_for, parse_gid
 from datorium.core.dsn import DSNError, parse_dsn
 from datorium.core.identity import IdGenerator
-from datorium.core.journal import State, check_transition
+from datorium.core.journal import (
+    BranchRecord,
+    State,
+    check_transition,
+    decode_branches,
+    encode_branches,
+)
 
 VECTORS = Path(__file__).resolve().parents[2] / "conformance"
 
@@ -155,6 +161,21 @@ def test_journal_state_requires_a_transaction_time(state: str) -> None:
     edge = next(e for e in JOURNAL["transitions"] if e["to"] == state and e["legal"])
     with pytest.raises(ValueError, match="dat_tx_time"):
         check_transition(State(edge["from"]), State(state), None)
+
+
+@pytest.mark.parametrize("case", JOURNAL["branches_column"], ids=ids(JOURNAL["branches_column"]))
+def test_journal_branches_column(case: dict[str, Any]) -> None:
+    want = tuple(
+        BranchRecord(
+            b["store"],
+            b["gid"],
+            b["two_phase"],
+            None if b["payload_hex"] is None else bytes.fromhex(b["payload_hex"]),
+        )
+        for b in case["branches"]
+    )
+    assert decode_branches(case["column"]) == want
+    assert decode_branches(encode_branches(want)) == want
 
 
 # --- DSN -------------------------------------------------------------------------------

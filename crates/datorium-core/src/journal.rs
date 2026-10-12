@@ -324,6 +324,62 @@ pub trait Journal: Send + Sync {
     async fn forget(&self, dat_txn: Uuid) -> Result<(), JournalError>;
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BranchColumn {
+    store: String,
+    gid: String,
+    two_phase: bool,
+    payload: Option<String>,
+}
+
+/// The journal's `branches` column: a JSON list of `{store, gid, two_phase,
+/// payload}`, payloads base64. Every journal (and every implementation) uses
+/// this text, so records written by one are read by the others.
+#[must_use]
+pub fn encode_branches(branches: &[BranchRecord]) -> String {
+    use base64::Engine as _;
+    let column: Vec<BranchColumn> = branches
+        .iter()
+        .map(|b| BranchColumn {
+            store: b.store.clone(),
+            gid: b.gid.clone(),
+            two_phase: b.two_phase,
+            payload: b
+                .payload
+                .as_ref()
+                .map(|p| base64::engine::general_purpose::STANDARD.encode(p)),
+        })
+        .collect();
+    serde_json::to_string(&column).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// The branches in a `branches` column.
+///
+/// # Errors
+///
+/// [`JournalError::Backend`] for text that is not such a list.
+pub fn decode_branches(column: &str) -> Result<Vec<BranchRecord>, JournalError> {
+    use base64::Engine as _;
+    let parsed: Vec<BranchColumn> =
+        serde_json::from_str(column).map_err(|e| JournalError::Backend(Box::new(e)))?;
+    parsed
+        .into_iter()
+        .map(|b| {
+            let payload = b
+                .payload
+                .map(|p| base64::engine::general_purpose::STANDARD.decode(p))
+                .transpose()
+                .map_err(|e| JournalError::Backend(Box::new(e)))?;
+            Ok(BranchRecord {
+                store: b.store,
+                gid: b.gid,
+                two_phase: b.two_phase,
+                payload,
+            })
+        })
+        .collect()
+}
+
 type WallFn = dyn Fn() -> i64 + Send + Sync;
 
 /// In-process journal for tests and single-process use. Not durable.

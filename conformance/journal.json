@@ -1,5 +1,5 @@
 {
-  "description": "Journal states and the only legal compare-and-set edges. PREPARED must carry the dat_tx_time assigned at stage. ABORTED and DONE are final.",
+  "description": "Journal states and the only legal compare-and-set edges. PREPARED must carry the dat_tx_time assigned at stage. ABORTED and DONE are final. branches_column: the JSON text of the journal's branches column (a list of {store, gid, two_phase, payload}, payload base64 or null), shared by every journal so implementations read each other's records; decoding is by value, not by spelling.",
   "states": [
     "ACTIVE",
     "PREPARED",
@@ -136,5 +136,72 @@
   ],
   "requires_dat_tx_time": [
     "PREPARED"
+  ],
+  "branches_column": [
+    {
+      "name": "empty",
+      "column": "[]",
+      "branches": []
+    },
+    {
+      "name": "two-phase branch without payload",
+      "column": "[{\"store\": \"pg\", \"gid\": \"dat:01920000-0000-7000-8000-000000000001:pg\", \"two_phase\": true, \"payload\": null}]",
+      "branches": [
+        {
+          "store": "pg",
+          "gid": "dat:01920000-0000-7000-8000-000000000001:pg",
+          "two_phase": true,
+          "payload_hex": null
+        }
+      ]
+    },
+    {
+      "name": "one-phase payload is base64 of the bytes",
+      "column": "[{\"store\": \"clickhouse\", \"gid\": \"dat:01920000-0000-7000-8000-000000000001:clickhouse\", \"two_phase\": false, \"payload\": \"eyJ2IjoxfQD/\"}]",
+      "branches": [
+        {
+          "store": "clickhouse",
+          "gid": "dat:01920000-0000-7000-8000-000000000001:clickhouse",
+          "two_phase": false,
+          "payload_hex": "7b2276223a317d00ff"
+        }
+      ]
+    },
+    {
+      "name": "order is kept",
+      "column": "[{\"store\": \"graph\", \"gid\": \"dat:01920000-0000-7000-8000-000000000001:graph\", \"two_phase\": true, \"payload\": null}, {\"store\": \"lake\", \"gid\": \"dat:01920000-0000-7000-8000-000000000001:lake\", \"two_phase\": false, \"payload\": \"\"}, {\"store\": \"pg\", \"gid\": \"dat:01920000-0000-7000-8000-000000000001:pg\", \"two_phase\": true, \"payload\": null}]",
+      "branches": [
+        {
+          "store": "graph",
+          "gid": "dat:01920000-0000-7000-8000-000000000001:graph",
+          "two_phase": true,
+          "payload_hex": null
+        },
+        {
+          "store": "lake",
+          "gid": "dat:01920000-0000-7000-8000-000000000001:lake",
+          "two_phase": false,
+          "payload_hex": ""
+        },
+        {
+          "store": "pg",
+          "gid": "dat:01920000-0000-7000-8000-000000000001:pg",
+          "two_phase": true,
+          "payload_hex": null
+        }
+      ]
+    },
+    {
+      "name": "any JSON spelling decodes",
+      "column": "[{\"gid\":\"dat:01920000-0000-7000-8000-000000000001:pg\",\"payload\":null,\"store\":\"pg\",\"two_phase\":true}]",
+      "branches": [
+        {
+          "store": "pg",
+          "gid": "dat:01920000-0000-7000-8000-000000000001:pg",
+          "two_phase": true,
+          "payload_hex": null
+        }
+      ]
+    }
   ]
 }

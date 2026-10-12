@@ -34,3 +34,27 @@ impl Timer for NoWait {
 
     async fn sleep(&self, _duration: Duration) {}
 }
+
+/// The tokio runtime's clock and sleep.
+#[cfg(feature = "tokio")]
+#[derive(Debug)]
+pub struct TokioTimer(tokio::time::Instant);
+
+#[cfg(feature = "tokio")]
+impl Default for TokioTimer {
+    fn default() -> Self {
+        Self(tokio::time::Instant::now())
+    }
+}
+
+#[cfg(feature = "tokio")]
+#[async_trait]
+impl Timer for TokioTimer {
+    fn monotonic(&self) -> Duration {
+        self.0.elapsed()
+    }
+
+    async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+}

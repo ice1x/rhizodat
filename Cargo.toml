@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/datorium-core"]
+members = ["crates/datorium-core", "crates/datorium-postgres"]
 
 [workspace.package]
 edition = "2024"
