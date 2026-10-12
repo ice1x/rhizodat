@@ -670,8 +670,8 @@ Steps:
    reference raised the driver's error instead of `InDoubt`.
    Branches are still prepared and finished one by one, as the traces pin
    down; parallel prepare / finish comes with the Rust adapters.
-4. **Rust adapters**: PostgreSQL, drevo (embedded through `drevo-core`, and
-   Bolt), the PostgreSQL journal.
+4. ✔ **Rust adapters**: PostgreSQL, drevo (embedded, and Bolt), the
+   PostgreSQL journal.
    ✔ [`crates/datorium-postgres`](crates/datorium-postgres) (tokio-postgres):
    the two-phase store, its participant and the PostgreSQL journal, on the
    same tables as the Python adapter. The journal's `branches` text is pinned
@@ -691,8 +691,13 @@ Steps:
    fence from datorium's retry policy: writes therefore run in explicit
    transactions (never retried), while reads and the `drevo.tx.*` procedures
    stay in auto-commit mode, since under the fence drevo rejects the commit of
-   any explicit transaction and accepts the procedures only outside one.
-   Embedded drevo (through `drevo-core`) is still to come.
+   any explicit transaction and accepts the procedures only outside one
+   ([ice1x/drevo#608](https://github.com/ice1x/drevo/issues/608)).
+   ✔ Embedded drevo (`drevo:///path`, `drevo+mem://`) behind the crate's
+   `embedded` feature, on the native engine of the pinned drevo commit (the
+   one drevo-py uses), with typed two-phase errors; every drevo scenario runs
+   on Bolt and embedded, and a durable embedded graph keeps a prepared
+   transaction across a restart. Step 4 is complete.
 5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
    core without changing its public API; a C ABI (cbindgen) for Go. Open
    questions to settle first: Python callbacks (`transactional` functions) into

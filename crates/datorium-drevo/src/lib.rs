@@ -1,35 +1,28 @@
-//! drevo for `datorium-core` over Bolt (neo4rs), the port of the Python
-//! reference's `datorium.adapters.drevo` (its Bolt half; embedded drevo will use
-//! `drevo-core` directly).
+//! drevo for `datorium-core`, the port of the Python reference's
+//! `datorium.adapters.drevo`: over Bolt (neo4rs) or embedded in the process
+//! (the `drevo` crate's native engine, cargo feature `embedded`).
 //!
 //! - [`DrevoStore`]: one drevo graph as a store.
-//! - [`DrevoBranch`]: one Unit of Work's explicit Bolt transaction. `stage`
-//!   writes the applied marker `(:DatApplied {dat_txn, dat_tx_time})`;
-//!   `prepare` calls `drevo.tx.prepare($gid)` inside the transaction and then
-//!   commits the Bolt transaction, which the server keeps prepared.
-//! - [`DrevoParticipant`]: `drevo.tx.commitPrepared` / `rollbackPrepared` /
-//!   `listPrepared`.
+//! - [`DrevoBranch`]: one Unit of Work's transaction. `stage` writes the
+//!   applied marker `(:DatApplied {dat_txn, dat_tx_time})`; `prepare` prepares
+//!   the transaction under the gid (`drevo.tx.prepare` over Bolt).
+//! - [`DrevoParticipant`]: commit / roll back a prepared gid, list them.
 //! - [`DrevoJournal`]: one node per meta-transaction, the same nodes as the
 //!   Python journal, so either implementation recovers the other's records.
 //!
+//! DSNs: `drevo+bolt://user:pass@host:7687`, `drevo:///abs/path.drevo`
+//! (embedded, durable) and `drevo+mem://` (embedded, in memory, tests only).
+//!
 //! While a branch is prepared, drevo's fence rejects every other commit to that
-//! graph (a transient error): the journal must live in another graph than any
-//! drevo store of the same deployment.
-//!
-//! Bolt has no distinct code for an unknown gid
-//! ([ice1x/drevo#590](https://github.com/ice1x/drevo/issues/590)); the server's
-//! message is the only signal. Result streams hold a pooled connection until
-//! dropped, so every query here collects its rows first.
-//!
-//! neo4rs retries a failed `Graph::run` / `Graph::execute` on transient errors
-//! (the prepared fence among them) for up to 60 seconds, which would hide the
-//! fence from datorium's own retry policy and stall the coordinator. Writes here
-//! run in an explicit transaction instead, which neo4rs never retries (the
-//! Python driver does not retry auto-commit statements either). Reads and the
-//! `drevo.tx.*` procedures stay in auto-commit mode: under the fence drevo
-//! rejects the commit of any explicit transaction, even a read-only one, and
-//! accepts the procedures only outside one; neither waits on the fence.
+//! graph (a retryable error), even of a read-only transaction. The journal
+//! must therefore live in another graph than any drevo store of the same
+//! deployment, and reads run in auto-commit mode, which the fence lets through.
+//! Writes outside a branch run in their own explicit transaction: neo4rs
+//! retries a failed auto-commit statement on transient errors for up to 60
+//! seconds, which would hide the fence from datorium's retry policy, and it
+//! never retries explicit transactions.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -42,12 +35,197 @@ use datorium_core::journal::{
     encode_branches,
 };
 use datorium_core::store::{BoxError, Branch, Participant};
-use neo4rs::{ConfigBuilder, Graph, Neo4jClientErrorKind, Neo4jErrorKind, Query, Row, Txn, query};
 use uuid::Uuid;
+
+mod bolt;
+#[cfg(feature = "embedded")]
+mod embedded;
 
 const MARKER: &str = "CREATE (:DatApplied {dat_txn: $dat_txn, dat_tx_time: $dat_tx_time})";
 const IS_APPLIED: &str = "MATCH (m:DatApplied {dat_txn: $dat_txn}) RETURN count(m) AS n";
-const UNKNOWN_GID: &str = "no transaction is prepared as";
+
+// --- values ------------------------------------------------------------------------------
+
+/// A Cypher parameter or result value.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Value {
+    /// `NULL`
+    Null,
+    /// A boolean.
+    Bool(bool),
+    /// A 64-bit integer.
+    Int(i64),
+    /// A 64-bit float.
+    Float(f64),
+    /// A string.
+    Str(String),
+    /// A list.
+    List(Vec<Value>),
+}
+
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Value::Str(v.to_owned())
+    }
+}
+
+impl From<String> for Value {
+    fn from(v: String) -> Self {
+        Value::Str(v)
+    }
+}
+
+impl From<i64> for Value {
+    fn from(v: i64) -> Self {
+        Value::Int(v)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Value::Bool(v)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(v: f64) -> Self {
+        Value::Float(v)
+    }
+}
+
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(v: Option<T>) -> Self {
+        v.map_or(Value::Null, Into::into)
+    }
+}
+
+impl<T: Into<Value>> From<Vec<T>> for Value {
+    fn from(v: Vec<T>) -> Self {
+        Value::List(v.into_iter().map(Into::into).collect())
+    }
+}
+
+/// Named Cypher parameters.
+pub type Params = Vec<(String, Value)>;
+
+/// Build [`Params`]: `params![("id", id.to_string()), ("n", 3_i64)]`.
+#[macro_export]
+macro_rules! params {
+    ($(($name:expr, $value:expr)),* $(,)?) => {
+        vec![$(($name.to_string(), $crate::Value::from($value))),*]
+    };
+}
+
+/// A column the row does not have, or a value of another type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnError(String);
+
+impl fmt::Display for ColumnError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for ColumnError {}
+
+/// One result row, by column name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Row(pub BTreeMap<String, Value>);
+
+impl Row {
+    /// The value of `column`, `NULL` when the row has none.
+    #[must_use]
+    pub fn value(&self, column: &str) -> &Value {
+        self.0.get(column).unwrap_or(&Value::Null)
+    }
+
+    /// `column` as a string.
+    ///
+    /// # Errors
+    ///
+    /// [`ColumnError`] when it is missing or not a string.
+    pub fn str(&self, column: &str) -> Result<&str, ColumnError> {
+        match self.value(column) {
+            Value::Str(s) => Ok(s),
+            other => Err(ColumnError(format!(
+                "column {column:?} is not a string: {other:?}"
+            ))),
+        }
+    }
+
+    /// `column` as an integer, `None` for `NULL`.
+    ///
+    /// # Errors
+    ///
+    /// [`ColumnError`] for a value of another type.
+    pub fn opt_int(&self, column: &str) -> Result<Option<i64>, ColumnError> {
+        match self.value(column) {
+            Value::Int(n) => Ok(Some(*n)),
+            Value::Null => Ok(None),
+            other => Err(ColumnError(format!(
+                "column {column:?} is not an integer: {other:?}"
+            ))),
+        }
+    }
+
+    /// `column` as an integer.
+    ///
+    /// # Errors
+    ///
+    /// [`ColumnError`] when it is missing or not an integer.
+    pub fn int(&self, column: &str) -> Result<i64, ColumnError> {
+        self.opt_int(column)?
+            .ok_or_else(|| ColumnError(format!("column {column:?} is NULL")))
+    }
+}
+
+// --- backends ----------------------------------------------------------------------------
+
+/// How one prepared gid was resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolved {
+    Done,
+    /// No transaction is prepared under this gid (never prepared, or already resolved).
+    UnknownGid,
+}
+
+/// One graph: Bolt or embedded.
+#[async_trait]
+trait Backend: Send + Sync {
+    /// A read (or a `drevo.tx.*` call over Bolt) in auto-commit mode.
+    async fn read(&self, cypher: &str, params: Params) -> Result<Vec<Row>, BoxError>;
+    /// An explicit transaction.
+    async fn begin(&self) -> Result<Box<dyn Tx>, BoxError>;
+    /// Commit (`true`) or roll back a prepared gid.
+    async fn resolve(&self, commit: bool, gid: &str) -> Result<Resolved, BoxError>;
+    async fn list_prepared(&self) -> Result<Vec<String>, BoxError>;
+    fn is_retryable(&self, error: &(dyn Error + 'static)) -> bool;
+}
+
+#[async_trait]
+trait Tx: Send {
+    async fn run(&mut self, cypher: &str, params: Params) -> Result<Vec<Row>, BoxError>;
+    /// Prepare under `gid`; the transaction is closed either way.
+    async fn prepare(self: Box<Self>, gid: &str) -> Result<(), BoxError>;
+    async fn commit(self: Box<Self>) -> Result<(), BoxError>;
+    async fn rollback(self: Box<Self>) -> Result<(), BoxError>;
+}
+
+/// A write in its own explicit transaction: committed once, never retried.
+async fn write(backend: &dyn Backend, cypher: &str, params: Params) -> Result<Vec<Row>, BoxError> {
+    let mut tx = backend.begin().await?;
+    match tx.run(cypher, params).await {
+        Ok(found) => {
+            tx.commit().await?;
+            Ok(found)
+        }
+        Err(e) => {
+            tx.rollback().await.ok();
+            Err(e)
+        }
+    }
+}
 
 /// A setting the adapter refuses before connecting.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,101 +258,60 @@ impl fmt::Display for HeuristicOutcome {
 
 impl Error for HeuristicOutcome {}
 
-/// The prepared fence, lost connections and other transient server errors;
-/// never Cypher or constraint errors.
-#[must_use]
-pub fn is_retryable(error: &(dyn Error + 'static)) -> bool {
-    let Some(error) = error.downcast_ref::<neo4rs::Error>() else {
-        return error.is::<std::io::Error>();
-    };
-    match error {
-        neo4rs::Error::Neo4j(e) => matches!(
-            e.kind(),
-            Neo4jErrorKind::Transient
-                | Neo4jErrorKind::Client(Neo4jClientErrorKind::SessionExpired)
-        ),
-        neo4rs::Error::IOError { .. }
-        | neo4rs::Error::ConnectionError
-        | neo4rs::Error::ConnectionTimedOut
-        | neo4rs::Error::ServerUnavailableError(_)
-        | neo4rs::Error::RequestIgnoredError => true,
-        _ => false,
-    }
-}
-
-fn is_unknown_gid(error: &neo4rs::Error) -> bool {
-    matches!(error, neo4rs::Error::Neo4j(e) if e.message().contains(UNKNOWN_GID))
-}
-
 /// Which graph a DSN names, to keep the journal off every store's graph:
-/// `("bolt", host, port)`.
+/// `["bolt", host, port]` or `["embedded", path]`; `None` for `drevo+mem://`,
+/// which is always a graph of its own.
 ///
 /// # Errors
 ///
-/// [`ConfigError`] for anything but a `drevo+bolt://` DSN.
-pub fn graph_location(dsn: &str) -> Result<(String, String, u16), ConfigError> {
+/// [`ConfigError`] for a DSN of another store.
+pub fn graph_location(dsn: &str) -> Result<Option<Vec<String>>, ConfigError> {
     let parsed = parse_dsn(dsn).map_err(|e| ConfigError(e.to_string()))?;
-    if parsed.store() != "drevo" || parsed.transport() != Some("bolt") {
+    if parsed.store() != "drevo" {
         return Err(ConfigError(format!(
-            "not a drevo+bolt:// connection string: {parsed}"
+            "not a drevo connection string: {parsed}"
         )));
     }
-    let host = parsed.host().unwrap_or_default().to_owned();
-    Ok(("bolt".to_owned(), host, parsed.port().unwrap_or(7687)))
+    Ok(match parsed.transport() {
+        Some("bolt") => Some(vec![
+            "bolt".into(),
+            parsed.host().unwrap_or_default().into(),
+            parsed.port().unwrap_or(7687).to_string(),
+        ]),
+        Some("embedded") => Some(vec![
+            "embedded".into(),
+            parsed.path().unwrap_or_default().into(),
+        ]),
+        _ => None,
+    })
 }
 
-fn connect(dsn: &str) -> Result<Graph, ConfigError> {
+fn open_backend(dsn: &str) -> Result<Arc<dyn Backend>, ConfigError> {
     let parsed = parse_dsn(dsn).map_err(|e| ConfigError(e.to_string()))?;
-    let (_, host, port) = graph_location(dsn)?;
-    let config = ConfigBuilder::new()
-        .uri(format!("bolt://{host}:{port}"))
-        .user(parsed.user().unwrap_or_default())
-        .password(parsed.password().unwrap_or_default())
-        .build()
-        .map_err(|_| ConfigError(format!("invalid drevo connection string: {parsed}")))?;
-    Graph::connect(config)
-        .map_err(|_| ConfigError(format!("invalid drevo connection string: {parsed}")))
-}
-
-/// A read or a `drevo.tx.*` procedure, in auto-commit mode.
-async fn read(graph: &Graph, q: Query) -> Result<Vec<Row>, neo4rs::Error> {
-    let mut stream = graph.execute(q).await?;
-    let mut out = Vec::new();
-    while let Some(row) = stream.next().await? {
-        out.push(row);
+    if parsed.store() != "drevo" {
+        return Err(ConfigError(format!(
+            "not a drevo connection string: {parsed}"
+        )));
     }
-    Ok(out) // the stream (and its pooled connection) is released here
-}
-
-/// A write in its own explicit transaction: committed once, never retried.
-async fn write(graph: &Graph, q: Query) -> Result<Vec<Row>, neo4rs::Error> {
-    let mut txn = graph.start_txn().await?;
-    match txn_rows(&mut txn, q).await {
-        Ok(found) => {
-            txn.commit().await?;
-            Ok(found)
-        }
-        Err(e) => {
-            txn.rollback().await.ok();
-            Err(e)
-        }
+    match parsed.transport() {
+        Some("bolt") => Ok(Arc::new(bolt::Bolt::connect(&parsed)?)),
+        #[cfg(feature = "embedded")]
+        Some("embedded") => Ok(Arc::new(embedded::Embedded::open(parsed.path())?)),
+        #[cfg(feature = "embedded")]
+        Some("memory") => Ok(Arc::new(embedded::Embedded::open(None)?)),
+        _ => Err(ConfigError(format!(
+            "{parsed}: embedded drevo needs datorium-drevo built with the `embedded` feature"
+        ))),
     }
 }
 
-async fn txn_rows(txn: &mut Txn, q: Query) -> Result<Vec<Row>, neo4rs::Error> {
-    let mut stream = txn.execute(q).await?;
-    let mut out = Vec::new();
-    while let Some(row) = stream.next(txn.handle()).await? {
-        out.push(row);
-    }
-    Ok(out)
-}
+// --- store, branch, participant ------------------------------------------------------------
 
-/// One drevo graph (over Bolt) as a datorium store.
+/// One drevo graph as a datorium store.
 #[derive(Clone)]
 pub struct DrevoStore {
     name: String,
-    graph: Graph,
+    backend: Arc<dyn Backend>,
     participant: Arc<DrevoParticipant>,
 }
 
@@ -187,19 +324,21 @@ impl fmt::Debug for DrevoStore {
 }
 
 impl DrevoStore {
-    /// A store named `name` over a `drevo+bolt://` DSN.
+    /// A store named `name` over a drevo DSN. An embedded graph is opened here;
+    /// clone the store (not the DSN) to share it within the process.
     ///
     /// # Errors
     ///
-    /// [`ConfigError`] for another kind of DSN.
+    /// [`ConfigError`] for another kind of DSN, or an embedded one that cannot
+    /// be opened (or without the `embedded` feature).
     pub fn new(dsn: &str, name: &str) -> Result<Self, ConfigError> {
-        let graph = connect(dsn)?;
+        let backend = open_backend(dsn)?;
         let participant = Arc::new(DrevoParticipant {
-            graph: graph.clone(),
+            backend: backend.clone(),
         });
         Ok(Self {
             name: name.to_owned(),
-            graph,
+            backend,
             participant,
         })
     }
@@ -210,37 +349,44 @@ impl DrevoStore {
         &self.name
     }
 
-    /// Native read access in auto-commit mode, outside any meta-transaction.
+    /// A native read in auto-commit mode, outside any meta-transaction.
     ///
     /// # Errors
     ///
-    /// The driver's error.
-    pub async fn read(&self, q: Query) -> Result<Vec<Row>, neo4rs::Error> {
-        read(&self.graph, q).await
+    /// The engine's error.
+    pub async fn read(&self, cypher: &str, params: Params) -> Result<Vec<Row>, BoxError> {
+        self.backend.read(cypher, params).await
     }
 
     /// A native write in its own transaction, outside any meta-transaction.
-    /// While a branch of this graph is prepared it fails with a transient
+    /// While a branch of this graph is prepared it fails with a retryable
     /// error (the fence) instead of waiting.
     ///
     /// # Errors
     ///
-    /// The driver's error.
-    pub async fn write(&self, q: Query) -> Result<Vec<Row>, neo4rs::Error> {
-        write(&self.graph, q).await
+    /// The engine's error.
+    pub async fn write(&self, cypher: &str, params: Params) -> Result<Vec<Row>, BoxError> {
+        write(self.backend.as_ref(), cypher, params).await
     }
 
-    /// A new branch with an open explicit transaction.
+    /// Whether `error` (from this store) may go away on a retry: the fence,
+    /// write conflicts, lost connections.
+    #[must_use]
+    pub fn is_retryable(&self, error: &(dyn Error + 'static)) -> bool {
+        self.backend.is_retryable(error)
+    }
+
+    /// A new branch with an open transaction.
     ///
     /// # Errors
     ///
-    /// The driver's error when no transaction can be started.
-    pub async fn branch(&self) -> Result<DrevoBranch, neo4rs::Error> {
-        let txn = self.graph.start_txn().await?;
+    /// The engine's error when no transaction can be started.
+    pub async fn branch(&self) -> Result<DrevoBranch, BoxError> {
+        let tx = self.backend.begin().await?;
         Ok(DrevoBranch {
             store: self.name.clone(),
-            graph: self.graph.clone(),
-            txn: Some(txn),
+            backend: self.backend.clone(),
+            tx: Some(tx),
             gid: None,
         })
     }
@@ -252,11 +398,11 @@ impl DrevoStore {
     }
 }
 
-/// One Unit of Work's explicit transaction in a drevo graph.
+/// One Unit of Work's transaction in a drevo graph.
 pub struct DrevoBranch {
     store: String,
-    graph: Graph,
-    txn: Option<Txn>,
+    backend: Arc<dyn Backend>,
+    tx: Option<Box<dyn Tx>>,
     gid: Option<String>,
 }
 
@@ -269,10 +415,9 @@ impl DrevoBranch {
     ///
     /// # Errors
     ///
-    /// The driver's error, or when the branch is no longer open.
-    pub async fn rows(&mut self, q: Query) -> Result<Vec<Row>, BoxError> {
-        let txn = self.txn.as_mut().ok_or_else(gone)?;
-        Ok(txn_rows(txn, q).await?)
+    /// The engine's error, or when the branch is no longer open.
+    pub async fn run(&mut self, cypher: &str, params: Params) -> Result<Vec<Row>, BoxError> {
+        self.tx.as_mut().ok_or_else(gone)?.run(cypher, params).await
     }
 }
 
@@ -291,63 +436,45 @@ impl Branch for DrevoBranch {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<Option<Vec<u8>>, BoxError> {
-        let txn = self.txn.as_mut().ok_or_else(gone)?;
-        txn.run(
-            query(MARKER)
-                .param("dat_txn", dat_txn.to_string())
-                .param("dat_tx_time", dat_tx_time),
+        self.run(
+            MARKER,
+            params![
+                ("dat_txn", dat_txn.to_string()),
+                ("dat_tx_time", dat_tx_time)
+            ],
         )
         .await?;
         Ok(None)
     }
 
     async fn prepare(&mut self, gid: &str) -> Result<(), BoxError> {
-        let mut txn = self.txn.take().ok_or_else(gone)?;
-        txn.run(query("CALL drevo.tx.prepare($gid)").param("gid", gid))
-            .await?;
-        txn.commit().await?; // closes the Bolt transaction; the server keeps it prepared
+        self.tx.take().ok_or_else(gone)?.prepare(gid).await?;
         self.gid = Some(gid.to_owned());
         Ok(())
     }
 
     async fn commit_one_phase(&mut self) -> Result<(), BoxError> {
-        let txn = self.txn.take().ok_or_else(gone)?;
-        txn.commit().await?;
-        Ok(())
+        self.tx.take().ok_or_else(gone)?.commit().await
     }
 
     async fn rollback(&mut self) -> Result<(), BoxError> {
-        if let Some(txn) = self.txn.take() {
-            txn.rollback().await?;
-            return Ok(());
+        if let Some(tx) = self.tx.take() {
+            return tx.rollback().await;
         }
-        let Some(gid) = &self.gid else {
-            return Ok(());
-        };
-        resolve(&self.graph, "rollbackPrepared", gid).await
+        if let Some(gid) = &self.gid {
+            self.backend.resolve(false, gid).await?; // an unknown gid is already resolved
+        }
+        Ok(())
     }
 
     fn is_retryable(&self, error: &(dyn Error + 'static)) -> bool {
-        is_retryable(error)
-    }
-}
-
-/// `drevo.tx.<procedure>($gid)`; an unknown gid is already resolved.
-async fn resolve(graph: &Graph, name: &str, gid: &str) -> Result<(), BoxError> {
-    match read(
-        graph,
-        query(&format!("CALL drevo.tx.{name}($gid)")).param("gid", gid),
-    )
-    .await
-    {
-        Err(e) if !is_unknown_gid(&e) => Err(e.into()),
-        _ => Ok(()),
+        self.backend.is_retryable(error)
     }
 }
 
 /// Resolves prepared gids of one drevo graph.
 pub struct DrevoParticipant {
-    graph: Graph,
+    backend: Arc<dyn Backend>,
 }
 
 impl fmt::Debug for DrevoParticipant {
@@ -364,48 +491,37 @@ impl Participant for DrevoParticipant {
         dat_txn: Uuid,
         _dat_tx_time: i64,
     ) -> Result<(), BoxError> {
-        let q = query("CALL drevo.tx.commitPrepared($gid)").param("gid", branch.gid.as_str());
-        match read(&self.graph, q).await {
-            Ok(_) => Ok(()),
-            Err(e) if is_unknown_gid(&e) => {
-                if self.is_applied(branch, dat_txn).await? {
-                    Ok(())
-                } else {
-                    Err(Box::new(HeuristicOutcome {
-                        gid: branch.gid.clone(),
-                    }))
-                }
-            }
-            Err(e) => Err(e.into()),
+        match self.backend.resolve(true, &branch.gid).await? {
+            Resolved::Done => Ok(()),
+            Resolved::UnknownGid if self.is_applied(branch, dat_txn).await? => Ok(()),
+            Resolved::UnknownGid => Err(Box::new(HeuristicOutcome {
+                gid: branch.gid.clone(),
+            })),
         }
     }
 
     async fn is_applied(&self, _branch: &BranchRecord, dat_txn: Uuid) -> Result<bool, BoxError> {
-        let found = read(
-            &self.graph,
-            query(IS_APPLIED).param("dat_txn", dat_txn.to_string()),
-        )
-        .await?;
-        let n: i64 = found.first().map(|r| r.get("n")).transpose()?.unwrap_or(0);
-        Ok(n > 0)
+        let found = self
+            .backend
+            .read(IS_APPLIED, params![("dat_txn", dat_txn.to_string())])
+            .await?;
+        Ok(found.first().map(|r| r.int("n")).transpose()?.unwrap_or(0) > 0)
     }
 
     async fn abort(&self, branch: &BranchRecord) -> Result<(), BoxError> {
-        resolve(&self.graph, "rollbackPrepared", &branch.gid).await
+        self.backend.resolve(false, &branch.gid).await.map(|_| ())
     }
 
     async fn prepared_gids(&self) -> Result<Vec<String>, BoxError> {
-        let found = read(&self.graph, query("CALL drevo.tx.listPrepared()")).await?;
-        Ok(found
-            .iter()
-            .map(|r| r.get::<String>("gid"))
-            .collect::<Result<_, _>>()?)
+        self.backend.list_prepared().await
     }
 
     fn is_retryable(&self, error: &(dyn Error + 'static)) -> bool {
-        is_retryable(error)
+        self.backend.is_retryable(error)
     }
 }
+
+// --- journal -----------------------------------------------------------------------------
 
 type WallFn = dyn Fn() -> i64 + Send + Sync;
 
@@ -420,7 +536,7 @@ const FIELDS: &str = "j.dat_txn AS dat_txn, j.state AS state, j.dat_tx_time AS d
 /// is one drevo transaction: of two concurrent writers of the same node, drevo
 /// rejects the second commit, which surfaces as a conflict.
 pub struct DrevoJournal {
-    graph: Graph,
+    backend: Arc<dyn Backend>,
     label: String,
     wall_ms: Box<WallFn>,
 }
@@ -433,7 +549,7 @@ impl fmt::Debug for DrevoJournal {
     }
 }
 
-fn backend(e: impl Into<BoxError>) -> JournalError {
+fn backend_error(e: impl Into<BoxError>) -> JournalError {
     JournalError::Backend(e.into())
 }
 
@@ -459,11 +575,26 @@ impl DrevoJournal {
     /// [`ConfigError`] for a bad label or DSN.
     pub fn new(dsn: &str, label: &str) -> Result<Self, ConfigError> {
         check_label(label)?;
-        Ok(Self {
-            graph: connect(dsn)?,
+        Ok(Self::over(open_backend(dsn)?, label))
+    }
+
+    /// The journal in the graph `store` opened (for an embedded graph, which
+    /// one process opens once). The graph must hold no store's data.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError`] for a bad label.
+    pub fn in_graph_of(store: &DrevoStore, label: &str) -> Result<Self, ConfigError> {
+        check_label(label)?;
+        Ok(Self::over(store.backend.clone(), label))
+    }
+
+    fn over(backend: Arc<dyn Backend>, label: &str) -> Self {
+        Self {
+            backend,
             label: label.to_owned(),
             wall_ms: Box::new(system_ms),
-        })
+        }
     }
 
     /// An injected wall clock (Unix ms) for `created_ms` / `updated_ms`.
@@ -474,43 +605,19 @@ impl DrevoJournal {
     }
 
     fn record(row: &Row) -> Result<JournalRecord, JournalError> {
-        let txn: String = row.get("dat_txn").map_err(backend)?;
-        let state: String = row.get("state").map_err(backend)?;
-        let branches: String = row.get("branches").map_err(backend)?;
         Ok(JournalRecord {
-            dat_txn: Uuid::parse_str(&txn).map_err(backend)?,
-            state: state.parse().map_err(backend)?,
-            dat_tx_time: row.get::<Option<i64>>("dat_tx_time").map_err(backend)?,
-            branches: decode_branches(&branches)?,
-            created_ms: row.get("created_ms").map_err(backend)?,
-            updated_ms: row.get("updated_ms").map_err(backend)?,
+            dat_txn: Uuid::parse_str(row.str("dat_txn").map_err(backend_error)?)
+                .map_err(backend_error)?,
+            state: row
+                .str("state")
+                .map_err(backend_error)?
+                .parse()
+                .map_err(backend_error)?,
+            dat_tx_time: row.opt_int("dat_tx_time").map_err(backend_error)?,
+            branches: decode_branches(row.str("branches").map_err(backend_error)?)?,
+            created_ms: row.int("created_ms").map_err(backend_error)?,
+            updated_ms: row.int("updated_ms").map_err(backend_error)?,
         })
-    }
-
-    async fn create(
-        &self,
-        dat_txn: Uuid,
-        branches: &[BranchRecord],
-        now: i64,
-    ) -> Result<(), neo4rs::Error> {
-        let mut txn = self.graph.start_txn().await?;
-        let q = query(&format!(
-            "CREATE (j:{} {{title: $title, dat_txn: $t, state: $state, branches: $branches, \
-             created_ms: $now, updated_ms: $now}})",
-            self.label
-        ))
-        .param("title", format!("{}:{dat_txn}", self.label))
-        .param("t", dat_txn.to_string())
-        .param("state", State::Active.as_str())
-        .param("branches", encode_branches(branches))
-        .param("now", now);
-        match txn.run(q).await {
-            Ok(()) => txn.commit().await,
-            Err(e) => {
-                txn.rollback().await.ok();
-                Err(e)
-            }
-        }
     }
 
     async fn compare_and_set(
@@ -519,39 +626,39 @@ impl DrevoJournal {
         expected: State,
         new: State,
         dat_tx_time: Option<i64>,
-    ) -> Result<Option<JournalRecord>, neo4rs::Error> {
+    ) -> Result<Option<JournalRecord>, BoxError> {
         let time_clause = if dat_tx_time.is_some() {
             ", j.dat_tx_time = $ts"
         } else {
             ""
         };
-        let mut q = query(&format!(
+        let cypher = format!(
             "MATCH (j:{} {{dat_txn: $t}}) WHERE j.state = $expected \
              SET j.state = $new, j.updated_ms = $now{time_clause} RETURN {FIELDS}",
             self.label
-        ))
-        .param("t", dat_txn.to_string())
-        .param("expected", expected.as_str())
-        .param("new", new.as_str())
-        .param("now", (self.wall_ms)());
-        if let Some(ts) = dat_tx_time {
-            q = q.param("ts", ts);
-        }
-        let mut txn = self.graph.start_txn().await?;
-        let found = match txn_rows(&mut txn, q).await {
+        );
+        let params = params![
+            ("t", dat_txn.to_string()),
+            ("expected", expected.as_str()),
+            ("new", new.as_str()),
+            ("now", (self.wall_ms)()),
+            ("ts", dat_tx_time),
+        ];
+        let mut tx = self.backend.begin().await?;
+        let found = match tx.run(&cypher, params).await {
             Ok(found) => found,
             Err(e) => {
-                txn.rollback().await.ok();
+                tx.rollback().await.ok();
                 return Err(e);
             }
         };
         let Some(row) = found.first() else {
-            txn.rollback().await?;
+            tx.rollback().await?;
             return Ok(None);
         };
-        let record = Self::record(row).ok();
-        txn.commit().await?;
-        Ok(record)
+        let record = Self::record(row).map_err(|e| -> BoxError { Box::new(e) });
+        tx.commit().await?;
+        record.map(Some)
     }
 }
 
@@ -566,11 +673,23 @@ impl Journal for DrevoJournal {
         if self.get(dat_txn).await?.is_some() {
             return Err(JournalError::AlreadyJournaled(dat_txn));
         }
-        if let Err(e) = self.create(dat_txn, branches, now).await {
+        let cypher = format!(
+            "CREATE (j:{} {{title: $title, dat_txn: $t, state: $state, branches: $branches, \
+             created_ms: $now, updated_ms: $now}})",
+            self.label
+        );
+        let params = params![
+            ("title", format!("{}:{dat_txn}", self.label)),
+            ("t", dat_txn.to_string()),
+            ("state", State::Active.as_str()),
+            ("branches", encode_branches(branches)),
+            ("now", now),
+        ];
+        if let Err(e) = write(self.backend.as_ref(), &cypher, params).await {
             if self.get(dat_txn).await?.is_some() {
                 return Err(JournalError::AlreadyJournaled(dat_txn)); // lost a race on the title
             }
-            return Err(backend(e));
+            return Err(backend_error(e));
         }
         Ok(JournalRecord {
             dat_txn,
@@ -597,8 +716,8 @@ impl Journal for DrevoJournal {
             Ok(Some(record)) => return Ok(record),
             Ok(None) => {}
             // A concurrent writer committed first: report what it left.
-            Err(e) if is_retryable(&e) => {}
-            Err(e) => return Err(backend(e)),
+            Err(e) if self.backend.is_retryable(e.as_ref()) => {}
+            Err(e) => return Err(JournalError::Backend(e)),
         }
         let actual = self.get(dat_txn).await?.map(|r| r.state);
         Err(JournalError::Conflict {
@@ -609,13 +728,16 @@ impl Journal for DrevoJournal {
     }
 
     async fn get(&self, dat_txn: Uuid) -> Result<Option<JournalRecord>, JournalError> {
-        let q = query(&format!(
-            "MATCH (j:{} {{dat_txn: $t}}) RETURN {FIELDS}",
-            self.label
-        ))
-        .param("t", dat_txn.to_string());
-        let found = read(&self.graph, q).await.map_err(backend)?;
-        found.first().map(Self::record).transpose()
+        let cypher = format!("MATCH (j:{} {{dat_txn: $t}}) RETURN {FIELDS}", self.label);
+        let found = self
+            .backend
+            .read(&cypher, params![("t", dat_txn.to_string())])
+            .await;
+        found
+            .map_err(JournalError::Backend)?
+            .first()
+            .map(Self::record)
+            .transpose()
     }
 
     async fn pending(
@@ -623,19 +745,24 @@ impl Journal for DrevoJournal {
         updated_before_ms: i64,
         limit: Option<usize>,
     ) -> Result<Vec<JournalRecord>, JournalError> {
-        let mut text = format!(
+        let mut cypher = format!(
             "MATCH (j:{}) WHERE j.state IN ['ACTIVE', 'PREPARED', 'COMMITTED'] AND j.updated_ms < $cut \
              RETURN {FIELDS} ORDER BY updated_ms, created_ms",
             self.label
         );
         if let Some(limit) = limit {
-            text += " LIMIT ";
-            text += &limit.to_string();
+            cypher += " LIMIT ";
+            cypher += &limit.to_string();
         }
-        let found = read(&self.graph, query(&text).param("cut", updated_before_ms))
-            .await
-            .map_err(backend)?;
-        found.iter().map(Self::record).collect()
+        let found = self
+            .backend
+            .read(&cypher, params![("cut", updated_before_ms)])
+            .await;
+        found
+            .map_err(JournalError::Backend)?
+            .iter()
+            .map(Self::record)
+            .collect()
     }
 
     async fn forget(&self, dat_txn: Uuid) -> Result<(), JournalError> {
@@ -646,12 +773,17 @@ impl Journal for DrevoJournal {
                 state: r.state,
             }),
             Some(_) => {
-                let q = query(&format!(
+                let cypher = format!(
                     "MATCH (j:{} {{dat_txn: $t}}) WHERE j.state IN ['ABORTED', 'DONE'] DETACH DELETE j",
                     self.label
-                ))
-                .param("t", dat_txn.to_string());
-                write(&self.graph, q).await.map_err(backend)?;
+                );
+                write(
+                    self.backend.as_ref(),
+                    &cypher,
+                    params![("t", dat_txn.to_string())],
+                )
+                .await
+                .map_err(JournalError::Backend)?;
                 Ok(())
             }
         }
@@ -663,15 +795,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_bolt_dsns_name_a_graph() {
+    fn graphs_are_located_by_dsn() {
         assert_eq!(
             graph_location("drevo+bolt://u:p@Graph.Local:7000").unwrap(),
-            ("bolt".into(), "graph.local".into(), 7000)
+            Some(vec!["bolt".into(), "graph.local".into(), "7000".into()])
         );
-        assert_eq!(graph_location("drevo+bolt://g").unwrap().2, 7687);
-        for dsn in ["drevo:///x.drevo", "drevo+mem://", "postgresql://h/d"] {
-            assert!(graph_location(dsn).is_err(), "{dsn}");
-        }
+        assert_eq!(
+            graph_location("drevo+bolt://g").unwrap().unwrap()[2],
+            "7687"
+        );
+        assert_eq!(
+            graph_location("drevo:///var/g.drevo").unwrap(),
+            Some(vec!["embedded".into(), "/var/g.drevo".into()])
+        );
+        assert_eq!(graph_location("drevo+mem://").unwrap(), None);
+        assert!(graph_location("postgresql://h/d").is_err());
         let err = graph_location("mysql://u:hunter2@h/d").unwrap_err();
         assert!(!err.to_string().contains("hunter2"));
     }
@@ -685,10 +823,30 @@ mod tests {
     }
 
     #[test]
-    fn io_errors_are_retryable_and_config_errors_are_not() {
-        assert!(is_retryable(&std::io::Error::other("reset")));
-        assert!(!is_retryable(&ConfigError("x".into())));
-        assert!(is_retryable(&neo4rs::Error::ConnectionError));
-        assert!(!is_retryable(&neo4rs::Error::ConversionError));
+    fn rows_are_read_by_column() {
+        let row = Row(BTreeMap::from([
+            ("s".to_owned(), Value::from("x")),
+            ("n".to_owned(), Value::from(3_i64)),
+            ("z".to_owned(), Value::Null),
+        ]));
+        assert_eq!(
+            (row.str("s"), row.int("n"), row.opt_int("z")),
+            (Ok("x"), Ok(3), Ok(None))
+        );
+        assert!(row.int("z").is_err() && row.str("n").is_err() && row.int("missing").is_err());
+        assert_eq!(
+            params![("a", 1_i64), ("b", None::<i64>)],
+            vec![
+                ("a".to_owned(), Value::Int(1)),
+                ("b".to_owned(), Value::Null)
+            ]
+        );
+    }
+
+    #[cfg(not(feature = "embedded"))]
+    #[test]
+    fn embedded_dsns_need_the_feature() {
+        let err = DrevoStore::new("drevo+mem://", "g").unwrap_err();
+        assert!(err.to_string().contains("`embedded` feature"), "{err}");
     }
 }

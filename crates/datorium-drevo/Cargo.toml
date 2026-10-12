@@ -8,11 +8,18 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+# drevo embedded in the process (`drevo:///path`, `drevo+mem://`): builds the
+# drevo engine from the pinned commit drevo-py uses.
+embedded = ["dep:drevo", "tokio/rt"]
+
 [dependencies]
 async-trait = "0.1"
 datorium-core = { path = "../datorium-core", features = ["tokio"] }
+drevo = { git = "https://github.com/ice1x/drevo", rev = "cf9c7664e573906f2f7e86bd15639b7c3be559fe", default-features = false, optional = true }
 # A release candidate (the 0.9 line is the one with Bolt 5 and typed errors); pinned exactly.
 neo4rs = "=0.9.0-rc.10"
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync", "time"] }
 uuid = "1"
 
