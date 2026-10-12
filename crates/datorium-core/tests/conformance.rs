@@ -2,16 +2,25 @@
 //!
 //! The same files are run by the Python reference
 //! (`tests/conformance/test_vectors.py`); both must pass them bit for bit.
+//! The crash matrix is replayed on the fakes in `tests/fakes`, the port of the
+//! reference's `tests/fakes.py`, with the same fault points.
+
+mod fakes;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use datorium_core::clock::{ClockError, HlcTimestamp, HybridLogicalClock};
+use datorium_core::coordinator::{Coordinator, Outcome};
 use datorium_core::dsn::parse_dsn;
 use datorium_core::gid::{gid_for, parse_gid};
 use datorium_core::identity::{IdError, IdGenerator};
-use datorium_core::journal::{State, TransitionError, check_transition};
+use datorium_core::journal::{Journal, State, TransitionError, check_transition};
+use datorium_core::recovery::Recovery;
+use datorium_core::retry::Retry;
+use datorium_core::timer::NoWait;
+use fakes::{Fault, FaultyJournal, Wall, World, block, run};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -289,5 +298,118 @@ fn dsn() {
             format!("Dsn({:?})", d.redacted()),
             "{raw}"
         );
+    }
+}
+
+// --- crash matrix ----------------------------------------------------------------------
+
+fn steps(seen: Vec<String>) -> Vec<String> {
+    seen.into_iter()
+        .filter(|p| p.rsplit_once('.').is_none_or(|(_, last)| last != "after"))
+        .collect()
+}
+
+fn snapshot(world: &World, journal: &FaultyJournal, txn: Uuid) -> Value {
+    let state = block(journal.get(txn)).unwrap().map(|r| r.state.as_str());
+    let mut prepared: Vec<String> = world
+        .leftover_prepared()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    prepared.sort();
+    json!({"journal": state, "prepared": prepared, "applied": world.applied_stores(txn)})
+}
+
+#[test]
+fn crash_matrix() {
+    let doc = load("crash_matrix.json");
+    let stale_after_ms = int(&doc["stale_after_ms"]);
+    let mut everything: Vec<String> = doc["stores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| text(&s["name"]).to_owned())
+        .collect();
+    everything.sort();
+    for case in doc["cases"].as_array().unwrap() {
+        let name = case["crash_at"].as_str().unwrap_or("none").to_owned();
+        let mut world = World::default();
+        for store in doc["stores"].as_array().unwrap() {
+            world.store(text(&store["name"]), store["two_phase"].as_bool().unwrap());
+        }
+        let wall = Wall::default();
+        let journal = Arc::new(FaultyJournal::new(world.faults.clone(), wall.clone()));
+        if let Some(point) = case["crash_at"].as_str() {
+            world.faults.add(point, Fault::Crash, 1);
+        }
+        let txn = IdGenerator::new().generate().unwrap();
+        let coordinator = Coordinator::new(
+            Some(journal.clone()),
+            world.participants(),
+            Arc::new(HybridLogicalClock::new()),
+            Arc::new(NoWait::default()),
+        )
+        .with_finish(
+            Retry::new(
+                1,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+            )
+            .unwrap(),
+        );
+        let commit = match run(coordinator.commit(txn, &mut world.branches())) {
+            Ok(Ok(Outcome::Committed { .. })) => "committed",
+            Ok(Ok(Outcome::Pending { .. })) => "committed_pending",
+            Ok(Err(e)) => panic!("{name}: {e}"),
+            Err(()) => "crashed",
+        };
+        assert_eq!(commit, text(&case["commit"]), "{name}");
+        assert_eq!(
+            snapshot(&world, &journal, txn),
+            case["after_crash"],
+            "{name}"
+        );
+        assert_eq!(
+            steps(world.faults.seen()),
+            serde_json::from_value::<Vec<String>>(case["trace"].clone()).unwrap(),
+            "{name}"
+        );
+
+        world.faults.clear_plan();
+        world.faults.clear_seen();
+        wall.advance(stale_after_ms + 1);
+        let recovery = {
+            let wall = wall.clone();
+            Recovery::new(journal.clone(), world.participants(), stale_after_ms)
+                .unwrap()
+                .with_wall(move || wall.get())
+        };
+        let report = block(recovery.run_once(100)).unwrap();
+        let action = if report.aborted.contains(&txn) {
+            "aborted"
+        } else if report.finished.contains(&txn) {
+            "finished"
+        } else {
+            "none"
+        };
+        assert_eq!(action, text(&case["recovery"]), "{name}");
+        assert_eq!(
+            steps(world.faults.seen()),
+            serde_json::from_value::<Vec<String>>(case["recovery_trace"].clone()).unwrap(),
+            "{name}"
+        );
+        let after = snapshot(&world, &journal, txn);
+        let applied: Vec<String> = serde_json::from_value(after["applied"].clone()).unwrap();
+        assert!(
+            applied.is_empty() || applied == everything,
+            "{name}: recovery must end all-or-nothing"
+        );
+        let summary = json!({
+            "journal": after["journal"],
+            "applied": if applied.is_empty() { "none" } else { "all" },
+            "prepared": after["prepared"],
+        });
+        assert_eq!(summary, case["after_recovery"], "{name}");
     }
 }

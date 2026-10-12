@@ -349,6 +349,56 @@ def test_unreadable_decision_is_in_doubt_and_left_to_recovery(world: World, cloc
     assert set(world.leftover_prepared()) == {"pg", "graph"}
 
 
+def test_decision_still_unwritten_after_every_attempt_is_settled_as_aborted(
+    world: World, clock: Clock
+) -> None:
+    class SlowJournal(MemoryJournal):
+        def transition(
+            self, dat_txn: uuid.UUID, expected: State, new: State, *, dat_tx_time: int | None = None
+        ) -> JournalRecord:
+            if new is State.COMMITTED:
+                raise TimeoutError("slow")
+            return super().transition(dat_txn, expected, new, dat_tx_time=dat_tx_time)
+
+    journal = SlowJournal()
+    txn = new_id()
+    with pytest.raises(Aborted) as err:
+        coordinator(world, journal, clock).commit(txn, world.branches())
+    assert err.value.retryable
+    assert journal.get(txn).state is State.ABORTED  # type: ignore[union-attr]
+    assert world.leftover_prepared() == {}
+    assert len(clock.sleeps) == 4  # five attempts, four pauses
+
+
+def test_settling_an_undecidable_transaction_when_the_journal_goes_dark_is_in_doubt(
+    world: World, clock: Clock
+) -> None:
+    """The give-up compare-and-set conflicts, then the read-back fails: in doubt,
+    never an unclassified error."""
+
+    class DarkJournal(MemoryJournal):
+        dark = False
+
+        def transition(
+            self, dat_txn: uuid.UUID, expected: State, new: State, *, dat_tx_time: int | None = None
+        ) -> JournalRecord:
+            if new is State.COMMITTED:
+                raise TimeoutError("slow")
+            if new is State.ABORTED and expected is State.PREPARED:
+                # Someone else decided in between; the record is no longer PREPARED.
+                super().transition(dat_txn, State.PREPARED, State.COMMITTED)
+                self.dark = True
+            return super().transition(dat_txn, expected, new, dat_tx_time=dat_tx_time)
+
+        def get(self, dat_txn: uuid.UUID) -> JournalRecord | None:
+            if self.dark:
+                raise ConnectionError("journal unreachable")
+            return super().get(dat_txn)
+
+    with pytest.raises(InDoubt):
+        coordinator(world, DarkJournal(), clock).commit(new_id(), world.branches())
+
+
 # --- after the decision -------------------------------------------------------------
 
 
@@ -384,6 +434,26 @@ def test_finish_that_keeps_failing_returns_committed_pending_never_raises(
     assert record is not None
     assert record.state is State.COMMITTED  # handed to recovery
     assert clock.t <= 2.0 + 0.1
+
+
+def test_finish_stops_at_the_deadline_even_with_attempts_left(
+    world: World, journal: MemoryJournal, clock: Clock
+) -> None:
+    world.faults.add("clickhouse.finish", Transient("down"), times=1000)
+    slow = Coordinator(
+        journal=journal,
+        participants=world.participants(),
+        clock=HybridLogicalClock(),
+        finish=Retry(attempts=100, deadline_s=1.0, base_delay_s=0.4, max_delay_s=0.4),
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        rand=lambda: 0.999,
+    )
+    outcome = slow.commit(new_id(), world.branches())
+    assert isinstance(outcome, CommittedPending)
+    tries = world.faults.seen.count("clickhouse.finish")
+    assert 2 <= tries <= 4, f"{tries} attempts within a one-second deadline"
+    assert clock.t <= 1.0
 
 
 def test_finish_failure_of_any_kind_after_the_decision_does_not_raise(
