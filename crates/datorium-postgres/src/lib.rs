@@ -15,6 +15,12 @@
 //! own transaction, so "did this branch commit?" is one primary-key lookup.
 //! The server needs `max_prepared_transactions > 0`. Connections are driven on
 //! the tokio runtime of the caller.
+//!
+//! Two stores in one meta-transaction must not share a `dat_applied` (the same
+//! server, database and schema): both branches would insert the same `dat_txn`
+//! and the second would wait for the first forever. The Python facade refuses
+//! such a configuration; until a Rust facade exists, give each store its own
+//! schema.
 
 use std::error::Error;
 use std::fmt;

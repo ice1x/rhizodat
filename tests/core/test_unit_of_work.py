@@ -3,6 +3,7 @@
 import uuid
 
 import pytest
+from faker import Faker
 
 from datorium import Datorium
 from datorium.core.coordinator import Aborted, Committed, CommittedPending, InDoubt
@@ -435,6 +436,66 @@ def test_a_drevo_journal_cannot_share_a_graph_with_a_drevo_store() -> None:
         Datorium(
             stores={"graph": "drevo+bolt://graph.local:7687"}, journal="drevo+bolt://graph.local"
         )
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("postgresql://u:p@db.local/app", "postgresql://other@DB.local:5432/app"),
+        ("postgresql://db.local/app?options=x", "postgres://db.local/app"),
+    ],
+)
+def test_two_postgres_stores_cannot_share_dat_applied(first: str, second: str) -> None:
+    """Both branches of one meta-transaction would insert the same dat_txn into one
+    dat_applied table, and the second would wait for the first forever."""
+    with pytest.raises(ValueError, match="share one dat_applied") as caught:
+        Datorium(stores={"orders": first, "ledger": second})
+    message = str(caught.value)
+    assert "'orders'" in message
+    assert "'ledger'" in message
+    assert ":p@" not in message  # no secret in the error
+
+
+@pytest.mark.parametrize(
+    "second",
+    ["postgresql://db.local/other", "postgresql://db.local:6432/app", "postgresql://db2.local/app"],
+)
+def test_postgres_stores_in_other_databases_or_servers_are_fine(second: str) -> None:
+    dat = Datorium(stores={"orders": "postgresql://db.local/app", "ledger": second})
+    dat.close()
+
+
+def test_postgres_stores_in_other_schemas_of_one_database_are_fine(faker: Faker) -> None:
+    from datorium.adapters.postgres import PostgresStore
+
+    dsn = f"postgresql://db.local/{faker.word()}"
+    orders = PostgresStore(dsn, name="orders", schema="orders")
+    ledger = PostgresStore(dsn, name="ledger", schema="ledger")
+    dat = Datorium(stores={"orders": orders, "ledger": ledger})
+    dat.close()
+    shared = PostgresStore(dsn, name="ledger", schema="orders")
+    with pytest.raises(ValueError, match="share one dat_applied"):
+        Datorium(stores={"orders": orders, "ledger": shared})
+    default = PostgresStore(dsn, name="a")
+    public = PostgresStore(dsn, name="b", schema="public")
+    with pytest.raises(ValueError, match="share one dat_applied"):
+        Datorium(stores={"a": default, "b": public})
+
+
+def test_two_drevo_stores_cannot_share_a_graph() -> None:
+    """The first branch's prepared fence would refuse the second's prepare on every retry."""
+    with pytest.raises(ValueError, match="share one dat_applied"):
+        Datorium(stores={"a": "drevo+bolt://g.local", "b": "drevo+bolt://G.local:7687"})
+
+
+def test_any_store_reporting_the_same_applied_location_is_refused() -> None:
+    """ClickHouse, or a store object passed in, reports where its dat_applied lives."""
+    world = World()
+    one = FakeStoreHandle(world.store("feed", two_phase=False))
+    two = FakeStoreHandle(world.store("events", two_phase=False))
+    one.applied_location = two.applied_location = ("clickhouse", "ch", "8123", "analytics")  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="share one dat_applied"):
+        Datorium(stores={"feed": one, "events": two})
 
 
 def test_store_names_are_validated() -> None:
