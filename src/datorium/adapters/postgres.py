@@ -24,7 +24,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
-from datorium.core.dsn import parse_dsn
+from datorium.core.dsn import parse_dsn, postgres_schema
 from datorium.core.journal import (
     BranchRecord,
     JournalConflict,
@@ -80,9 +80,7 @@ def _literal(value: str) -> str:
 
 class _Connector:
     def __init__(self, dsn: str, schema: str | None) -> None:
-        _check_identifier("schema", schema)
-        self._dsn = dsn
-        self._schema = schema
+        self._dsn, self._schema = postgres_schema(dsn, schema)
 
     @property
     def schema(self) -> str | None:

@@ -28,7 +28,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datorium_core::dsn::parse_dsn;
+use datorium_core::dsn::{parse_dsn, postgres_schema};
 use datorium_core::identity::system_ms;
 use datorium_core::journal::{
     BranchRecord, Journal, JournalError, JournalRecord, State, check_transition, decode_branches,
@@ -147,15 +147,11 @@ impl Connector {
                 "not a PostgreSQL connection string: {parsed}"
             )));
         }
-        if let Some(schema) = schema {
-            check_identifier("schema", schema)?;
-        }
-        let config = tokio_postgres::Config::from_str(dsn)
+        let (driver_dsn, schema) =
+            postgres_schema(dsn, schema).map_err(|e| ConfigError(e.to_string()))?;
+        let config = tokio_postgres::Config::from_str(&driver_dsn)
             .map_err(|_| ConfigError(format!("invalid PostgreSQL connection string: {parsed}")))?;
-        Ok(Self {
-            config,
-            schema: schema.map(str::to_owned),
-        })
+        Ok(Self { config, schema })
     }
 
     async fn connect(&self) -> Result<Client, tokio_postgres::Error> {
@@ -191,12 +187,13 @@ impl fmt::Debug for PostgresStore {
 }
 
 impl PostgresStore {
-    /// A store named `name` over `dsn`, optionally in `schema`.
+    /// A store named `name` over `dsn`, optionally in `schema` (or the DSN's
+    /// `schema=` parameter; both given must agree).
     ///
     /// # Errors
     ///
-    /// [`ConfigError`] for a DSN of another store, an unparsable DSN or a bad
-    /// schema name.
+    /// [`ConfigError`] for a DSN of another store, an unparsable DSN, a bad
+    /// schema name or two different schemas.
     pub fn new(dsn: &str, name: &str, schema: Option<&str>) -> Result<Self, ConfigError> {
         let connector = Connector::new(dsn, schema)?;
         let participant = Arc::new(PostgresParticipant {
@@ -493,7 +490,8 @@ fn backend(e: impl Into<BoxError>) -> JournalError {
 }
 
 impl PostgresJournal {
-    /// Open (and create if needed) the journal table `table` in `schema`.
+    /// Open (and create if needed) the journal table `table` in `schema` (or the
+    /// DSN's `schema=` parameter; both given must agree).
     ///
     /// # Errors
     ///

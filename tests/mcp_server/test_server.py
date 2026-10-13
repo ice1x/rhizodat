@@ -131,7 +131,7 @@ def test_stdio_server_reads_postgres_and_refuses_writes(
     store.execute("CREATE TABLE customers (name text)")
     store.execute("INSERT INTO customers VALUES (%s)", (customer,))
     store.close()
-    dsn = f"{pg_dsn}?options=-csearch_path%3D{pg_schema}"
+    dsn = f"{pg_dsn}?schema={pg_schema}"
     env = {
         "PATH": "/usr/bin:/bin",
         "DATORIUM_STORE_CRM": dsn,
@@ -189,7 +189,7 @@ def test_stdio_recovery_cleans_up_after_a_crashed_erp_coordinator(
     time.sleep(0.05)
     env = {
         "PATH": "/usr/bin:/bin",
-        f"DATORIUM_STORE_{name.upper()}": f"{pg_dsn}?options=-csearch_path%3D{pg_schema}",
+        f"DATORIUM_STORE_{name.upper()}": f"{pg_dsn}?schema={pg_schema}",
         "DATORIUM_JOURNAL": journal_dsn,
         "DATORIUM_MCP_RECOVERY": "1",
         "DATORIUM_MCP_RECOVERY_STALE_S": "0.01",

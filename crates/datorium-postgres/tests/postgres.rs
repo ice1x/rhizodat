@@ -167,6 +167,50 @@ macro_rules! db {
     };
 }
 
+fn with_schema(dsn: &str, schema: &str) -> String {
+    let sep = if dsn.contains('?') { '&' } else { '?' };
+    format!("{dsn}{sep}schema={schema}")
+}
+
+// --- configuration ---------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_dsn_names_the_schema_of_a_store_and_a_journal() {
+    let db = db!();
+    let schema = format!("{}_dsn", db.schema);
+    db.admin
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let dsn = with_schema(&db.dsn, &schema);
+    let store = PostgresStore::new(&dsn, &format!("dsn_{}", db.schema), None).unwrap();
+    store.install().await.unwrap();
+    assert_eq!(db.count("dsn", "dat_applied").await, 0);
+    let current: String = store
+        .connect()
+        .await
+        .unwrap()
+        .query_one("SELECT current_schema()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(current, schema);
+    assert!(PostgresStore::new(&dsn, "x", Some(&schema)).is_ok());
+    assert!(PostgresStore::new(&dsn, "x", Some("other")).is_err());
+    assert!(PostgresStore::new(&with_schema(&db.dsn, "a-b"), "x", None).is_err());
+
+    PostgresJournal::open(&dsn, None, "dat_journal")
+        .await
+        .unwrap();
+    assert_eq!(db.count("dsn", "dat_journal").await, 0);
+    assert!(
+        PostgresJournal::open(&dsn, Some("other"), "dat_journal")
+            .await
+            .is_err()
+    );
+    db.drop().await;
+}
+
 // --- journal ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]

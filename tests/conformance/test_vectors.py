@@ -22,7 +22,7 @@ from datorium.core.clock import (
     LogicalOverflowError,
 )
 from datorium.core.coordinator import gid_for, parse_gid
-from datorium.core.dsn import DSNError, parse_dsn
+from datorium.core.dsn import DSNError, parse_dsn, postgres_schema
 from datorium.core.identity import IdGenerator
 from datorium.core.journal import (
     BranchRecord,
@@ -184,6 +184,21 @@ def test_journal_branches_column(case: dict[str, Any]) -> None:
 
 # --- DSN -------------------------------------------------------------------------------
 
+PG_SCHEMA_CASES = load("postgres_schema.json")["cases"]
+
+
+@pytest.mark.parametrize("case", PG_SCHEMA_CASES, ids=ids(PG_SCHEMA_CASES, "dsn"))
+def test_postgres_schema(case: dict[str, Any]) -> None:
+    expect = case["expect"]
+    if expect.get("error"):
+        with pytest.raises(DSNError) as err:
+            postgres_schema(case["dsn"], case["schema"])
+        assert "s3cret" not in str(err.value)
+        return
+    dsn, schema = postgres_schema(case["dsn"], case["schema"])
+    assert {"dsn": dsn, "schema": schema} == expect
+
+
 DSN_CASES = load("dsn.json")["cases"]
 
 
@@ -217,6 +232,7 @@ def test_every_vector_file_is_exercised() -> None:
         "gid.json",
         "journal.json",
         "dsn.json",
+        "postgres_schema.json",
         "rows.json",
         "staged_files.json",
         "crash_matrix.json",
