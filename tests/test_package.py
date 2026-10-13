@@ -77,3 +77,15 @@ def test_mcp_is_an_optional_extra_and_the_tools_do_not_need_it() -> None:
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout
     assert out.strip() == "[]"
+
+
+def test_the_adapter_contract_kit_ships_as_an_extra() -> None:
+    extras = set(importlib.metadata.metadata("datorium").get_all("Provides-Extra") or [])
+    assert "testing" in extras
+    contract = importlib.import_module("datorium.testing.contract")
+    assert hasattr(contract, "AdapterContract")
+    code = "import sys, datorium\nprint('pytest' in sys.modules)\n"
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout
+    assert out.strip() == "False"  # only the kit needs pytest

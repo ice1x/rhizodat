@@ -586,9 +586,34 @@ branch models: real two-phase commit (prepare, then commit or roll back a
 prepared transaction by gid, listing the prepared ones), or one phase with an
 idempotent apply of the journal payload after the decision (`is_applied`
 answers whether it is visible). A store that can do neither cannot join a
-meta-transaction with others. Next: a contract test suite every adapter runs
-(the `Branch` / `Participant` semantics and the crash matrix on the real store),
-then the same registry in Rust.
+meta-transaction with others.
+
+**The adapter contract** (`datorium.testing.contract`, `datorium[testing]`) is
+how an adapter shows it keeps those promises on the real store. The author
+writes a harness (open an isolated store, write one record by key in a branch,
+count committed records by key) and subclasses `AdapterContract`:
+
+```python
+class TestMySqlContract(AdapterContract):
+    @pytest.fixture
+    def harness(self) -> Iterator[MySqlHarness]: ...
+```
+
+It checks:
+- nothing is visible or applied before `finish`;
+- `finish` commits once however often it runs;
+- `abort` discards and is idempotent, and an aborted branch never becomes
+  visible;
+- a single branch commits natively, and rollback before the decision discards;
+- plain errors are not retryable;
+- the commit protocol, crashed at every step: a meta-transaction over the
+  adapter's store and an in-memory two-phase store, the process "dies" (open
+  transactions die with it, prepared ones and staged data stay), and one
+  `Recovery` run must end all-or-nothing with nothing left prepared.
+
+datorium's own adapters pass it in `tests/contract/` (PostgreSQL, ClickHouse,
+drevo embedded and over Bolt, Iceberg on SQLite and REST). Next: the same
+registry in Rust.
 
 ### Connection strings
 
@@ -647,6 +672,7 @@ datorium/
 │   ├── clickhouse.py
 │   └── iceberg.py
 ├── mcp/                 # datorium-MCP: tools, configuration, server
+├── testing/             # the adapter contract suite (datorium[testing])
 └── migrations/
 ```
 

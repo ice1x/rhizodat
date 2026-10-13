@@ -536,6 +536,9 @@ mcp = [
 postgres = [
     { name = "psycopg", extra = ["binary"] },
 ]
+testing = [
+    { name = "pytest" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -562,8 +565,9 @@ requires-dist = [
     { name = "neo4j", marker = "extra == 'drevo'", specifier = ">=5.20" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], marker = "extra == 'iceberg'", specifier = ">=0.12" },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8" },
 ]
-provides-extras = ["postgres", "clickhouse", "drevo", "iceberg", "mcp"]
+provides-extras = ["postgres", "clickhouse", "drevo", "iceberg", "mcp", "testing"]
 
 [package.metadata.requires-dev]
 dev = [
