@@ -770,6 +770,21 @@ safe). The open design question is the transaction model over the network:
 
 The library stays the core; the server is built on it, not instead of it.
 
+### datorium-MCP (out of the box)
+
+datorium ships with an MCP server, `datorium-mcp`, so that AI agents and tools
+work with the stores through datorium rather than through four drivers:
+inspect the configured stores and their mapping, read entities (with `as_of` /
+`known_at` once bitemporal reads land), write through Units of Work, and watch
+meta-transactions (the journal, pending and stuck transactions, recovery runs).
+It is part of the distribution, configured by the same DSNs, and built on the
+library like the server: writes go through the commit protocol, never around
+it.
+
+Order: after the current work (the remaining Rust adapters, Iceberg first). The
+tool set and how a write tool maps to a Unit of Work are decided then; the
+server mode's transaction-model question applies here too.
+
 ---
 
 ## Development
