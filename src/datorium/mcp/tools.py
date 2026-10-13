@@ -20,6 +20,7 @@ from datorium.core.journal import Journal, JournalRecord
 __all__ = ["Tools", "jsonable"]
 
 DEFAULT_LIMIT = 100
+DEFAULT_STALE_AFTER_MS = 30_000
 
 
 def _system_ms() -> int:
@@ -54,7 +55,8 @@ class Tools:
     """What datorium-MCP offers, over one ``Datorium``.
 
     ``dsns`` are the stores' connection strings, shown with secrets masked;
-    ``max_rows`` caps what one query returns.
+    ``max_rows`` caps what one query returns; ``stale_after_ms`` is how long a
+    record must stay unchanged before ``run_recovery`` takes it over.
     """
 
     def __init__(
@@ -63,19 +65,33 @@ class Tools:
         *,
         dsns: Mapping[str, str] | None = None,
         max_rows: int = 1000,
+        stale_after_ms: int = DEFAULT_STALE_AFTER_MS,
         wall_ms: Callable[[], int] = _system_ms,
     ) -> None:
+        if stale_after_ms <= 0:
+            raise ValueError("stale_after_ms must be > 0: recovery must not race live coordinators")
         self._dat = dat
+        self._stale_after_ms = stale_after_ms
         self._dsns = dict(dsns or {})
         self._max_rows = max_rows
         self._wall_ms = wall_ms
 
     @classmethod
     def open(
-        cls, stores: Mapping[str, str], *, journal: str | None = None, max_rows: int = 1000
+        cls,
+        stores: Mapping[str, str],
+        *,
+        journal: str | None = None,
+        max_rows: int = 1000,
+        stale_after_ms: int = DEFAULT_STALE_AFTER_MS,
     ) -> "Tools":
         """Open every store (and the journal) named by its DSN."""
-        return cls(Datorium(stores=stores, journal=journal), dsns=stores, max_rows=max_rows)
+        return cls(
+            Datorium(stores=stores, journal=journal),
+            dsns=stores,
+            max_rows=max_rows,
+            stale_after_ms=stale_after_ms,
+        )
 
     def close(self) -> None:
         self._dat.close()
@@ -146,6 +162,23 @@ class Tools:
             updated_before_ms=now - int(older_than_s * 1000) + 1, limit=min(limit, self._max_rows)
         )
         return {"now_ms": now, "transactions": [self._record(r, now) for r in records]}
+
+    def run_recovery(self, limit: int = DEFAULT_LIMIT) -> dict[str, list[str]]:
+        """One recovery run: roll back orphan prepared gids, presume abort for stale
+        undecided records, finish stale committed ones. Safe next to live coordinators
+        and other recovery workers."""
+        if limit < 1:
+            raise ValueError(f"limit must be at least 1, not {limit}")
+        self._journal()
+        recovery = self._dat.recovery(stale_after_ms=self._stale_after_ms, wall_ms=self._wall_ms)
+        report = recovery.run_once(limit=min(limit, self._max_rows))
+        return {
+            "aborted": [str(t) for t in report.aborted],
+            "finished": [str(t) for t in report.finished],
+            "unfinished": [str(t) for t in report.unfinished],
+            "stuck": [str(t) for t in report.stuck],
+            "orphans": list(report.orphans),
+        }
 
     def _journal(self) -> Journal:
         if self._dat.journal is None:

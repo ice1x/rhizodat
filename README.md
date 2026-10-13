@@ -809,8 +809,8 @@ It is part of the distribution, configured by the same DSNs, and built on the
 library like the server: writes go through the commit protocol, never around
 it.
 
-✔ First version (Python, `datorium.mcp`, read-only). Tools, all marked
-read-only for clients:
+✔ First version (Python, `datorium.mcp`, read-only) and opt-in recovery runs.
+Tools, all but `run_recovery` marked read-only for clients:
 
 | Tool | What it does |
 |---|---|
@@ -818,6 +818,13 @@ read-only for clients:
 | `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `DATORIUM_MCP_MAX_ROWS`) |
 | `transaction` | one meta-transaction's journal record: state, commit time, branches, age |
 | `pending_transactions` | unfinished meta-transactions older than a cutoff: in flight, or left for recovery |
+| `run_recovery` | opt-in, the one tool that writes: one recovery run (orphan prepared gids rolled back, stale undecided meta-transactions aborted, decided ones finished), reported by `dat_txn` per outcome |
+
+`run_recovery` is offered only with `DATORIUM_MCP_RECOVERY=1` and marked to
+clients as writing (destructive, idempotent). It is the library's `Recovery`,
+so it never takes over a record changed within the last
+`DATORIUM_MCP_RECOVERY_STALE_S` seconds (default 30): a live coordinator may
+still be deciding it. It needs a journal and DSNs that can write.
 
 The store itself refuses writes in `query`, so a mistaken or injected query
 cannot change data:
@@ -834,7 +841,8 @@ As defence in depth, the DSNs can still use read-only accounts.
 
 Configuration is the environment, so secrets stay out of command lines:
 `DATORIUM_STORE_<NAME>=<dsn>` per store, `DATORIUM_JOURNAL=<dsn>`, and
-optionally `DATORIUM_MCP_MAX_ROWS` (default 1000). An MCP client starts it
+optionally `DATORIUM_MCP_MAX_ROWS` (default 1000) and the recovery settings
+above. An MCP client starts it
 over stdio:
 
 ```json
@@ -853,8 +861,8 @@ over stdio:
 ```
 
 Next: writes through Units of Work (how a tool call maps to one is the open
-design question, shared with the server mode's transaction model), recovery
-runs, and entity reads once the repository lands.
+design question, shared with the server mode's transaction model), and
+entity reads once the repository lands.
 
 ---
 
