@@ -612,8 +612,17 @@ It checks:
   `Recovery` run must end all-or-nothing with nothing left prepared.
 
 datorium's own adapters pass it in `tests/contract/` (PostgreSQL, ClickHouse,
-drevo embedded and over Bolt, Iceberg on SQLite and REST). Next: the same
-registry in Rust.
+drevo embedded and over Bolt, Iceberg on SQLite and REST).
+
+**In Rust** the core knows no store either (`datorium_core::adapter`): each
+adapter crate exports `ADAPTER` (kind, `Scheme`s with the same host / path
+rules, whether it holds the journal, its query language) and parses its own
+DSNs with `ADAPTER.parse`; an application builds a `Registry` from the crates
+it links (`Registry::new().with(datorium_postgres::ADAPTER)?…`), which refuses
+the same conflicts as Python. `postgres_schema` lives in `datorium-postgres`.
+The conformance vectors run in `crates/datorium-conformance`, which links every
+adapter. Opening stores by DSN from Rust comes with a Rust facade (the
+bindings).
 
 ### Connection strings
 

@@ -970,6 +970,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "datorium-conformance"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "datorium-clickhouse",
+ "datorium-core",
+ "datorium-drevo",
+ "datorium-iceberg",
+ "datorium-postgres",
+ "futures",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "datorium-core"
 version = "0.0.0"
 dependencies = [

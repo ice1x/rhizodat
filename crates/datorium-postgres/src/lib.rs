@@ -28,7 +28,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datorium_core::dsn::{parse_dsn, postgres_schema};
+use datorium_core::adapter::{Adapter, Presence, Scheme};
+use datorium_core::dsn::{DsnError, unquote_plus};
 use datorium_core::identity::system_ms;
 use datorium_core::journal::{
     BranchRecord, Journal, JournalError, JournalRecord, State, check_transition, decode_branches,
@@ -133,6 +134,89 @@ pub fn is_retryable(error: &(dyn Error + 'static)) -> bool {
     error.is::<std::io::Error>()
 }
 
+/// The PostgreSQL store kind: `postgresql://` (alias `postgres://`), port 5432.
+pub const ADAPTER: Adapter = Adapter {
+    kind: "postgres",
+    schemes: &[
+        Scheme {
+            name: "postgresql",
+            transport: None,
+            default_port: Some(5432),
+            host: Presence::Optional,
+            path: Presence::Optional,
+        },
+        Scheme {
+            name: "postgres",
+            transport: None,
+            default_port: Some(5432),
+            host: Presence::Optional,
+            path: Presence::Optional,
+        },
+    ],
+    holds_journal: true,
+    query_help: Some("SQL with $1, $2 placeholders"),
+};
+
+fn is_pg_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    value.len() <= 63
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The DSN for the driver and the schema of a PostgreSQL store or journal.
+///
+/// The schema is the DSN's `schema` query parameter, or `schema`; both given
+/// must agree. The returned DSN is `raw` without that parameter.
+///
+/// # Errors
+///
+/// [`DsnError`] for a DSN that does not parse or is not PostgreSQL, an invalid
+/// schema name, or two different schemas.
+pub fn postgres_schema(
+    raw: &str,
+    schema: Option<&str>,
+) -> Result<(String, Option<String>), DsnError> {
+    let dsn = ADAPTER.parse(raw)?;
+    let from_dsn = dsn
+        .params()
+        .iter()
+        .find(|(k, _)| k == "schema")
+        .map(|(_, v)| v.as_str());
+    for value in [from_dsn, schema].into_iter().flatten() {
+        if !is_pg_identifier(value) {
+            return Err(DsnError::new(format!(
+                "invalid schema name {value:?}: a letter or '_', then letters, digits and \
+                 underscores, at most 63 characters"
+            )));
+        }
+    }
+    match (from_dsn, schema) {
+        (Some(d), Some(s)) if d != s => Err(DsnError::new(format!(
+            "the DSN names schema {d:?} but schema {s:?} was passed"
+        ))),
+        (None, _) => Ok((raw.to_owned(), schema.map(str::to_owned))),
+        (Some(d), _) => {
+            let (base, query) = raw.split_once('?').unwrap_or((raw, ""));
+            let kept: Vec<&str> = query
+                .split('&')
+                .filter(|field| {
+                    let key = field.split_once('=').map_or(*field, |(k, _)| k);
+                    unquote_plus(key) != "schema"
+                })
+                .collect();
+            let out = if kept.is_empty() {
+                base.to_owned()
+            } else {
+                format!("{base}?{}", kept.join("&"))
+            };
+            Ok((out, Some(d.to_owned())))
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Connector {
     config: tokio_postgres::Config,
@@ -141,7 +225,7 @@ struct Connector {
 
 impl Connector {
     fn new(dsn: &str, schema: Option<&str>) -> Result<Self, ConfigError> {
-        let parsed = parse_dsn(dsn).map_err(|e| ConfigError(e.to_string()))?;
+        let parsed = ADAPTER.parse(dsn).map_err(|e| ConfigError(e.to_string()))?;
         if parsed.store() != "postgres" {
             return Err(ConfigError(format!(
                 "not a PostgreSQL connection string: {parsed}"

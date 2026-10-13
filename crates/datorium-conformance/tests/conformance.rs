@@ -1,19 +1,21 @@
-//! The Rust core against the language-neutral vectors in `conformance/`.
+//! The Rust crates against the language-neutral vectors in `conformance/`.
 //!
 //! The same files are run by the Python reference
 //! (`tests/conformance/test_vectors.py`); both must pass them bit for bit.
-//! The crash matrix is replayed on the fakes in `tests/fakes`, the port of the
+//! The crash matrix is replayed on the core's fakes (`datorium-core/tests/fakes`), the port of the
 //! reference's `tests/fakes.py`, with the same fault points.
 
+#[path = "../../datorium-core/tests/fakes/mod.rs"]
 mod fakes;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use datorium_core::adapter::Registry;
 use datorium_core::clock::{ClockError, HlcTimestamp, HybridLogicalClock};
 use datorium_core::coordinator::{Coordinator, Outcome};
-use datorium_core::dsn::{parse_dsn, postgres_schema};
+use datorium_core::dsn::{Dsn, DsnError};
 use datorium_core::gid::{gid_for, parse_gid};
 use datorium_core::identity::{IdError, IdGenerator};
 use datorium_core::journal::{
@@ -25,9 +27,21 @@ use datorium_core::retry::Retry;
 use datorium_core::rows::{Batch, RowValue, decode_batches, encode_batches};
 use datorium_core::staged::{StagedTable, decode_staged, encode_staged};
 use datorium_core::timer::NoWait;
+use datorium_postgres::postgres_schema;
 use fakes::{Fault, FaultyJournal, Wall, World, block, run};
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// Every store datorium ships, registered as an application would.
+fn parse_dsn(raw: &str) -> Result<Dsn, DsnError> {
+    let registry = Registry::new()
+        .with(datorium_postgres::ADAPTER)
+        .and_then(|r| r.with(datorium_clickhouse::ADAPTER))
+        .and_then(|r| r.with(datorium_drevo::ADAPTER))
+        .and_then(|r| r.with(datorium_iceberg::ADAPTER))
+        .expect("datorium's adapters do not overlap");
+    registry.parse(raw)
+}
 
 fn vectors() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance")

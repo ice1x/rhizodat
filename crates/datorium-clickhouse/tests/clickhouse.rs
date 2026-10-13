@@ -12,7 +12,6 @@ use clickhouse::Client;
 use datorium_clickhouse::{ClickHouseStore, is_retryable};
 use datorium_core::clock::HybridLogicalClock;
 use datorium_core::coordinator::{Coordinator, Outcome};
-use datorium_core::dsn::parse_dsn;
 use datorium_core::gid::gid_for;
 use datorium_core::identity::IdGenerator;
 use datorium_core::journal::{BranchRecord, Journal, State};
@@ -39,7 +38,9 @@ fn dsn(key: &str) -> Option<String> {
         return Some(dsn);
     }
     let dsn = env_test(key)?;
-    let parsed = parse_dsn(&dsn).expect("a valid DSN in .env.test");
+    let parsed = datorium_clickhouse::ADAPTER
+        .parse(&dsn)
+        .expect("a valid DSN in .env.test");
     let addr = (
         parsed.host().unwrap_or("127.0.0.1"),
         parsed.port().unwrap_or(0),
@@ -70,7 +71,7 @@ struct Db {
 impl Db {
     async fn new() -> Option<Self> {
         let server = dsn("DATORIUM_TEST_CLICKHOUSE_DSN")?;
-        let parsed = parse_dsn(&server).unwrap();
+        let parsed = datorium_clickhouse::ADAPTER.parse(&server).unwrap();
         let name = format!("dat_rs_{}", &new_id().simple().to_string()[20..]);
         let admin = Client::default()
             .with_url(format!(

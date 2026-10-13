@@ -32,13 +32,28 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use clickhouse::Client;
-use datorium_core::dsn::parse_dsn;
+use datorium_core::adapter::{Adapter, Presence, Scheme};
 use datorium_core::gid::gid_for;
 use datorium_core::journal::BranchRecord;
 use datorium_core::rows::{Batch, RowValue, decode_batches, encode_batches};
 use datorium_core::store::{BoxError, Branch, Participant};
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
+
+/// The ClickHouse store kind: `clickhouse://host:8123/db` (one phase; cannot
+/// hold the journal).
+pub const ADAPTER: Adapter = Adapter {
+    kind: "clickhouse",
+    schemes: &[Scheme {
+        name: "clickhouse",
+        transport: None,
+        default_port: Some(8123),
+        host: Presence::Required,
+        path: Presence::Optional,
+    }],
+    holds_journal: false,
+    query_help: Some("SQL with {name:Type} placeholders"),
+};
 
 const RESERVED: [&str; 2] = ["dat_txn", "dat_tx_time"];
 /// `TIMEOUT_EXCEEDED`, `TOO_MANY_SIMULTANEOUS_QUERIES`, `SOCKET_TIMEOUT`,
@@ -190,7 +205,9 @@ impl ClickHouseStore {
     ///
     /// [`ClickHouseError`] for a DSN of another store.
     pub fn new(dsn: &str, name: &str) -> Result<Self, ClickHouseError> {
-        let parsed = parse_dsn(dsn).map_err(|e| ClickHouseError(e.to_string()))?;
+        let parsed = ADAPTER
+            .parse(dsn)
+            .map_err(|e| ClickHouseError(e.to_string()))?;
         if parsed.store() != "clickhouse" {
             return Err(ClickHouseError(format!(
                 "not a clickhouse connection string: {parsed}"

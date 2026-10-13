@@ -7,6 +7,7 @@
 //! repository is the executable specification; both implementations pass the
 //! vectors in `conformance/` bit for bit.
 
+pub mod adapter;
 pub mod clock;
 pub mod coordinator;
 pub mod dsn;
