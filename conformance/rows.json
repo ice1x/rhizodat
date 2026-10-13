@@ -1,0 +1,319 @@
+{
+  "description": "Row batches in the journal payload of a one-phase branch (ClickHouse): versioned JSON, values JSON cannot carry exactly are tagged {\"$\": tag, \"v\": value} (uuid, decimal as text, bytes base64, date / datetime ISO 8601, float only when not finite, map for every object as [[key, value]]). cases: payload decodes to batches (each value described as {type, value}: float as Python repr, bytes as hex, datetime as ISO 8601 with its offset or naive), and encoding those batches decodes back to the same values; byte-exact spelling is not required. errors: payloads every decoder rejects.",
+  "cases": [
+    {
+      "name": "scalars",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"events\",\"columns\":[\"id\",\"name\",\"n\",\"ok\",\"missing\"],\"rows\":[[{\"$\":\"uuid\",\"v\":\"01920000-0000-7000-8000-000000000001\"},\"\\u0410\\u0434\\u0430 \\u041b\\u0430\\u0432\\u043b\\u0435\\u0439\\u0441\",-42,true,null],[{\"$\":\"uuid\",\"v\":\"00000000-0000-0000-0000-000000000000\"},\"\",9007199254740993,false,null]]}]}",
+      "batches": [
+        {
+          "table": "events",
+          "columns": [
+            "id",
+            "name",
+            "n",
+            "ok",
+            "missing"
+          ],
+          "rows": [
+            [
+              {
+                "type": "uuid",
+                "value": "01920000-0000-7000-8000-000000000001"
+              },
+              {
+                "type": "str",
+                "value": "Ада Лавлейс"
+              },
+              {
+                "type": "int",
+                "value": -42
+              },
+              {
+                "type": "bool",
+                "value": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            [
+              {
+                "type": "uuid",
+                "value": "00000000-0000-0000-0000-000000000000"
+              },
+              {
+                "type": "str",
+                "value": ""
+              },
+              {
+                "type": "int",
+                "value": 9007199254740993
+              },
+              {
+                "type": "bool",
+                "value": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "decimal keeps its scale",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"ledger\",\"columns\":[\"amount\"],\"rows\":[[{\"$\":\"decimal\",\"v\":\"12.3400\"}],[{\"$\":\"decimal\",\"v\":\"-0.01\"}],[{\"$\":\"decimal\",\"v\":\"1E+3\"}]]}]}",
+      "batches": [
+        {
+          "table": "ledger",
+          "columns": [
+            "amount"
+          ],
+          "rows": [
+            [
+              {
+                "type": "decimal",
+                "value": "12.3400"
+              }
+            ],
+            [
+              {
+                "type": "decimal",
+                "value": "-0.01"
+              }
+            ],
+            [
+              {
+                "type": "decimal",
+                "value": "1E+3"
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "floats, non-finite tagged",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"m\",\"columns\":[\"x\"],\"rows\":[[1.5],[-0.0],[1e+300],[{\"$\":\"float\",\"v\":\"inf\"}],[{\"$\":\"float\",\"v\":\"-inf\"}]]}]}",
+      "batches": [
+        {
+          "table": "m",
+          "columns": [
+            "x"
+          ],
+          "rows": [
+            [
+              {
+                "type": "float",
+                "value": "1.5"
+              }
+            ],
+            [
+              {
+                "type": "float",
+                "value": "-0.0"
+              }
+            ],
+            [
+              {
+                "type": "float",
+                "value": "1e+300"
+              }
+            ],
+            [
+              {
+                "type": "float",
+                "value": "inf"
+              }
+            ],
+            [
+              {
+                "type": "float",
+                "value": "-inf"
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bytes are base64",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"blobs\",\"columns\":[\"b\"],\"rows\":[[{\"$\":\"bytes\",\"v\":\"\"}],[{\"$\":\"bytes\",\"v\":\"AP8Q\"}]]}]}",
+      "batches": [
+        {
+          "table": "blobs",
+          "columns": [
+            "b"
+          ],
+          "rows": [
+            [
+              {
+                "type": "bytes",
+                "value": ""
+              }
+            ],
+            [
+              {
+                "type": "bytes",
+                "value": "00ff10"
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dates and datetimes",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"t\",\"columns\":[\"d\",\"naive\",\"utc\",\"offset\"],\"rows\":[[{\"$\":\"date\",\"v\":\"2026-10-12\"},{\"$\":\"datetime\",\"v\":\"2026-10-12T09:30:00\"},{\"$\":\"datetime\",\"v\":\"2026-10-12T09:30:15.123456+00:00\"},{\"$\":\"datetime\",\"v\":\"2026-10-12T09:30:00+03:00\"}]]}]}",
+      "batches": [
+        {
+          "table": "t",
+          "columns": [
+            "d",
+            "naive",
+            "utc",
+            "offset"
+          ],
+          "rows": [
+            [
+              {
+                "type": "date",
+                "value": "2026-10-12"
+              },
+              {
+                "type": "datetime",
+                "value": "2026-10-12T09:30:00"
+              },
+              {
+                "type": "datetime",
+                "value": "2026-10-12T09:30:15.123456+00:00"
+              },
+              {
+                "type": "datetime",
+                "value": "2026-10-12T09:30:00+03:00"
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "lists and maps nest",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"t\",\"columns\":[\"tags\",\"attrs\"],\"rows\":[[[\"a\",\"b\"],{\"$\":\"map\",\"v\":[[\"k\",[1,{\"$\":\"map\",\"v\":[[\"inner\",null]]}]],[\"$\",\"not a tag\"]]}],[[],{\"$\":\"map\",\"v\":[]}]]}]}",
+      "batches": [
+        {
+          "table": "t",
+          "columns": [
+            "tags",
+            "attrs"
+          ],
+          "rows": [
+            [
+              {
+                "type": "list",
+                "value": [
+                  {
+                    "type": "str",
+                    "value": "a"
+                  },
+                  {
+                    "type": "str",
+                    "value": "b"
+                  }
+                ]
+              },
+              {
+                "type": "map",
+                "value": [
+                  [
+                    "k",
+                    {
+                      "type": "list",
+                      "value": [
+                        {
+                          "type": "int",
+                          "value": 1
+                        },
+                        {
+                          "type": "map",
+                          "value": [
+                            [
+                              "inner",
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          ]
+                        }
+                      ]
+                    }
+                  ],
+                  [
+                    "$",
+                    {
+                      "type": "str",
+                      "value": "not a tag"
+                    }
+                  ]
+                ]
+              }
+            ],
+            [
+              {
+                "type": "list",
+                "value": []
+              },
+              {
+                "type": "map",
+                "value": []
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "several tables",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"a\",\"columns\":[\"x\"],\"rows\":[[1]]},{\"table\":\"b\",\"columns\":[\"y\",\"z\"],\"rows\":[]}]}",
+      "batches": [
+        {
+          "table": "a",
+          "columns": [
+            "x"
+          ],
+          "rows": [
+            [
+              {
+                "type": "int",
+                "value": 1
+              }
+            ]
+          ]
+        },
+        {
+          "table": "b",
+          "columns": [
+            "y",
+            "z"
+          ],
+          "rows": []
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "name": "unknown version",
+      "payload": "{\"v\":2,\"batches\":[]}"
+    },
+    {
+      "name": "unknown tag",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"t\",\"columns\":[\"a\"],\"rows\":[[{\"$\":\"interval\",\"v\":\"P1D\"}]]}]}"
+    },
+    {
+      "name": "a plain object is not a value",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"t\",\"columns\":[\"a\"],\"rows\":[[{\"k\":1}]]}]}"
+    }
+  ]
+}

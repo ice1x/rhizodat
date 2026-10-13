@@ -114,8 +114,12 @@ def _decode(value: Any) -> Any:  # noqa: ANN401 - JSON value
     if isinstance(value, list):
         return [_decode(v) for v in value]
     if isinstance(value, dict):
+        if set(value) != {"$", "v"}:
+            raise ValueError(f"invalid row payload: {sorted(value)} is not a tagged value")
         tag, inner = value["$"], value["v"]
         if tag == "map":
             return {k: _decode(v) for k, v in inner}
+        if tag not in _DECODERS:
+            raise ValueError(f"invalid row payload: unknown tag {tag!r}")
         return _DECODERS[tag](inner)
     return value

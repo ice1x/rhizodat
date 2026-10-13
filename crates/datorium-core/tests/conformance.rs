@@ -22,6 +22,7 @@ use datorium_core::journal::{
 };
 use datorium_core::recovery::Recovery;
 use datorium_core::retry::Retry;
+use datorium_core::rows::{Batch, RowValue, decode_batches, encode_batches};
 use datorium_core::timer::NoWait;
 use fakes::{Fault, FaultyJournal, Wall, World, block, run};
 use serde_json::{Value, json};
@@ -56,6 +57,7 @@ fn every_vector_file_is_exercised() {
         "gid.json",
         "journal.json",
         "dsn.json",
+        "rows.json",
         "crash_matrix.json",
     ]
     .into();
@@ -338,6 +340,105 @@ fn dsn() {
             format!("Dsn({:?})", d.redacted()),
             "{raw}"
         );
+    }
+}
+
+// --- rows ------------------------------------------------------------------------------
+
+fn row_value(d: &Value) -> RowValue {
+    let v = &d["value"];
+    match text(&d["type"]) {
+        "null" => RowValue::Null,
+        "bool" => RowValue::Bool(v.as_bool().unwrap()),
+        "int" => RowValue::Int(int(v)),
+        "float" => RowValue::Float(text(v).parse().unwrap()),
+        "str" => RowValue::Str(text(v).to_owned()),
+        "uuid" => RowValue::Uuid(Uuid::parse_str(text(v)).unwrap()),
+        "decimal" => RowValue::Decimal(text(v).to_owned()),
+        "bytes" => RowValue::Bytes(
+            (0..text(v).len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text(v)[i..i + 2], 16).unwrap())
+                .collect(),
+        ),
+        "date" => RowValue::Date(text(v).to_owned()),
+        "datetime" => RowValue::DateTime(text(v).to_owned()),
+        "list" => RowValue::List(v.as_array().unwrap().iter().map(row_value).collect()),
+        "map" => RowValue::Map(
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|p| (text(&p[0]).to_owned(), row_value(&p[1])))
+                .collect(),
+        ),
+        other => panic!("unknown type {other}"),
+    }
+}
+
+/// Equality that also tells -0.0 from 0.0.
+fn same(a: &RowValue, b: &RowValue) -> bool {
+    match (a, b) {
+        (RowValue::Float(x), RowValue::Float(y)) => x.to_bits() == y.to_bits(),
+        (RowValue::List(x), RowValue::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same(a, b))
+        }
+        (RowValue::Map(x), RowValue::Map(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|((ka, a), (kb, b))| ka == kb && same(a, b))
+        }
+        _ => a == b,
+    }
+}
+
+fn same_batches(got: &[Batch], want: &[Batch]) -> bool {
+    got.len() == want.len()
+        && got.iter().zip(want).all(|(g, w)| {
+            g.table == w.table
+                && g.columns == w.columns
+                && g.rows.len() == w.rows.len()
+                && g.rows
+                    .iter()
+                    .zip(&w.rows)
+                    .all(|(a, b)| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same(x, y)))
+        })
+}
+
+#[test]
+fn rows() {
+    let doc = load("rows.json");
+    for case in doc["cases"].as_array().unwrap() {
+        let name = text(&case["name"]);
+        let want: Vec<Batch> = case["batches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| Batch {
+                table: text(&b["table"]).to_owned(),
+                columns: b["columns"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| text(c).to_owned())
+                    .collect(),
+                rows: b["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.as_array().unwrap().iter().map(row_value).collect())
+                    .collect(),
+            })
+            .collect();
+        let got = decode_batches(text(&case["payload"]).as_bytes())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(same_batches(&got, &want), "{name}: decoded {got:?}");
+        let back = decode_batches(&encode_batches(&want).unwrap()).unwrap();
+        assert!(same_batches(&back, &want), "{name}: round trip {back:?}");
+    }
+    for case in doc["errors"].as_array().unwrap() {
+        let err = decode_batches(text(&case["payload"]).as_bytes()).expect_err(text(&case["name"]));
+        assert!(err.to_string().contains("payload"), "{err}");
     }
 }
 

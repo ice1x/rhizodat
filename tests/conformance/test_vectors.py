@@ -5,6 +5,8 @@ bit. The vectors are data, frozen in the repository: a change here is a
 protocol change and needs a deliberate update of the JSON, not a regenerate.
 """
 
+import datetime as dt
+import decimal
 import json
 import uuid
 from collections.abc import Callable
@@ -29,6 +31,7 @@ from datorium.core.journal import (
     decode_branches,
     encode_branches,
 )
+from datorium.core.rows import Batch, decode_batches, encode_batches
 
 VECTORS = Path(__file__).resolve().parents[2] / "conformance"
 
@@ -207,8 +210,101 @@ def test_dsn(case: dict[str, Any]) -> None:
 
 
 def test_every_vector_file_is_exercised() -> None:
-    used = {"uuid7.json", "hlc.json", "gid.json", "journal.json", "dsn.json", "crash_matrix.json"}
+    used = {
+        "uuid7.json",
+        "hlc.json",
+        "gid.json",
+        "journal.json",
+        "dsn.json",
+        "rows.json",
+        "crash_matrix.json",
+    }
     assert {p.name for p in VECTORS.glob("*.json")} == used
+
+
+# --- rows ------------------------------------------------------------------------------
+
+ROWS = load("rows.json")
+
+
+def native(d: dict[str, Any]) -> Any:
+    kind: str = d["type"]
+    value: Any = d.get("value")
+    match kind:
+        case "null":
+            return None
+        case "bool" | "int" | "str":
+            return value
+        case "float":
+            return float(value)
+        case "uuid":
+            return uuid.UUID(value)
+        case "decimal":
+            return decimal.Decimal(value)
+        case "bytes":
+            return bytes.fromhex(value)
+        case "date":
+            return dt.date.fromisoformat(value)
+        case "datetime":
+            return dt.datetime.fromisoformat(value)
+        case "list":
+            return [native(v) for v in value]
+        case "map":
+            return {k: native(v) for k, v in value}
+    raise AssertionError(f"unknown type {kind}")
+
+
+def described(v: Any) -> dict[str, Any]:
+    """The vector's description of a decoded value: exact (float repr, decimal text)."""
+    if v is None:
+        return {"type": "null"}
+    for kind, py in (("bool", bool), ("int", int), ("str", str)):
+        if type(v) is py:
+            return {"type": kind, "value": v}
+    if isinstance(v, float):
+        return {"type": "float", "value": repr(v)}
+    if isinstance(v, uuid.UUID):
+        return {"type": "uuid", "value": str(v)}
+    if isinstance(v, decimal.Decimal):
+        return {"type": "decimal", "value": str(v)}
+    if isinstance(v, bytes):
+        return {"type": "bytes", "value": v.hex()}
+    if isinstance(v, dt.datetime):
+        return {"type": "datetime", "value": v.isoformat()}
+    if isinstance(v, dt.date):
+        return {"type": "date", "value": v.isoformat()}
+    if isinstance(v, list):
+        return {"type": "list", "value": [described(x) for x in v]}
+    if isinstance(v, dict):
+        return {"type": "map", "value": [[k, described(x)] for k, x in v.items()]}
+    raise AssertionError(f"unexpected {type(v).__name__}")
+
+
+def batches_described(batches: list[Batch]) -> list[dict[str, Any]]:
+    return [
+        {
+            "table": b.table,
+            "columns": list(b.columns),
+            "rows": [[described(v) for v in row] for row in b.rows],
+        }
+        for b in batches
+    ]
+
+
+@pytest.mark.parametrize("case", ROWS["cases"], ids=ids(ROWS["cases"]))
+def test_rows(case: dict[str, Any]) -> None:
+    assert batches_described(decode_batches(case["payload"].encode())) == case["batches"]
+    natives = [
+        Batch(b["table"], tuple(b["columns"]), [[native(v) for v in r] for r in b["rows"]])
+        for b in case["batches"]
+    ]
+    assert batches_described(decode_batches(encode_batches(natives))) == case["batches"]
+
+
+@pytest.mark.parametrize("case", ROWS["errors"], ids=ids(ROWS["errors"]))
+def test_rows_rejected(case: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="payload"):
+        decode_batches(case["payload"].encode())
 
 
 # --- crash matrix ----------------------------------------------------------------------
