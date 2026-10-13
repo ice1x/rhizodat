@@ -1,6 +1,8 @@
 """Connection strings (DSNs) for stores and the journal.
 
-One URL syntax for every store, parsed without importing any driver:
+One URL syntax for every store, parsed without importing any driver. The schemes
+and their rules (host, path, default port) are declared by the registered
+adapters (``datorium.core.adapter``); datorium's own are:
 
 ==================================================  ==========  ===========
 DSN                                                 store       transport
@@ -15,43 +17,27 @@ DSN                                                 store       transport
 ``file:///abs/path``                                file        —
 ==================================================  ==========  ===========
 
-A PostgreSQL DSN may name the schema of a store or journal with ``schema=``
-(see ``postgres_schema``); it is removed before the DSN reaches the driver.
-
 ``postgres://`` is accepted as an alias. Scheme matching ignores case. User,
 password and path are percent-decoded. Passwords and secret-looking query
 parameters never appear in ``repr``/``str``; use ``unredacted()`` to get the
 original string for a driver.
 """
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
-__all__ = ["DSN", "DSNError", "parse_dsn", "postgres_schema"]
+from datorium.core.adapter import load_errors
+from datorium.core.adapter import scheme as registered_scheme
+from datorium.core.adapter import schemes as registered_schemes
 
-_PG_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+__all__ = ["DSN", "DSNError", "parse_dsn"]
 
 
 class DSNError(ValueError):
     """The connection string is malformed or names an unsupported store."""
 
 
-# scheme -> (store, transport, default port)
-_SCHEMES: dict[str, tuple[str, str | None, int | None]] = {
-    "postgresql": ("postgres", None, 5432),
-    "postgres": ("postgres", None, 5432),
-    "clickhouse": ("clickhouse", None, 8123),
-    "drevo": ("drevo", "embedded", None),
-    "drevo+mem": ("drevo", "memory", None),
-    "drevo+bolt": ("drevo", "bolt", 7687),
-    "iceberg+rest": ("iceberg", "rest", None),
-    "iceberg+sql": ("iceberg", "sql", None),
-    "iceberg+glue": ("iceberg", "glue", None),
-    "file": ("file", None, None),
-}
-_HOST_REQUIRED = {"clickhouse", "drevo+bolt", "iceberg+rest"}
 _SECRET_MARKERS = ("pass", "secret", "token", "key", "credential")
 _MASK = "***"
 
@@ -115,12 +101,16 @@ def parse_dsn(raw: str) -> DSN:
     except ValueError as exc:  # an unbalanced IPv6 bracket
         raise DSNError(f"invalid host in {_scheme_hint(raw)!r} connection string") from exc
     scheme = parts.scheme.lower()
-    if scheme not in _SCHEMES or not raw.lower().startswith(f"{scheme}://"):
-        supported = ", ".join(f"{s}://" for s in _SCHEMES)
-        raise DSNError(
-            f"unsupported connection string {_scheme_hint(raw)!r}; supported: {supported}"
+    found = registered_scheme(scheme) if raw.lower().startswith(f"{scheme}://") else None
+    if found is None:
+        supported = ", ".join(f"{s}://" for s in registered_schemes())
+        broken = "".join(
+            f"; plug-in {name!r} failed to load ({error})" for name, error in load_errors().items()
         )
-    store, transport, default_port = _SCHEMES[scheme]
+        raise DSNError(
+            f"unsupported connection string {_scheme_hint(raw)!r}; supported: {supported}{broken}"
+        )
+    adapter, rules = found
 
     try:
         port = parts.port
@@ -132,16 +122,17 @@ def parse_dsn(raw: str) -> DSN:
     host = parts.hostname or None
     path = unquote(parts.path) or None
 
-    if scheme in ("drevo", "file"):
-        if parts.netloc:
+    if rules.host == "none" and parts.netloc:
+        if rules.path == "required":
             raise DSNError(
                 f"{scheme}:/// takes a local absolute path, not a host: {scheme}:///abs/path"
             )
-        if path is None:
-            raise DSNError(f"{scheme}:/// needs a path: {scheme}:///abs/path")
-    if scheme == "drevo+mem" and (parts.netloc or path):
-        raise DSNError("drevo+mem:// takes no host or path")
-    if scheme in _HOST_REQUIRED and host is None:
+        raise DSNError(f"{scheme}:// takes no host" + (" or path" if rules.path == "none" else ""))
+    if rules.path == "required" and path is None:
+        raise DSNError(f"{scheme}:/// needs a path: {scheme}:///abs/path")
+    if rules.path == "none" and path:
+        raise DSNError(f"{scheme}:// takes no host or path")
+    if rules.host == "required" and host is None:
         raise DSNError(f"{scheme}:// needs a host")
 
     params: dict[str, str] = {}
@@ -151,41 +142,16 @@ def parse_dsn(raw: str) -> DSN:
         params[key] = value
 
     return DSN(
-        store=store,
-        transport=transport,
+        store=adapter.kind,
+        transport=rules.transport,
         host=host,
-        port=port if port is not None else (default_port if host else None),
+        port=port if port is not None else (rules.default_port if host else None),
         user=unquote(parts.username) if parts.username else None,
         password=unquote(parts.password) if parts.password is not None else None,
         path=path,
         _params=tuple(params.items()),
         _raw=raw,
     )
-
-
-def postgres_schema(raw: str, schema: str | None = None) -> tuple[str, str | None]:
-    """The DSN for the driver and the schema of a PostgreSQL store or journal.
-
-    The schema is the DSN's ``schema`` query parameter, or ``schema``; both given
-    must agree. The returned DSN is ``raw`` without that parameter.
-    """
-    dsn = parse_dsn(raw)
-    if dsn.store != "postgres":
-        raise DSNError(f"not a PostgreSQL connection string: {_scheme_hint(raw)!r}")
-    from_dsn = dsn.params.get("schema")
-    for value in (from_dsn, schema):
-        if value is not None and not _PG_IDENTIFIER.match(value):
-            raise DSNError(
-                f"invalid schema name {value!r}: a letter or '_', then letters, digits and"
-                " underscores, at most 63 characters"
-            )
-    if from_dsn is not None and schema is not None and from_dsn != schema:
-        raise DSNError(f"the DSN names schema {from_dsn!r} but schema={schema!r} was passed")
-    if from_dsn is None:
-        return raw, schema
-    base, _, query = raw.partition("?")
-    kept = [p for p in query.split("&") if unquote_plus(p.partition("=")[0]) != "schema"]
-    return (f"{base}?{'&'.join(kept)}" if kept else base), from_dsn
 
 
 def _scheme_hint(raw: str) -> str:

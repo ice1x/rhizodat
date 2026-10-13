@@ -23,8 +23,10 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import unquote_plus
 
-from datorium.core.dsn import parse_dsn, postgres_schema
+from datorium.core.adapter import Adapter, Scheme
+from datorium.core.dsn import DSNError, parse_dsn
 from datorium.core.journal import (
     BranchRecord,
     JournalConflict,
@@ -40,7 +42,14 @@ from datorium.core.result import Result
 if TYPE_CHECKING:
     import psycopg
 
-__all__ = ["PostgresBranch", "PostgresJournal", "PostgresParticipant", "PostgresStore"]
+__all__ = [
+    "ADAPTER",
+    "PostgresBranch",
+    "PostgresJournal",
+    "PostgresParticipant",
+    "PostgresStore",
+    "postgres_schema",
+]
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _RETRYABLE_SQLSTATES = {"40001", "40P01"}  # serialization failure, deadlock
@@ -57,6 +66,31 @@ def _psycopg() -> Any:  # noqa: ANN401 - the driver module, imported lazily
             "the PostgreSQL adapter needs psycopg: pip install 'datorium[postgres]'"
         ) from exc
     return psycopg
+
+
+def postgres_schema(raw: str, schema: str | None = None) -> tuple[str, str | None]:
+    """The DSN for the driver and the schema of a PostgreSQL store or journal.
+
+    The schema is the DSN's ``schema`` query parameter, or ``schema``; both given
+    must agree. The returned DSN is ``raw`` without that parameter.
+    """
+    dsn = parse_dsn(raw)
+    if dsn.store != "postgres":
+        raise DSNError(f"not a PostgreSQL connection string: {dsn}")
+    from_dsn = dsn.params.get("schema")
+    for value in (from_dsn, schema):
+        if value is not None and not _IDENTIFIER.match(value):
+            raise DSNError(
+                f"invalid schema name {value!r}: a letter or '_', then letters, digits and"
+                " underscores, at most 63 characters"
+            )
+    if from_dsn is not None and schema is not None and from_dsn != schema:
+        raise DSNError(f"the DSN names schema {from_dsn!r} but schema={schema!r} was passed")
+    if from_dsn is None:
+        return raw, schema
+    base, _, query = raw.partition("?")
+    kept = [p for p in query.split("&") if unquote_plus(p.partition("=")[0]) != "schema"]
+    return (f"{base}?{'&'.join(kept)}" if kept else base), from_dsn
 
 
 def _check_identifier(kind: str, value: str | None) -> None:
@@ -436,3 +470,12 @@ class PostgresJournal:
             created_ms=row["created_ms"],
             updated_ms=row["updated_ms"],
         )
+
+
+ADAPTER = Adapter(
+    kind="postgres",
+    schemes=(Scheme("postgresql", default_port=5432), Scheme("postgres", default_port=5432)),
+    open_store=lambda name, dsn: PostgresStore(dsn, name=name),
+    open_journal=lambda dsn, wall_ms: PostgresJournal(dsn, wall_ms=wall_ms),
+    query_help="SQL with %s or %(name)s placeholders",
+)

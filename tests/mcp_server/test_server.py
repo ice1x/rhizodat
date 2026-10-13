@@ -82,6 +82,22 @@ def test_recovery_is_offered_only_when_enabled(tools: Tools) -> None:
     assert ran.structured_content["aborted"] == []
 
 
+def test_the_query_tool_describes_the_configured_kinds() -> None:
+    """Each adapter tells clients its native query language; only configured kinds show."""
+    store = Readable(World().store("erp", two_phase=True))
+    t = Tools(Datorium(stores={"erp": store}), dsns={"erp": "postgresql://db/erp"})
+
+    async def go() -> Any:
+        async with Client(build_server(t)) as client:
+            return await client.list_tools()
+
+    [query] = [x for x in anyio.run(go).tools if x.name == "query"]
+    assert query.description is not None
+    assert "postgres: SQL with %s" in query.description
+    assert "Cypher" not in query.description
+    t.close()
+
+
 def test_tools_return_structured_results(tools: Tools) -> None:
     result = call(tools, "query", {"store": "orders", "query": "SELECT 1"})
     assert not result.is_error

@@ -23,54 +23,42 @@ Outcome = Committed | CommittedPending
 
 
 def open_store(name: str, dsn: str) -> Store:
-    """Open the adapter for ``dsn``; drivers are imported only here."""
+    """Open the store ``dsn`` names with its registered adapter."""
+    from datorium.core.adapter import adapter_for
     from datorium.core.dsn import parse_dsn
 
     kind = parse_dsn(dsn).store
-    if kind == "postgres":
-        from datorium.adapters.postgres import PostgresStore
-
-        return PostgresStore(dsn, name=name)
-    if kind == "drevo":
-        from datorium.adapters.drevo import DrevoStore
-
-        return DrevoStore(dsn, name=name)
-    if kind == "clickhouse":
-        from datorium.adapters.clickhouse import ClickHouseStore
-
-        return ClickHouseStore(dsn, name=name)
-    from datorium.adapters.iceberg import IcebergStore
-
-    return IcebergStore(dsn, name=name)
+    open_ = adapter_for(kind).open_store
+    if open_ is None:
+        raise ValueError(f"{kind} cannot be a store: it only holds the journal")
+    return open_(name, dsn)
 
 
-def _check_journal_graph(journal: str, stores: Mapping[str, "str | Store"]) -> None:
-    """A drevo journal in the graph of a drevo store would be blocked by its prepared fence."""
+def _check_journal_fence(journal: str, stores: Mapping[str, Store]) -> None:
+    """A journal inside a store's prepared fence would block the coordinator's own writes."""
+    from datorium.core.adapter import Fenced, adapter_for
     from datorium.core.dsn import parse_dsn
 
-    if parse_dsn(journal).store != "drevo":
-        return
-    from datorium.adapters.drevo import graph_location
-
-    where = graph_location(journal)
+    locate = adapter_for(parse_dsn(journal).store).journal_location
+    where = locate(journal) if locate is not None else None
     if where is None:
         return
     for name, store in stores.items():
-        other = (
-            graph_location(store) if isinstance(store, str) else getattr(store, "location", None)
-        )
-        if other == where:
+        if isinstance(store, Fenced) and store.fence_location == where:
             raise ValueError(
-                f"the journal must live in a separate drevo graph: store {name!r} uses the same"
-                " one, and its prepared fence would block the coordinator's journal writes"
+                f"the journal must live outside store {name!r}: while one of its branches is"
+                " prepared, its fence blocks every other commit there, including the"
+                " coordinator's journal writes (for drevo: use a separate drevo graph)"
             )
 
 
 def _check_applied_locations(stores: Mapping[str, "Store"]) -> None:
     """Two stores sharing one ``dat_applied`` would block or confuse each other."""
+    from datorium.core.adapter import AppliedLocation
+
     seen: dict[tuple[str, ...], str] = {}
     for name, store in stores.items():
-        where = getattr(store, "applied_location", None)
+        where = store.applied_location if isinstance(store, AppliedLocation) else None
         if where is None:
             continue
         if where in seen:
@@ -98,14 +86,14 @@ class Datorium:
         for name in stores:
             if not _STORE_NAME.match(name):
                 raise ValueError(f"invalid store name {name!r}: letters, digits, '_', '.', '-'")
-        if isinstance(journal, str):
-            _check_journal_graph(journal, stores)
-        self._stores: dict[str, Store] = {
-            name: open_store(name, s) if isinstance(s, str) else s for name, s in stores.items()
-        }
+        self._stores: dict[str, Store] = {}
         try:
+            for name, s in stores.items():
+                self._stores[name] = open_store(name, s) if isinstance(s, str) else s
             _check_applied_locations(self._stores)
-        except ValueError:
+            if isinstance(journal, str):
+                _check_journal_fence(journal, self._stores)
+        except Exception:
             for opened in self._stores.values():
                 opened.close()
             raise
