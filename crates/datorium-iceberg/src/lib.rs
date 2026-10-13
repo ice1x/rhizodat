@@ -41,7 +41,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
-use datorium_core::dsn::parse_dsn;
+use datorium_core::adapter::{Adapter, Presence, Scheme};
 use datorium_core::gid::gid_for;
 use datorium_core::journal::BranchRecord;
 use datorium_core::staged::{StagedTable, decode_staged, encode_staged};
@@ -68,6 +68,38 @@ use parquet::file::metadata::ParquetMetaDataReader;
 use parquet::file::properties::WriterProperties;
 use serde_json::Value as Json;
 use uuid::Uuid;
+
+/// The Iceberg store kind: a REST catalog (`iceberg+rest://host/warehouse`);
+/// `iceberg+sql://` and `iceberg+glue://` are recognised for the Python
+/// reference. One phase; cannot hold the journal.
+pub const ADAPTER: Adapter = Adapter {
+    kind: "iceberg",
+    schemes: &[
+        Scheme {
+            name: "iceberg+rest",
+            transport: Some("rest"),
+            default_port: None,
+            host: Presence::Required,
+            path: Presence::Optional,
+        },
+        Scheme {
+            name: "iceberg+sql",
+            transport: Some("sql"),
+            default_port: None,
+            host: Presence::Optional,
+            path: Presence::Optional,
+        },
+        Scheme {
+            name: "iceberg+glue",
+            transport: Some("glue"),
+            default_port: None,
+            host: Presence::Optional,
+            path: Presence::Optional,
+        },
+    ],
+    holds_journal: false,
+    query_help: Some("a table name with a scan"),
+};
 
 const RESERVED: [&str; 2] = ["dat_txn", "dat_tx_time"];
 const TXN_PROPERTY: &str = "dat.txn";
@@ -100,7 +132,9 @@ fn refuse(message: impl Into<String>) -> BoxError {
 /// [`IcebergError`] for a DSN of another store, or a catalog this crate does
 /// not support yet (`iceberg+sql`, `iceberg+glue`).
 pub fn catalog_properties(dsn: &str) -> Result<HashMap<String, String>, IcebergError> {
-    let parsed = parse_dsn(dsn).map_err(|e| IcebergError(e.to_string()))?;
+    let parsed = ADAPTER
+        .parse(dsn)
+        .map_err(|e| IcebergError(e.to_string()))?;
     if parsed.store() != "iceberg" {
         return Err(IcebergError(format!(
             "not an iceberg connection string: {parsed}"

@@ -19,7 +19,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
 use datorium_core::clock::HybridLogicalClock;
 use datorium_core::coordinator::{Coordinator, Outcome};
-use datorium_core::dsn::parse_dsn;
 use datorium_core::gid::gid_for;
 use datorium_core::identity::IdGenerator;
 use datorium_core::journal::{BranchRecord, Journal, State};
@@ -56,7 +55,9 @@ fn dsn(key: &str) -> Option<String> {
         return Some(dsn);
     }
     let dsn = env_test(key)?;
-    let parsed = parse_dsn(&dsn).expect("a valid DSN in .env.test");
+    let parsed = datorium_iceberg::ADAPTER
+        .parse(&dsn)
+        .expect("a valid DSN in .env.test");
     let addr = (
         parsed.host().unwrap_or("127.0.0.1"),
         parsed.port().unwrap_or(0),

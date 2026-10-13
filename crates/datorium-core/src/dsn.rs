@@ -1,6 +1,8 @@
 //! Connection strings (DSNs) for stores and the journal.
 //!
-//! One URL syntax for every store, parsed without any driver:
+//! One URL syntax for every store, parsed without any driver. The schemes and
+//! their rules (host, path, default port) are declared by the adapters
+//! ([`crate::adapter`]); datorium's own are:
 //!
 //! | DSN | store | transport |
 //! |---|---|---|
@@ -13,9 +15,6 @@
 //! | `iceberg+sql://…`, `iceberg+glue://…` | iceberg | sql, glue |
 //! | `file:///abs/path` | file | — |
 //!
-//! A PostgreSQL DSN may name the schema of a store or journal with `schema=`
-//! (see [`postgres_schema`]); it is removed before the DSN reaches the driver.
-//!
 //! `postgres://` is an alias. Schemes match case-insensitively; user, password
 //! and path are percent-decoded. Passwords and secret-looking query parameters
 //! never appear in `Debug` / `Display`; [`Dsn::unredacted`] returns the original
@@ -23,6 +22,8 @@
 //! reference, so both implementations agree on every string.
 
 use std::fmt;
+
+use crate::adapter::{Presence, Scheme};
 
 /// The connection string is malformed or names an unsupported store. The
 /// message never contains a secret.
@@ -37,42 +38,15 @@ impl fmt::Display for DsnError {
 
 impl std::error::Error for DsnError {}
 
-struct Scheme {
-    name: &'static str,
-    store: &'static str,
-    transport: Option<&'static str>,
-    default_port: Option<u16>,
-    host_required: bool,
-}
-
-const fn scheme(
-    name: &'static str,
-    store: &'static str,
-    transport: Option<&'static str>,
-    default_port: Option<u16>,
-    host_required: bool,
-) -> Scheme {
-    Scheme {
-        name,
-        store,
-        transport,
-        default_port,
-        host_required,
+impl DsnError {
+    /// An error with `message`, which must not contain a secret (for adapters
+    /// that check their own DSN parameters).
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
     }
 }
 
-const SCHEMES: [Scheme; 10] = [
-    scheme("postgresql", "postgres", None, Some(5432), false),
-    scheme("postgres", "postgres", None, Some(5432), false),
-    scheme("clickhouse", "clickhouse", None, Some(8123), true),
-    scheme("drevo", "drevo", Some("embedded"), None, false),
-    scheme("drevo+mem", "drevo", Some("memory"), None, false),
-    scheme("drevo+bolt", "drevo", Some("bolt"), Some(7687), true),
-    scheme("iceberg+rest", "iceberg", Some("rest"), None, true),
-    scheme("iceberg+sql", "iceberg", Some("sql"), None, false),
-    scheme("iceberg+glue", "iceberg", Some("glue"), None, false),
-    scheme("file", "file", None, None, false),
-];
 const SECRET_MARKERS: [&str; 5] = ["pass", "secret", "token", "key", "credential"];
 const MASK: &str = "***";
 
@@ -91,7 +65,7 @@ pub struct Dsn {
 }
 
 impl Dsn {
-    /// `postgres`, `clickhouse`, `drevo`, `iceberg` or `file`.
+    /// The kind of the adapter that owns the scheme (`postgres`, `drevo`, …).
     #[must_use]
     pub fn store(&self) -> &str {
         self.store
@@ -274,6 +248,13 @@ fn hex(b: u8) -> Option<u8> {
         .and_then(|d| u8::try_from(d).ok())
 }
 
+/// Python's `unquote_plus`: one query-string component decoded (`+` is a
+/// space), for adapters that edit their DSN's query.
+#[must_use]
+pub fn unquote_plus(s: &str) -> String {
+    unquote(&s.replace('+', " "))
+}
+
 /// Python's `parse_qsl(query, keep_blank_values=True)`.
 fn parse_query(query: &str) -> Vec<(String, String)> {
     query
@@ -298,19 +279,56 @@ fn error(message: impl Into<String>) -> DsnError {
     DsnError(message.into())
 }
 
-/// Parse a connection string.
-///
-/// # Errors
-///
-/// [`DsnError`] for an unsupported scheme, a bad port, a missing or unexpected
-/// host or path, or a repeated query parameter.
-pub fn parse_dsn(raw: &str) -> Result<Dsn, DsnError> {
+/// The scheme's host and path rules.
+fn check_rules(
+    name: &str,
+    sc: &Scheme,
+    no_netloc: bool,
+    has_host: bool,
+    has_path: bool,
+) -> Result<(), DsnError> {
+    if sc.host == Presence::None && !no_netloc {
+        if sc.path == Presence::Required {
+            return Err(error(format!(
+                "{name}:/// takes a local absolute path, not a host: {name}:///abs/path"
+            )));
+        }
+        let or_path = if sc.path == Presence::None {
+            " or path"
+        } else {
+            ""
+        };
+        return Err(error(format!("{name}:// takes no host{or_path}")));
+    }
+    if sc.path == Presence::Required && !has_path {
+        return Err(error(format!(
+            "{name}:/// needs a path: {name}:///abs/path"
+        )));
+    }
+    if sc.path == Presence::None && has_path {
+        return Err(error(format!("{name}:// takes no host or path")));
+    }
+    if sc.host == Presence::Required && !has_host {
+        return Err(error(format!("{name}:// needs a host")));
+    }
+    Ok(())
+}
+
+/// Parse a connection string against registered schemes: `find` maps a
+/// lower-case scheme to its adapter kind and rules, `supported` names them all
+/// for the error. Callers go through [`crate::adapter::Registry::parse`] or
+/// [`crate::adapter::Adapter::parse`].
+pub(crate) fn parse_with(
+    raw: &str,
+    find: &dyn Fn(&str) -> Option<(&'static str, Scheme)>,
+    supported: &[&str],
+) -> Result<Dsn, DsnError> {
     let cleaned = clean(raw);
     let parts = split(&cleaned);
     let name = parts.scheme.to_ascii_lowercase();
-    let known = SCHEMES.iter().find(|s| s.name == name);
-    let Some(sc) = known.filter(|_| raw.to_lowercase().starts_with(&format!("{name}://"))) else {
-        let supported: Vec<String> = SCHEMES.iter().map(|s| format!("{}://", s.name)).collect();
+    let known = find(&name).filter(|_| raw.to_lowercase().starts_with(&format!("{name}://")));
+    let Some((kind, sc)) = known else {
+        let supported: Vec<String> = supported.iter().map(|s| format!("{s}://")).collect();
         return Err(error(format!(
             "unsupported connection string {:?}; supported: {}",
             scheme_hint(raw),
@@ -353,26 +371,13 @@ pub fn parse_dsn(raw: &str) -> Result<Dsn, DsnError> {
     let host = Some(host.to_lowercase()).filter(|h| !h.is_empty());
     let path = Some(unquote(parts.path)).filter(|p| !p.is_empty());
 
-    if matches!(sc.name, "drevo" | "file") {
-        if !parts.netloc.is_empty() {
-            return Err(error(format!(
-                "{0}:/// takes a local absolute path, not a host: {0}:///abs/path",
-                sc.name
-            )));
-        }
-        if path.is_none() {
-            return Err(error(format!(
-                "{0}:/// needs a path: {0}:///abs/path",
-                sc.name
-            )));
-        }
-    }
-    if sc.name == "drevo+mem" && (!parts.netloc.is_empty() || path.is_some()) {
-        return Err(error("drevo+mem:// takes no host or path"));
-    }
-    if sc.host_required && host.is_none() {
-        return Err(error(format!("{}:// needs a host", sc.name)));
-    }
+    check_rules(
+        &name,
+        &sc,
+        parts.netloc.is_empty(),
+        host.is_some(),
+        path.is_some(),
+    )?;
 
     let mut params: Vec<(String, String)> = Vec::new();
     for (key, value) in parse_query(parts.query) {
@@ -393,7 +398,7 @@ pub fn parse_dsn(raw: &str) -> Result<Dsn, DsnError> {
     };
 
     Ok(Dsn {
-        store: sc.store,
+        store: kind,
         transport: sc.transport,
         port: port.or(if host.is_some() {
             sc.default_port
@@ -409,75 +414,36 @@ pub fn parse_dsn(raw: &str) -> Result<Dsn, DsnError> {
     })
 }
 
-fn is_pg_identifier(value: &str) -> bool {
-    let mut chars = value.chars();
-    value.len() <= 63
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// The DSN for the driver and the schema of a PostgreSQL store or journal.
-///
-/// The schema is the DSN's `schema` query parameter, or `schema`; both given
-/// must agree. The returned DSN is `raw` without that parameter.
-///
-/// # Errors
-///
-/// [`DsnError`] for a DSN that does not parse or is not PostgreSQL, an invalid
-/// schema name, or two different schemas.
-pub fn postgres_schema(
-    raw: &str,
-    schema: Option<&str>,
-) -> Result<(String, Option<String>), DsnError> {
-    let dsn = parse_dsn(raw)?;
-    if dsn.store() != "postgres" {
-        return Err(error(format!(
-            "not a PostgreSQL connection string: {:?}",
-            scheme_hint(raw)
-        )));
-    }
-    let from_dsn = dsn
-        .params()
-        .iter()
-        .find(|(k, _)| k == "schema")
-        .map(|(_, v)| v.as_str());
-    for value in [from_dsn, schema].into_iter().flatten() {
-        if !is_pg_identifier(value) {
-            return Err(error(format!(
-                "invalid schema name {value:?}: a letter or '_', then letters, digits and \
-                 underscores, at most 63 characters"
-            )));
-        }
-    }
-    match (from_dsn, schema) {
-        (Some(d), Some(s)) if d != s => Err(error(format!(
-            "the DSN names schema {d:?} but schema {s:?} was passed"
-        ))),
-        (None, _) => Ok((raw.to_owned(), schema.map(str::to_owned))),
-        (Some(d), _) => {
-            let (base, query) = raw.split_once('?').unwrap_or((raw, ""));
-            let kept: Vec<&str> = query
-                .split('&')
-                .filter(|field| {
-                    let key = field.split_once('=').map_or(*field, |(k, _)| k);
-                    unquote(&key.replace('+', " ")) != "schema"
-                })
-                .collect();
-            let out = if kept.is_empty() {
-                base.to_owned()
-            } else {
-                format!("{base}?{}", kept.join("&"))
-            };
-            Ok((out, Some(d.to_owned())))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{Adapter, Presence};
+
+    const TEST: Adapter = Adapter {
+        kind: "test",
+        schemes: &[
+            Scheme {
+                name: "postgresql",
+                transport: None,
+                default_port: Some(5432),
+                host: Presence::Optional,
+                path: Presence::Optional,
+            },
+            Scheme {
+                name: "iceberg+rest",
+                transport: Some("rest"),
+                default_port: None,
+                host: Presence::Required,
+                path: Presence::Optional,
+            },
+        ],
+        holds_journal: false,
+        query_help: None,
+    };
+
+    fn parse_dsn(raw: &str) -> Result<Dsn, DsnError> {
+        TEST.parse(raw)
+    }
 
     #[test]
     fn unquote_matches_python() {

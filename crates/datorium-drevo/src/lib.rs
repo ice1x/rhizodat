@@ -28,7 +28,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datorium_core::dsn::parse_dsn;
+use datorium_core::adapter::{Adapter, Presence, Scheme};
 use datorium_core::identity::system_ms;
 use datorium_core::journal::{
     BranchRecord, Journal, JournalError, JournalRecord, State, check_transition, decode_branches,
@@ -36,6 +36,37 @@ use datorium_core::journal::{
 };
 use datorium_core::store::{BoxError, Branch, Participant};
 use uuid::Uuid;
+
+/// The drevo store kind: embedded (`drevo:///abs/path`), in memory
+/// (`drevo+mem://`, tests) and remote over Bolt (`drevo+bolt://host:7687`).
+pub const ADAPTER: Adapter = Adapter {
+    kind: "drevo",
+    schemes: &[
+        Scheme {
+            name: "drevo",
+            transport: Some("embedded"),
+            default_port: None,
+            host: Presence::None,
+            path: Presence::Required,
+        },
+        Scheme {
+            name: "drevo+mem",
+            transport: Some("memory"),
+            default_port: None,
+            host: Presence::None,
+            path: Presence::None,
+        },
+        Scheme {
+            name: "drevo+bolt",
+            transport: Some("bolt"),
+            default_port: Some(7687),
+            host: Presence::Required,
+            path: Presence::Optional,
+        },
+    ],
+    holds_journal: true,
+    query_help: Some("Cypher with $name parameters"),
+};
 
 mod bolt;
 #[cfg(feature = "embedded")]
@@ -266,7 +297,7 @@ impl Error for HeuristicOutcome {}
 ///
 /// [`ConfigError`] for a DSN of another store.
 pub fn graph_location(dsn: &str) -> Result<Option<Vec<String>>, ConfigError> {
-    let parsed = parse_dsn(dsn).map_err(|e| ConfigError(e.to_string()))?;
+    let parsed = ADAPTER.parse(dsn).map_err(|e| ConfigError(e.to_string()))?;
     if parsed.store() != "drevo" {
         return Err(ConfigError(format!(
             "not a drevo connection string: {parsed}"
@@ -287,7 +318,7 @@ pub fn graph_location(dsn: &str) -> Result<Option<Vec<String>>, ConfigError> {
 }
 
 fn open_backend(dsn: &str) -> Result<Arc<dyn Backend>, ConfigError> {
-    let parsed = parse_dsn(dsn).map_err(|e| ConfigError(e.to_string()))?;
+    let parsed = ADAPTER.parse(dsn).map_err(|e| ConfigError(e.to_string()))?;
     if parsed.store() != "drevo" {
         return Err(ConfigError(format!(
             "not a drevo connection string: {parsed}"
