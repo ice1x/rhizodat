@@ -72,6 +72,16 @@ def test_execute_returns_rows(store: DrevoStore) -> None:
     assert result.all() == [{"heading": "hello"}]
 
 
+def test_read_only_reads_and_never_keeps_a_write(store: DrevoStore) -> None:
+    lbl = label()
+    store.execute(f"CREATE (:{lbl} {{heading: 'kept'}})")
+    rows = store.read_only(f"MATCH (n:{lbl}) RETURN n.heading AS heading").all()
+    assert rows == [{"heading": "kept"}]
+    # A write inside a read is rolled back with it.
+    store.read_only(f"CREATE (:{lbl} {{heading: 'dropped'}})")
+    assert count(store, lbl) == 1
+
+
 def test_one_phase_commit_with_applied_marker(store: DrevoStore) -> None:
     lbl, txn = label(), new_id()
     branch = store.branch(txn)

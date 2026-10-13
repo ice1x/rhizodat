@@ -136,6 +136,10 @@ def test_explicit_commit_and_rollback(dat: Datorium, world: World) -> None:
     assert world.faults.seen.count("pg.rollback") == 1
 
 
+def test_store_names_keep_the_configuration_order(dat: Datorium) -> None:
+    assert dat.store_names == ("pg", "graph", "clickhouse")
+
+
 def test_unknown_store_name_is_an_error(dat: Datorium) -> None:
     uow = dat.unit_of_work()
     with pytest.raises(KeyError, match="'nope'"):

@@ -172,6 +172,14 @@ def test_execute_scans_a_table_with_a_filter(store: IcebergStore, faker: Faker) 
     assert len(result.all()) == 3
 
 
+def test_read_only_is_a_scan(store: IcebergStore, faker: Faker) -> None:
+    branch = store.branch(new_id())
+    branch.append("erp.sales", sales(faker, 2))
+    branch.stage(branch.dat_txn, TS)
+    branch.commit_one_phase()
+    assert len(store.read_only("erp.sales", {"selected_fields": ("sku",)}).all()) == 2
+
+
 # --- branch -------------------------------------------------------------------------
 
 

@@ -63,3 +63,17 @@ def test_importing_datorium_loads_no_store_driver() -> None:
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout
     assert out.strip() == "[]"
+
+
+def test_mcp_is_an_optional_extra_and_the_tools_do_not_need_it() -> None:
+    extras = set(importlib.metadata.metadata("datorium").get_all("Provides-Extra") or [])
+    assert "mcp" in extras
+    code = (
+        "import sys\n"
+        "import datorium.mcp, datorium.mcp.config, datorium.mcp.tools, datorium.mcp.server\n"
+        f"print(sorted(d for d in ['mcp', *{DRIVER_MODULES!r}] if d in sys.modules))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout
+    assert out.strip() == "[]"

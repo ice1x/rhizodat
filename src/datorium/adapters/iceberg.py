@@ -142,6 +142,10 @@ class IcebergStore:
             arrow=lambda: arrow,
         )
 
+    def read_only(self, table: str, params: Mapping[str, Any] | None = None) -> Result:
+        """The same scan as ``execute``: a scan cannot write."""
+        return self.execute(table, params)
+
     def branch(self, dat_txn: uuid.UUID) -> "IcebergBranch":
         return IcebergBranch(self, dat_txn)
 

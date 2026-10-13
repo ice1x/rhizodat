@@ -70,6 +70,23 @@ def test_execute_binds_parameters(store: ClickHouseStore, faker: Faker) -> None:
     assert store.execute("SELECT {w:String} AS w", {"w": word}).one() == {"w": word}
 
 
+def test_read_only_reads(store: ClickHouseStore, faker: Faker) -> None:
+    word = faker.word()
+    assert store.read_only("SELECT {w:String} AS w", {"w": word}).one() == {"w": word}
+
+
+def test_read_only_refuses_writes(store: ClickHouseStore) -> None:
+    store.execute("CREATE TABLE notes (body String) ENGINE = MergeTree ORDER BY body")
+    for statement in (
+        "INSERT INTO notes VALUES ('x')",
+        "DROP TABLE notes",
+        "SELECT 1 SETTINGS readonly = 0",
+    ):
+        with pytest.raises(Exception, match="readonly"):
+            store.read_only(statement)
+    assert store.execute("SELECT count() AS n FROM notes").one()["n"] == 0
+
+
 def test_install_is_idempotent(store: ClickHouseStore) -> None:
     store.install()
     assert store.execute("SELECT count() AS n FROM dat_applied").one()["n"] == 0

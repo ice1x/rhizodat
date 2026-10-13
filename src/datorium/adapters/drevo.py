@@ -267,6 +267,17 @@ class DrevoStore:
         """Native Cypher in autocommit mode, outside any meta-transaction."""
         return self._backend.execute(query, params)
 
+    def read_only(self, query: str, params: Params = None) -> Result:
+        """A native read that never keeps a write: it runs in a transaction that is
+        always rolled back (drevo has no read-only mode)."""
+        tx = self._backend.begin()
+        try:
+            result = tx.execute(query, params)
+            rows = list(result)
+        finally:
+            tx.rollback()
+        return Result(iter(rows), columns=result.columns)
+
     def branch(self, dat_txn: uuid.UUID) -> "DrevoBranch":
         return DrevoBranch(self.name, self._backend, dat_txn)
 

@@ -165,6 +165,28 @@ class PostgresStore:
         with self.connect(autocommit=True) as conn:
             return _result(conn.execute(sql, params))
 
+    def read_only(
+        self, sql: str, params: Mapping[str, Any] | Sequence[Any] | None = None
+    ) -> Result:
+        """A native read the server guarantees cannot write: one statement in a
+        ``READ ONLY`` transaction that is always rolled back.
+
+        A first query fixes the mode (until then ``SET TRANSACTION READ WRITE``
+        could lift it), and the statement is prepared on the server, which
+        refuses several statements (``COMMIT; INSERT ...``); psycopg would send
+        a string without parameters through the simple protocol, which runs them
+        all. Without ``params`` a ``%`` is literal, as in ``execute``.
+        """
+        if params is None:
+            sql, params = sql.replace("%", "%%"), ()
+        with self.connect() as conn:
+            conn.read_only = True
+            try:
+                conn.execute("SELECT 1")
+                return _result(conn.execute(sql, params, prepare=True))
+            finally:
+                conn.rollback()
+
     def branch(self, dat_txn: uuid.UUID, *, isolation: Isolation | None = None) -> "PostgresBranch":
         """A new branch; ``isolation`` defaults to the store's (the server default if unset)."""
         return PostgresBranch(
