@@ -491,11 +491,39 @@ dat.store("iceberg").execute("analytics.orders", {"row_filter": "amount > 100"})
 
 ### Adapter contracts
 
+The core knows no particular database: every store, datorium's own four
+included, is a plug-in adapter (`datorium.core.adapter`).
+
 ```python
-class Adapter:
-    capabilities: set[str]          # {"sql", "graph", "fts", "vector", "table"}
-    def connect(self) -> None: ...
+@dataclass(frozen=True)
+class Scheme:                        # one DSN scheme and its rules
+    name: str                        # "postgresql", "drevo+bolt", …
+    transport: str | None = None
+    default_port: int | None = None
+    host: "required" | "optional" | "none" = "optional"
+    path: "required" | "optional" | "none" = "optional"
+
+@dataclass(frozen=True)
+class Adapter:                       # a store kind
+    kind: str                        # "postgres", "drevo", …
+    schemes: tuple[Scheme, ...]
+    open_store: Callable[[name, dsn], Store] | None = None        # None: journal only (file)
+    open_journal: Callable[[dsn, wall_ms], Journal] | None = None  # shared ACID stores only
+    journal_location: Callable[[dsn], tuple | None] | None = None  # compared with fence_location
+    query_help: str | None = None    # its native query language, for MCP clients
+
+class Store:                         # what open_store returns
+    name: str
+    two_phase: bool
+    def branch(self, dat_txn) -> Branch: ...
+    def participant(self) -> Participant: ...
+    def execute(self, query, params=None) -> Result: ...  # native access, outside Units of Work
     def close(self) -> None: ...
+
+# optional capabilities, checked with isinstance
+class ReadOnlyQueries:  def read_only(self, query, params=None) -> Result: ...  # the store refuses writes
+class AppliedLocation:  applied_location: tuple | None   # two stores in one place are refused
+class Fenced:           fence_location: tuple | None     # the journal must not live there
 
 class Branch:                        # one store's part of one Unit of Work
     store: str
@@ -527,6 +555,41 @@ class Result:                        # single pass over rows (mappings)
 A result follows the store cursor: it is read once, and reading it again
 raises `ResultConsumedError`.
 
+### Plug-in adapters
+
+A package adds a database by declaring one entry point; datorium itself is not
+changed:
+
+```toml
+[project.entry-points."datorium.adapters"]
+mysql = "datorium_mysql:ADAPTER"
+```
+
+```python
+ADAPTER = Adapter(
+    kind="mysql",
+    schemes=(Scheme("mysql", default_port=3306, host="required"),),
+    open_store=lambda name, dsn: MySqlStore(dsn, name=name),
+    open_journal=lambda dsn, wall_ms: MySqlJournal(dsn, wall_ms=wall_ms),
+    query_help="SQL with %s placeholders",
+)
+```
+
+`register_adapter(ADAPTER)` does the same inside one process. datorium's own
+adapters are loaded the same way, first. A kind or scheme registered twice is
+refused; a plug-in that fails to load is skipped, and the error is named when a
+DSN needs a scheme nobody registered. Adapters are imported on first use, and
+drivers only when a store opens.
+
+An adapter keeps datorium's guarantees only if its store fits one of the two
+branch models: real two-phase commit (prepare, then commit or roll back a
+prepared transaction by gid, listing the prepared ones), or one phase with an
+idempotent apply of the journal payload after the decision (`is_applied`
+answers whether it is visible). A store that can do neither cannot join a
+meta-transaction with others. Next: a contract test suite every adapter runs
+(the `Branch` / `Participant` semantics and the crash matrix on the real store),
+then the same registry in Rust.
+
 ### Connection strings
 
 | DSN | Store | Driver | Default port |
@@ -549,6 +612,8 @@ raises `ResultConsumedError`.
   PostgreSQL, `iceberg+sql:///abs/catalog.db?warehouse=file:///…` in SQLite.
   Other query parameters become pyiceberg catalog properties (`s3.endpoint`,
   `credential`, …).
+- The schemes and their rules come from the registered adapters (see
+  plug-in adapters above); these are datorium's own.
 - Parsing never imports a driver. Scheme matching ignores case; user,
   password and path are percent-decoded; a repeated query parameter is an error.
 - `drevo:///` and `file:///` take a local absolute path and no host;
@@ -566,7 +631,8 @@ datorium/
 ├── core/
 │   ├── identity.py      # dat_id, UUIDv7
 │   ├── clock.py         # hybrid logical clock
-│   ├── dsn.py           # connection strings
+│   ├── adapter.py       # adapter registry, plug-ins, capability protocols
+│   ├── dsn.py           # connection strings (schemes from the adapters)
 │   ├── mapping.py       # @entity, store mapping
 │   ├── repository.py
 │   ├── unit_of_work.py

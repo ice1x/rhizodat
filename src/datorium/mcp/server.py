@@ -19,13 +19,23 @@ if TYPE_CHECKING:
 __all__ = ["build_server", "main"]
 
 INSTRUCTIONS = """\
-datorium is one data layer over PostgreSQL, ClickHouse, drevo (a graph) and Apache Iceberg.
-Call `stores` first: it names the configured stores and their kind. `query` runs a native
-read in a store's own language (SQL for postgres and clickhouse, Cypher for drevo, a table
-name with scan parameters for iceberg); the store refuses writes. Writes in datorium are
-meta-transactions over several stores; `transaction` and `pending_transactions` show them
-in the journal, including any a crashed process left for recovery. If `run_recovery` is
-offered, it finishes or rolls back what crashed processes left: run it only when asked."""
+datorium is one data layer over several stores (relational, analytical, graph, lakehouse,
+or any other a plug-in adapter adds). Call `stores` first: it names the configured stores
+and their kind. `query` runs a native read in a store's own language; the store refuses
+writes. Writes in datorium are meta-transactions over several stores; `transaction` and
+`pending_transactions` show them in the journal, including any a crashed process left for
+recovery. If `run_recovery` is offered, it finishes or rolls back what crashed processes
+left: run it only when asked."""
+
+QUERY_HELP = """\
+A native read on one store, which refuses any write. Returns at most `limit` rows and
+whether more were left."""
+
+
+def query_description(languages: dict[str, str]) -> str:
+    """The `query` tool's description: the native language of each configured kind."""
+    lines = "".join(f"\n- {kind}: {help_}" for kind, help_ in sorted(languages.items()))
+    return f"{QUERY_HELP}\nQuery languages by store kind:{lines}" if lines else QUERY_HELP
 
 
 def _guarded[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
@@ -67,7 +77,7 @@ def build_server(tools: Tools, *, recovery: bool = False) -> "MCPServer":
         masked."""
         return tools.stores()
 
-    @server.tool(annotations=read_only)
+    @server.tool(annotations=read_only, description=query_description(tools.query_languages()))
     @_guarded
     def query(
         store: str,
@@ -75,11 +85,6 @@ def build_server(tools: Tools, *, recovery: bool = False) -> "MCPServer":
         params: dict[str, Any] | list[Any] | None = None,
         limit: int = DEFAULT_LIMIT,
     ) -> dict[str, Any]:
-        """A native read on one store, which refuses any write. postgres: SQL with %s or
-        %(name)s placeholders; clickhouse: SQL with {name:Type} placeholders; drevo:
-        Cypher with $name parameters; iceberg: a table name (namespace.table), with scan
-        parameters (row_filter, selected_fields, limit). Returns at most `limit` rows and
-        whether more were left."""
         return tools.query(store, query, params, limit)
 
     @server.tool(annotations=read_only)

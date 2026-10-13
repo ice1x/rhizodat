@@ -33,6 +33,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import parse_dsn
 from datorium.core.journal import BranchRecord
 from datorium.core.result import Result
@@ -41,7 +42,13 @@ from datorium.core.staged import StagedTable, decode_staged, encode_staged
 if TYPE_CHECKING:
     import pyarrow as pa
 
-__all__ = ["IcebergBranch", "IcebergParticipant", "IcebergStore", "catalog_properties"]
+__all__ = [
+    "ADAPTER",
+    "IcebergBranch",
+    "IcebergParticipant",
+    "IcebergStore",
+    "catalog_properties",
+]
 
 _RESERVED = ("dat_txn", "dat_tx_time")
 _TXN_PROPERTY = "dat.txn"
@@ -342,3 +349,17 @@ class IcebergParticipant:
 
     def is_retryable(self, error: BaseException) -> bool:
         return _is_retryable(error)
+
+
+ADAPTER = Adapter(
+    kind="iceberg",
+    schemes=(
+        Scheme("iceberg+rest", transport="rest", host="required"),
+        Scheme("iceberg+sql", transport="sql"),
+        Scheme("iceberg+glue", transport="glue"),
+    ),
+    open_store=lambda name, dsn: IcebergStore(dsn, name=name),
+    query_help=(
+        "a table name (namespace.table), with scan parameters (row_filter, selected_fields, limit)"
+    ),
+)

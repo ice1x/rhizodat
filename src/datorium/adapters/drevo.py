@@ -26,6 +26,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
+from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import DSN, parse_dsn
 from datorium.core.journal import (
     BranchRecord,
@@ -39,7 +40,14 @@ from datorium.core.journal import (
 )
 from datorium.core.result import Result
 
-__all__ = ["DrevoBranch", "DrevoJournal", "DrevoParticipant", "DrevoStore", "graph_location"]
+__all__ = [
+    "ADAPTER",
+    "DrevoBranch",
+    "DrevoJournal",
+    "DrevoParticipant",
+    "DrevoStore",
+    "graph_location",
+]
 
 _MARKER = "CREATE (:DatApplied {dat_txn: $dat_txn, dat_tx_time: $dat_tx_time})"
 _IS_APPLIED = "MATCH (m:DatApplied {dat_txn: $dat_txn}) RETURN count(m) AS n"
@@ -246,6 +254,11 @@ class DrevoStore:
     @property
     def location(self) -> tuple[str, ...] | None:
         return graph_location(self._dsn)
+
+    @property
+    def fence_location(self) -> tuple[str, ...] | None:
+        """The graph a prepared branch of this store fences: the journal must live elsewhere."""
+        return self.location
 
     @property
     def applied_location(self) -> tuple[str, ...] | None:
@@ -495,3 +508,17 @@ class DrevoJournal:
             created_ms=row["created_ms"],
             updated_ms=row["updated_ms"],
         )
+
+
+ADAPTER = Adapter(
+    kind="drevo",
+    schemes=(
+        Scheme("drevo", transport="embedded", host="none", path="required"),
+        Scheme("drevo+mem", transport="memory", host="none", path="none"),
+        Scheme("drevo+bolt", transport="bolt", default_port=7687, host="required"),
+    ),
+    open_store=lambda name, dsn: DrevoStore(dsn, name=name),
+    open_journal=lambda dsn, wall_ms: DrevoJournal(dsn, wall_ms=wall_ms),
+    journal_location=graph_location,
+    query_help="Cypher with $name parameters",
+)

@@ -29,12 +29,13 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import parse_dsn
 from datorium.core.journal import BranchRecord
 from datorium.core.result import Result
 from datorium.core.rows import Batch, decode_batches, encode_batches
 
-__all__ = ["ClickHouseBranch", "ClickHouseParticipant", "ClickHouseStore"]
+__all__ = ["ADAPTER", "ClickHouseBranch", "ClickHouseParticipant", "ClickHouseStore"]
 
 _TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
 _RESERVED = ("dat_txn", "dat_tx_time")
@@ -275,3 +276,11 @@ class ClickHouseParticipant:
 
     def is_retryable(self, error: BaseException) -> bool:
         return _is_retryable(error)
+
+
+ADAPTER = Adapter(
+    kind="clickhouse",
+    schemes=(Scheme("clickhouse", default_port=8123, host="required"),),
+    open_store=lambda name, dsn: ClickHouseStore(dsn, name=name),
+    query_help="SQL with {name:Type} placeholders",
+)

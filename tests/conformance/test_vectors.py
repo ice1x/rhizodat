@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from datorium.adapters.postgres import postgres_schema
 from datorium.core.clock import (
     ClockSkewError,
     HLCTimestamp,
@@ -22,7 +23,7 @@ from datorium.core.clock import (
     LogicalOverflowError,
 )
 from datorium.core.coordinator import gid_for, parse_gid
-from datorium.core.dsn import DSNError, parse_dsn, postgres_schema
+from datorium.core.dsn import DSNError, parse_dsn
 from datorium.core.identity import IdGenerator
 from datorium.core.journal import (
     BranchRecord,

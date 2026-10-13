@@ -36,6 +36,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
+from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import parse_dsn
 
 __all__ = [
@@ -368,24 +369,29 @@ class SqliteJournal:
 
 def open_journal(dsn: str | None, *, wall_ms: Callable[[], int] = _system_ms) -> Journal:
     """Open the journal named by ``dsn``. There is no default: a missing journal is an error."""
+    from datorium.core.adapter import adapter_for, adapters
+
+    able = ", ".join(a.kind for a in adapters() if a.open_journal is not None)
     if not dsn:
         raise ValueError(
             "meta-transactions with several branches need a journal: "
-            "pass journal=<dsn> pointing to PostgreSQL or drevo (file:/// for development)"
+            f"pass journal=<dsn> for a shared ACID store ({able}; file:/// for development)"
         )
-    parsed = parse_dsn(dsn)
-    if parsed.store == "file":
-        assert parsed.path is not None
-        return SqliteJournal(parsed.path, wall_ms=wall_ms)
-    if parsed.store == "postgres":
-        from datorium.adapters.postgres import PostgresJournal
+    kind = parse_dsn(dsn).store
+    open_ = adapter_for(kind).open_journal
+    if open_ is None:
+        raise ValueError(f"{kind} cannot hold the journal: it must be a shared ACID store ({able})")
+    return open_(dsn, wall_ms)
 
-        return PostgresJournal(dsn, wall_ms=wall_ms)
-    if parsed.store == "drevo":
-        from datorium.adapters.drevo import DrevoJournal
 
-        return DrevoJournal(dsn, wall_ms=wall_ms)
-    raise ValueError(
-        f"{parsed.store} cannot hold the journal: it must be a shared ACID store "
-        "(PostgreSQL or drevo)"
-    )
+def _open_file_journal(dsn: str, wall_ms: Callable[[], int]) -> Journal:
+    path = parse_dsn(dsn).path
+    assert path is not None  # the scheme requires one
+    return SqliteJournal(path, wall_ms=wall_ms)
+
+
+FILE_ADAPTER = Adapter(
+    kind="file",
+    schemes=(Scheme("file", host="none", path="required"),),
+    open_journal=_open_file_journal,
+)

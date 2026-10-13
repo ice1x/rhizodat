@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from datorium.api import Datorium
+from datorium.core.adapter import ReadOnlyQueries, adapter_for
 from datorium.core.dsn import parse_dsn
 from datorium.core.journal import Journal, JournalRecord
 
@@ -107,10 +108,20 @@ class Tools:
                     "name": name,
                     "kind": parsed.store if parsed else type(store).__name__,
                     "two_phase": bool(store.two_phase),
-                    "read_only_queries": callable(getattr(store, "read_only", None)),
+                    "read_only_queries": isinstance(store, ReadOnlyQueries),
                     "dsn": parsed.redacted() if parsed else None,
                 }
             )
+        return out
+
+    def query_languages(self) -> dict[str, str]:
+        """Each configured store kind's native query language, from its adapter."""
+        out: dict[str, str] = {}
+        for dsn in self._dsns.values():
+            kind = parse_dsn(dsn).store
+            help_ = adapter_for(kind).query_help
+            if help_:
+                out.setdefault(kind, help_)
         return out
 
     def query(
@@ -125,10 +136,9 @@ class Tools:
             raise ValueError(f"limit must be at least 1, not {limit}")
         limit = min(limit, self._max_rows)
         target = self._dat.store(store)
-        read_only = getattr(target, "read_only", None)
-        if not callable(read_only):
+        if not isinstance(target, ReadOnlyQueries):
             raise ValueError(f"store {store!r} offers no read-only queries")
-        result = read_only(query, params)
+        result = target.read_only(query, params)
         try:
             rows = list(itertools.islice(result, limit + 1))
         finally:
