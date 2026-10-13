@@ -66,6 +66,22 @@ def _check_journal_graph(journal: str, stores: Mapping[str, "str | Store"]) -> N
             )
 
 
+def _check_applied_locations(stores: Mapping[str, "Store"]) -> None:
+    """Two stores sharing one ``dat_applied`` would block or confuse each other."""
+    seen: dict[tuple[str, ...], str] = {}
+    for name, store in stores.items():
+        where = getattr(store, "applied_location", None)
+        if where is None:
+            continue
+        if where in seen:
+            raise ValueError(
+                f"stores {seen[where]!r} and {name!r} share one dat_applied ({':'.join(where)}):"
+                " their branches of one meta-transaction would wait for each other or look"
+                " applied when they are not; give each store its own schema, database or graph"
+            )
+        seen[where] = name
+
+
 class Datorium:
     def __init__(
         self,
@@ -87,6 +103,12 @@ class Datorium:
         self._stores: dict[str, Store] = {
             name: open_store(name, s) if isinstance(s, str) else s for name, s in stores.items()
         }
+        try:
+            _check_applied_locations(self._stores)
+        except ValueError:
+            for opened in self._stores.values():
+                opened.close()
+            raise
         self.journal: Journal | None = (
             open_journal(journal) if isinstance(journal, str) else journal
         )

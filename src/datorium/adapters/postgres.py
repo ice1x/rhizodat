@@ -84,6 +84,10 @@ class _Connector:
         self._dsn = dsn
         self._schema = schema
 
+    @property
+    def schema(self) -> str | None:
+        return self._schema
+
     def connect(self, *, autocommit: bool = False) -> "psycopg.Connection[Any]":
         pg = _psycopg()
         from psycopg.rows import dict_row
@@ -127,6 +131,21 @@ class PostgresStore:
 
     def __repr__(self) -> str:
         return f"PostgresStore({self.name!r}, {self._dsn.redacted()!r})"
+
+    @property
+    def applied_location(self) -> tuple[str, ...]:
+        """Where this store's ``dat_applied`` table lives: server, database and schema.
+
+        Two stores with the same location must not meet in one meta-transaction:
+        both branches would insert the same ``dat_txn`` and the second would wait
+        for the first.
+        """
+        d = self._dsn
+        host = (d.host or d.params.get("host") or "").lower()
+        port = str(d.port or d.params.get("port") or 5432)
+        # No schema: the server's search_path, which writes to public unless a schema
+        # named after the user exists.
+        return ("postgres", host, port, d.database or "", self._connector.schema or "public")
 
     def connect(self, *, autocommit: bool = False) -> "psycopg.Connection[Any]":
         return self._connector.connect(autocommit=autocommit)

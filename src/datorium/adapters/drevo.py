@@ -247,6 +247,16 @@ class DrevoStore:
     def location(self) -> tuple[str, ...] | None:
         return graph_location(self._dsn)
 
+    @property
+    def applied_location(self) -> tuple[str, ...] | None:
+        """The graph holding this store's ``DatApplied`` markers (``None``: its own).
+
+        Two stores on one graph must not meet in one meta-transaction: the first
+        branch's prepared fence would refuse the second's prepare on every retry.
+        """
+        where = self.location
+        return None if where is None else ("drevo", *where)
+
     def __repr__(self) -> str:
         return f"DrevoStore({self.name!r}, {self._dsn.redacted()!r})"
 

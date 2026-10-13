@@ -353,6 +353,15 @@ commits too.
 | ClickHouse | an applied marker `(dat_txn, dat_tx_time)` in `dat_applied` (ReplacingMergeTree), written after every batch. Before a batch the participant counts the table's rows with this `dat_txn`: none → insert, all → skip, some (a crash left part of an insert) → lightweight `DELETE` of them and insert again. Each insert also carries `insert_deduplication_token = <gid>:<n>` for replicated tables; correctness does not depend on the dedup window |
 | Journal | a failed or timed-out `COMMITTED` write is read back; if the state cannot be read, the transaction is left to recovery, which decides from the journal once it is reachable |
 
+**One marker table per store.** Two stores of one deployment must not share
+where their markers live: the same PostgreSQL server, database and schema (both
+branches would insert the same `dat_txn` into one `dat_applied`, and the second
+would wait for the first forever), the same drevo graph (the first branch's
+prepared fence refuses the second's prepare on every retry), or the same
+ClickHouse database (one store's marker would make the other's branch look
+applied). `Datorium` refuses such a configuration up front; give each store its
+own schema, database or graph. Stores report the place as `applied_location`.
+
 ### Guarantees
 
 | | What datorium guarantees |
@@ -679,9 +688,9 @@ Steps:
    other's records. Tested against the compose PostgreSQL, including a
    meta-transaction over two stores, a crash after prepare (presumed abort)
    and a crash after the decision (roll-forward), both recovered by a worker
-   with its own connections. Stores must not share a schema: their branches
-   would insert the same `dat_txn` into one `dat_applied` and wait for each
-   other.
+   with its own connections. Stores must not share a schema (see "One marker
+   table per store"); the Python facade refuses it, the Rust crates document it
+   until a Rust facade exists.
    ✔ [`crates/datorium-drevo`](crates/datorium-drevo) (neo4rs, Bolt): the
    two-phase graph store, its participant and the drevo journal, on the same
    nodes as the Python adapter; tested against the compose drevo, including

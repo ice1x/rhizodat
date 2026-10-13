@@ -100,6 +100,16 @@ class ClickHouseStore:
     def __repr__(self) -> str:
         return f"ClickHouseStore({self.name!r}, {self._dsn.redacted()!r})"
 
+    @property
+    def applied_location(self) -> tuple[str, ...]:
+        """Where this store's ``dat_applied`` table lives: server and database.
+
+        Two stores with the same location must not meet in one meta-transaction:
+        one store's marker would make the other's branch look applied.
+        """
+        d = self._dsn
+        return ("clickhouse", (d.host or "").lower(), str(d.port), d.database or "default")
+
     def install(self) -> None:
         """Create the service table ``dat_applied`` if it does not exist."""
         self._client.command(
