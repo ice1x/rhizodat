@@ -1,0 +1,60 @@
+{
+  "description": "Staged data files in the journal payload of a one-phase branch (Iceberg): versioned JSON {\"v\": 1, \"tables\": [{\"table\": name, \"files\": [path, ...], \"data_files\": [object, ...]}]}. data_files is optional: the Rust adapter adds one Iceberg DataFile JSON object per file (column statistics kept); a reader without it derives each DataFile from the Parquet footer. Entries of one table are merged in order of first appearance (files concatenated; data_files kept only when every merged entry has them). cases: payload (null = no payload) decodes to tables, each {table, files, data_files: number of DataFile objects or null}; implementations that ignore DataFile objects check table and files only. errors: payloads every decoder rejects.",
+  "cases": [
+    {
+      "name": "no payload",
+      "payload": null,
+      "tables": []
+    },
+    {
+      "name": "empty payload",
+      "payload": "",
+      "tables": []
+    },
+    {
+      "name": "written by the Python reference",
+      "payload": "{\"v\":1,\"tables\":[{\"table\":\"erp.sales\",\"files\":[\"s3://warehouse/erp/sales/data/dat-0199e0a4-6f39-7cc1-8a3a-5a2b6d8f1c00-lake.parquet\"]}]}",
+      "tables": [
+        {
+          "table": "erp.sales",
+          "files": ["s3://warehouse/erp/sales/data/dat-0199e0a4-6f39-7cc1-8a3a-5a2b6d8f1c00-lake.parquet"],
+          "data_files": null
+        }
+      ]
+    },
+    {
+      "name": "written by the Rust adapter, with DataFile objects",
+      "payload": "{\"v\":1,\"tables\":[{\"table\":\"erp.sales\",\"files\":[\"s3://w/a.parquet\",\"s3://w/b.parquet\"],\"data_files\":[{\"file-path\":\"s3://w/a.parquet\"},{\"file-path\":\"s3://w/b.parquet\"}]},{\"table\":\"erp.refunds\",\"files\":[\"s3://w/c.parquet\"],\"data_files\":[{\"file-path\":\"s3://w/c.parquet\"}]}]}",
+      "tables": [
+        {"table": "erp.sales", "files": ["s3://w/a.parquet", "s3://w/b.parquet"], "data_files": 2},
+        {"table": "erp.refunds", "files": ["s3://w/c.parquet"], "data_files": 1}
+      ]
+    },
+    {
+      "name": "entries of one table are merged",
+      "payload": "{\"v\":1,\"tables\":[{\"table\":\"a\",\"files\":[\"f1\"]},{\"table\":\"b\",\"files\":[\"f2\"]},{\"table\":\"a\",\"files\":[\"f3\"]}]}",
+      "tables": [
+        {"table": "a", "files": ["f1", "f3"], "data_files": null},
+        {"table": "b", "files": ["f2"], "data_files": null}
+      ]
+    },
+    {
+      "name": "a merged table keeps DataFile objects only when every entry has them",
+      "payload": "{\"v\":1,\"tables\":[{\"table\":\"a\",\"files\":[\"f1\"],\"data_files\":[{}]},{\"table\":\"a\",\"files\":[\"f2\"]}]}",
+      "tables": [
+        {"table": "a", "files": ["f1", "f2"], "data_files": null}
+      ]
+    }
+  ],
+  "errors": [
+    {"name": "another version", "payload": "{\"v\":2,\"tables\":[]}"},
+    {"name": "not JSON", "payload": "not json"},
+    {"name": "not an object", "payload": "[1]"},
+    {"name": "no tables", "payload": "{\"v\":1}"},
+    {"name": "an entry without files", "payload": "{\"v\":1,\"tables\":[{\"table\":\"a\"}]}"},
+    {"name": "a table that is not a string", "payload": "{\"v\":1,\"tables\":[{\"table\":1,\"files\":[]}]}"},
+    {"name": "a file that is not a string", "payload": "{\"v\":1,\"tables\":[{\"table\":\"a\",\"files\":[1]}]}"},
+    {"name": "a DataFile that is not an object", "payload": "{\"v\":1,\"tables\":[{\"table\":\"a\",\"files\":[\"f\"],\"data_files\":[\"f\"]}]}"},
+    {"name": "DataFile objects that do not match the files", "payload": "{\"v\":1,\"tables\":[{\"table\":\"a\",\"files\":[\"f\",\"g\"],\"data_files\":[{}]}]}"}
+  ]
+}

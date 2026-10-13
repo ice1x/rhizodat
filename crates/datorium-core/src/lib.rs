@@ -16,5 +16,6 @@ pub mod journal;
 pub mod recovery;
 pub mod retry;
 pub mod rows;
+pub mod staged;
 pub mod store;
 pub mod timer;

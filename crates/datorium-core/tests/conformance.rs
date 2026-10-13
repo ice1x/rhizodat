@@ -23,6 +23,7 @@ use datorium_core::journal::{
 use datorium_core::recovery::Recovery;
 use datorium_core::retry::Retry;
 use datorium_core::rows::{Batch, RowValue, decode_batches, encode_batches};
+use datorium_core::staged::{StagedTable, decode_staged, encode_staged};
 use datorium_core::timer::NoWait;
 use fakes::{Fault, FaultyJournal, Wall, World, block, run};
 use serde_json::{Value, json};
@@ -58,6 +59,7 @@ fn every_vector_file_is_exercised() {
         "journal.json",
         "dsn.json",
         "rows.json",
+        "staged_files.json",
         "crash_matrix.json",
     ]
     .into();
@@ -438,6 +440,33 @@ fn rows() {
     }
     for case in doc["errors"].as_array().unwrap() {
         let err = decode_batches(text(&case["payload"]).as_bytes()).expect_err(text(&case["name"]));
+        assert!(err.to_string().contains("payload"), "{err}");
+    }
+}
+
+// --- staged files ----------------------------------------------------------------------
+
+fn staged_described(tables: &[StagedTable]) -> Value {
+    tables
+        .iter()
+        .map(|t| json!({"table": t.table, "files": t.files, "data_files": t.data_files.as_ref().map(Vec::len)}))
+        .collect()
+}
+
+#[test]
+fn staged_files() {
+    let doc = load("staged_files.json");
+    for case in doc["cases"].as_array().unwrap() {
+        let name = text(&case["name"]);
+        let raw = case["payload"].as_str().map(str::as_bytes);
+        let got = decode_staged(raw).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(staged_described(&got), case["tables"], "{name}");
+        let back = decode_staged(Some(&encode_staged(&got))).unwrap();
+        assert_eq!(back, got, "{name}: round trip");
+    }
+    for case in doc["errors"].as_array().unwrap() {
+        let err =
+            decode_staged(Some(text(&case["payload"]).as_bytes())).expect_err(text(&case["name"]));
         assert!(err.to_string().contains("payload"), "{err}");
     }
 }

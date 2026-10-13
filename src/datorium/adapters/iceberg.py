@@ -7,9 +7,10 @@ a new snapshot. A branch therefore splits the work:
 - ``stage`` (before prepare, lock-free) converts each table's rows to its
   Arrow schema, adds ``dat_txn`` / ``dat_tx_time``, and writes one Parquet data
   file per table under the table's ``data/`` location. The files are invisible
-  (no snapshot references them); the journal payload lists their paths, so
-  whoever finishes the branch (the coordinator, or recovery on another host)
-  can commit them;
+  (no snapshot references them); the journal payload lists their paths (the
+  shared format of ``datorium.core.staged``), so whoever finishes the branch
+  (the coordinator, or recovery on another host, in either implementation) can
+  commit them;
 - after the decision the participant adds each table's file in one snapshot
   (``add_files``) whose summary carries ``dat.txn`` and ``dat.tx_time``.
 
@@ -27,7 +28,6 @@ Tables written through datorium need ``dat_txn`` (``uuid`` or ``string``) and
 pyiceberg is imported on first use, so the driver stays an optional extra.
 """
 
-import json
 import uuid
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
@@ -36,6 +36,7 @@ from urllib.parse import quote
 from datorium.core.dsn import parse_dsn
 from datorium.core.journal import BranchRecord
 from datorium.core.result import Result
+from datorium.core.staged import StagedTable, decode_staged, encode_staged
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -45,7 +46,6 @@ __all__ = ["IcebergBranch", "IcebergParticipant", "IcebergStore", "catalog_prope
 _RESERVED = ("dat_txn", "dat_tx_time")
 _TXN_PROPERTY = "dat.txn"
 _TIME_PROPERTY = "dat.tx_time"
-_VERSION = 1
 
 
 def _pyiceberg() -> Any:  # noqa: ANN401 - the driver module, imported lazily
@@ -105,17 +105,11 @@ def _is_retryable(error: BaseException) -> bool:
 
 
 def _encode_payload(files: list[tuple[str, str]]) -> bytes:
-    doc = {"v": _VERSION, "tables": [{"table": t, "files": [f]} for t, f in files]}
-    return json.dumps(doc, separators=(",", ":")).encode()
+    return encode_staged([StagedTable(t, (f,)) for t, f in files])
 
 
 def _decode_payload(raw: bytes | None) -> list[tuple[str, list[str]]]:
-    if not raw:
-        return []
-    doc = json.loads(raw)
-    if doc.get("v") != _VERSION:
-        raise ValueError(f"unsupported iceberg payload version {doc.get('v')!r}")
-    return [(t["table"], list(t["files"])) for t in doc["tables"]]
+    return [(t.table, list(t.files)) for t in decode_staged(raw)]
 
 
 class IcebergStore:

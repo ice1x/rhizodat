@@ -1,8 +1,8 @@
 # Conformance vectors
 
 Language-neutral test data that every datorium implementation must pass bit for
-bit: the Python reference (`tests/conformance/test_vectors.py`) and the planned
-Rust core. A vector describes inputs (injected clocks, random values, strings)
+bit: the Python reference (`tests/conformance/test_vectors.py`) and the Rust
+core (`crates/datorium-core/tests/conformance.rs`). A vector describes inputs (injected clocks, random values, strings)
 and the exact expected output or a named error.
 
 | File | What it pins down |
@@ -13,6 +13,7 @@ and the exact expected output or a named error.
 | `journal.json` | The journal states and the full 5 × 5 table of legal compare-and-set edges; `PREPARED` needs a `dat_tx_time`; the text of the journal's `branches` column. |
 | `dsn.json` | Connection strings: parsed fields, percent-decoding, the redacted form, and strings that must be rejected. |
 | `rows.json` | Row batches in a one-phase branch's journal payload: the versioned JSON with tagged values (uuid, decimal as text, bytes, date / datetime, non-finite floats, maps), described value by value; each implementation decodes the payload to those values and round-trips them, and rejects the listed bad payloads. |
+| `staged_files.json` | Staged data files in a one-phase branch's journal payload (Iceberg): the versioned JSON with paths and optional `DataFile` objects, how entries of one table merge, and the bad payloads every decoder rejects. |
 | `crash_matrix.json` | The commit protocol under a crash at every step (two two-phase stores, one one-phase store, journal): the state the crash leaves (journal state, which stores hold a prepared transaction, which are applied) and what one recovery run does. Every case ends all-or-nothing. Implementations replay it with fake stores exposing the named fault points; branches are staged lock-free first, prepared in the listed order, and finished lock holders first. |
 
 Error names (`invalid_clock`, `timestamp_exhausted`, `clock_skew`,
