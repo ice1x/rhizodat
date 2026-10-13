@@ -4,6 +4,7 @@
 ``datorium.mcp.config``) and serves the tools over stdio.
 """
 
+import math
 import os
 import sys
 from collections.abc import Callable
@@ -23,7 +24,8 @@ Call `stores` first: it names the configured stores and their kind. `query` runs
 read in a store's own language (SQL for postgres and clickhouse, Cypher for drevo, a table
 name with scan parameters for iceberg); the store refuses writes. Writes in datorium are
 meta-transactions over several stores; `transaction` and `pending_transactions` show them
-in the journal, including any a crashed process left for recovery."""
+in the journal, including any a crashed process left for recovery. If `run_recovery` is
+offered, it finishes or rolls back what crashed processes left: run it only when asked."""
 
 
 def _guarded[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
@@ -44,7 +46,9 @@ def _guarded[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return run
 
 
-def build_server(tools: Tools) -> "MCPServer":
+def build_server(tools: Tools, *, recovery: bool = False) -> "MCPServer":
+    """The MCP server over ``tools``; ``recovery`` also offers ``run_recovery``, the one
+    tool that writes."""
     from mcp.server.mcpserver import MCPServer
     from mcp_types import ToolAnnotations
 
@@ -93,6 +97,26 @@ def build_server(tools: Tools) -> "MCPServer":
         `older_than_s` seconds, oldest first: in flight, or left by a crash for recovery."""
         return tools.pending_transactions(older_than_s, limit)
 
+    if recovery:
+
+        @server.tool(
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=True,
+                idempotent_hint=True,
+                open_world_hint=False,
+            )
+        )
+        @_guarded
+        def run_recovery(limit: int = DEFAULT_LIMIT) -> dict[str, list[str]]:
+            """One recovery run over the journal and the stores, as a crashed process
+            would need: rolls back prepared transactions the journal has no decision for
+            (orphans), aborts meta-transactions left undecided past the stale cutoff, and
+            finishes decided ones on every store. Never touches a transaction a live
+            process may still be deciding. Returns the dat_txn of each, by outcome; `stuck`
+            ones stay decided but unfinished for too long and need attention."""
+            return tools.run_recovery(limit)
+
     return server
 
 
@@ -103,8 +127,13 @@ def main() -> None:
     except ConfigError as exc:
         print(f"datorium-mcp: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
-    tools = Tools.open(config.stores, journal=config.journal, max_rows=config.max_rows)
+    tools = Tools.open(
+        config.stores,
+        journal=config.journal,
+        max_rows=config.max_rows,
+        stale_after_ms=math.ceil(config.stale_after_s * 1000),
+    )
     try:
-        build_server(tools).run()
+        build_server(tools, recovery=config.recovery).run()
     finally:
         tools.close()

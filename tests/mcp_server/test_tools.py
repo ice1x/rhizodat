@@ -288,3 +288,80 @@ def test_config_store_names_are_lower_case() -> None:
     config = config_from_env({"DATORIUM_STORE_Big_Lake": "clickhouse://h/db"})
     assert config.stores == {"big_lake": "clickhouse://h/db"}
     assert config.journal is None
+
+
+# --- recovery --------------------------------------------------------------------------
+
+
+def test_recovery_aborts_stale_undecided_and_finishes_decided_records(
+    world: World, journal: MemoryJournal, wall: Wall
+) -> None:
+    store = world.store("orders", two_phase=True)
+    t = tools_for({"orders": FakeStoreHandle(store)}, journal, wall, stale_after_ms=30_000)
+    undecided, decided = new_id(), new_id()
+    for txn in (undecided, decided):
+        gid = f"dat:{txn}:orders"
+        store.prepared[gid] = (txn, ["row"])
+        journal.begin(txn, [BranchRecord("orders", gid, two_phase=True)])
+    journal.transition(decided, State.ACTIVE, State.PREPARED, dat_tx_time=7)
+    journal.transition(decided, State.PREPARED, State.COMMITTED)
+
+    assert t.run_recovery()["aborted"] == []  # not stale yet: a coordinator may be alive
+    wall.ms += 30_001
+    out = t.run_recovery()
+
+    assert out == {
+        "aborted": [str(undecided)],
+        "finished": [str(decided)],
+        "unfinished": [],
+        "stuck": [],
+        "orphans": [],
+    }
+    assert store.prepared == {}
+    assert store.committed == {decided: ["row"]}
+    assert t.transaction(str(decided))["state"] == "DONE"  # type: ignore[index]
+
+
+def test_recovery_rolls_back_orphan_prepared_gids(
+    world: World, journal: MemoryJournal, wall: Wall
+) -> None:
+    store = world.store("orders", two_phase=True)
+    t = tools_for({"orders": FakeStoreHandle(store)}, journal, wall)
+    orphan = f"dat:{new_id()}:orders"
+    store.prepared[orphan] = (new_id(), ["row"])
+    assert t.run_recovery()["orphans"] == [orphan]
+    assert store.prepared == {}
+
+
+def test_recovery_limits_and_needs_a_journal(
+    world: World, journal: MemoryJournal, wall: Wall
+) -> None:
+    handle = FakeStoreHandle(world.store("orders", two_phase=True))
+    for _ in range(3):
+        journal.begin(new_id(), [])
+    wall.ms += 60_000
+    t = tools_for({"orders": handle}, journal, wall)
+    assert len(t.run_recovery(limit=2)["aborted"]) == 2
+    with pytest.raises(ValueError, match="limit"):
+        t.run_recovery(limit=0)
+    with pytest.raises(ValueError, match="journal"):
+        tools_for({"orders": handle}, None, wall).run_recovery()
+    with pytest.raises(ValueError, match="stale_after_ms"):
+        tools_for({"orders": handle}, journal, wall, stale_after_ms=0)
+
+
+def test_config_enables_recovery_explicitly() -> None:
+    base = {"DATORIUM_STORE_A": "clickhouse://h/db"}
+    assert config_from_env(base).recovery is False
+    assert config_from_env(base).stale_after_s == 30
+    for on in ("1", "true", "YES"):
+        assert config_from_env({**base, "DATORIUM_MCP_RECOVERY": on}).recovery is True
+    for off in ("0", "false", "no", ""):
+        assert config_from_env({**base, "DATORIUM_MCP_RECOVERY": off}).recovery is False
+    with pytest.raises(ConfigError, match="DATORIUM_MCP_RECOVERY"):
+        config_from_env({**base, "DATORIUM_MCP_RECOVERY": "maybe"})
+    config = config_from_env({**base, "DATORIUM_MCP_RECOVERY_STALE_S": "2.5"})
+    assert config.stale_after_s == 2.5
+    for bad in ("0", "-1", "x", "nan"):
+        with pytest.raises(ConfigError, match="DATORIUM_MCP_RECOVERY_STALE_S"):
+            config_from_env({**base, "DATORIUM_MCP_RECOVERY_STALE_S": bad})
