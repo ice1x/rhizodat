@@ -719,8 +719,24 @@ Steps:
    travel as `JSONEachRow` (columns are known only at run time) with
    `date_time_input_format = best_effort`; since JSON strings are UTF-8, a
    bytes value must be valid UTF-8 there and anything else is refused at
-   stage. The ClickHouse crate needs Rust 1.89, now the workspace MSRV.
-   Next: Iceberg in Rust.
+   stage. The ClickHouse crate needs Rust 1.89.
+   ✔ [`crates/datorium-iceberg`](crates/datorium-iceberg) (iceberg-rust 0.10,
+   REST catalog, S3 through OpenDAL): the one-phase branch committed after the
+   decision, with the same tagged snapshots and idempotency checks as the
+   Python adapter. A branch buffers Arrow record batches; stage conforms them
+   to the table's schema (by name, missing optional columns null, types cast)
+   and writes Parquet files. The journal payload is the shared staged-files
+   format, now in `datorium_core::staged` and pinned by
+   [`conformance/staged_files.json`](conformance/staged_files.json): paths,
+   plus the `DataFile` JSON of each file that iceberg-rust needs to commit
+   it. A payload with paths only (the Python adapter's) is committed from the
+   Parquet footers, and the Python adapter commits a Rust payload by its paths
+   (checked both ways). Tested on iceberg-rust's in-memory catalog over a local
+   warehouse and on the compose REST catalog, including an order in
+   PostgreSQL with its sales in Iceberg, committed together and rolled forward
+   by recovery after a crash. Not yet in Rust: partitioned tables (refused at
+   stage) and the SQL / Glue catalogs. iceberg-rust 0.10 needs Rust 1.94, now
+   the workspace MSRV. Every store now has a Rust adapter.
 5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
    core without changing its public API; a C ABI (cbindgen) for Go. Open
    questions to settle first: Python callbacks (`transactional` functions) into
@@ -790,7 +806,7 @@ It is part of the distribution, configured by the same DSNs, and built on the
 library like the server: writes go through the commit protocol, never around
 it.
 
-Order: after the current work (the remaining Rust adapters, Iceberg first). The
+Order: next, now that every store has a Rust adapter. The
 tool set and how a write tool maps to a Unit of Work are decided then; the
 server mode's transaction-model question applies here too.
 
@@ -826,9 +842,10 @@ uv run mypy              # types (strict)
 ```
 
 The Rust core is a Cargo workspace at the repository root (stable Rust, MSRV
-1.89); its tests include the vectors in `conformance/`, and the adapter crates'
-tests use the compose PostgreSQL and drevo (skipped with a hint when a store is
-not running, unless `DATORIUM_TEST_PG_DSN` / `DATORIUM_TEST_DREVO_BOLT` is set):
+1.94); its tests include the vectors in `conformance/`, and the adapter crates'
+tests use the compose PostgreSQL, drevo, ClickHouse and Iceberg REST catalog
+(skipped with a hint when a store is not running, unless its
+`DATORIUM_TEST_*` variable is set):
 
 ```bash
 cargo test

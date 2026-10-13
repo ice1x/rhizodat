@@ -34,18 +34,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, "1.89"]
+        toolchain: [stable, "1.94"]
     steps:
       - uses: actions/checkout@v5
       - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component clippy,rustfmt
       - run: rustup default ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
-      # The adapter crates' tests run against the compose PostgreSQL, drevo and ClickHouse;
-      # the exported DSNs make a store that is down fail the run instead of skipping.
-      - name: Start PostgreSQL, drevo and ClickHouse
+      # The adapter crates' tests run against the compose PostgreSQL, drevo, ClickHouse and
+      # Iceberg REST catalog; the exported DSNs make a store that is down fail the run
+      # instead of skipping.
+      - name: Start PostgreSQL, drevo, ClickHouse and the Iceberg REST catalog
         run: |
-          docker compose --profile clickhouse up -d --wait postgres drevo clickhouse
-          grep -E '^DATORIUM_TEST_(PG_DSN|DREVO_BOLT|CLICKHOUSE_DSN)=' .env.test >> "$GITHUB_ENV"
+          docker compose --profile clickhouse --profile iceberg up -d --wait postgres drevo clickhouse iceberg-rest
+          grep -E '^DATORIUM_TEST_(PG_DSN|DREVO_BOLT|CLICKHOUSE_DSN|ICEBERG_REST_DSN)=' .env.test >> "$GITHUB_ENV"
       - if: matrix.toolchain == 'stable'
         run: cargo fmt --check
       - if: matrix.toolchain == 'stable'

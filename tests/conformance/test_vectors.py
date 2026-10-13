@@ -32,6 +32,7 @@ from datorium.core.journal import (
     encode_branches,
 )
 from datorium.core.rows import Batch, decode_batches, encode_batches
+from datorium.core.staged import StagedTable, decode_staged, encode_staged
 
 VECTORS = Path(__file__).resolve().parents[2] / "conformance"
 
@@ -217,6 +218,7 @@ def test_every_vector_file_is_exercised() -> None:
         "journal.json",
         "dsn.json",
         "rows.json",
+        "staged_files.json",
         "crash_matrix.json",
     }
     assert {p.name for p in VECTORS.glob("*.json")} == used
@@ -305,6 +307,36 @@ def test_rows(case: dict[str, Any]) -> None:
 def test_rows_rejected(case: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="payload"):
         decode_batches(case["payload"].encode())
+
+
+# --- staged files ----------------------------------------------------------------------
+
+STAGED = load("staged_files.json")
+
+
+def staged_described(tables: list[StagedTable]) -> list[dict[str, Any]]:
+    return [
+        {
+            "table": t.table,
+            "files": list(t.files),
+            "data_files": None if t.data_files is None else len(t.data_files),
+        }
+        for t in tables
+    ]
+
+
+@pytest.mark.parametrize("case", STAGED["cases"], ids=ids(STAGED["cases"]))
+def test_staged_files(case: dict[str, Any]) -> None:
+    raw = None if case["payload"] is None else case["payload"].encode()
+    tables = decode_staged(raw)
+    assert staged_described(tables) == case["tables"]
+    assert decode_staged(encode_staged(tables)) == tables
+
+
+@pytest.mark.parametrize("case", STAGED["errors"], ids=ids(STAGED["errors"]))
+def test_staged_files_rejected(case: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="payload"):
+        decode_staged(case["payload"].encode())
 
 
 # --- crash matrix ----------------------------------------------------------------------
