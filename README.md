@@ -564,18 +564,21 @@ datorium/
 │   ├── unit_of_work.py
 │   ├── coordinator.py   # commit protocol, recovery
 │   ├── journal.py
+│   ├── rows.py          # one-phase payloads: row batches (ClickHouse)
+│   ├── staged.py        # one-phase payloads: staged files (Iceberg)
 │   └── result.py
 ├── adapters/
 │   ├── postgres.py
 │   ├── drevo.py
 │   ├── clickhouse.py
 │   └── iceberg.py
+├── mcp/                 # datorium-MCP: tools, configuration, server
 └── migrations/
 ```
 
 Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
-`datorium[drevo]`, `datorium[iceberg]`. `drevo-py` is not on PyPI yet and is
-installed from source.
+`datorium[drevo]`, `datorium[iceberg]`; `datorium[mcp]` adds the MCP server.
+`drevo-py` is not on PyPI yet and is installed from source.
 
 ---
 
@@ -806,9 +809,52 @@ It is part of the distribution, configured by the same DSNs, and built on the
 library like the server: writes go through the commit protocol, never around
 it.
 
-Order: next, now that every store has a Rust adapter. The
-tool set and how a write tool maps to a Unit of Work are decided then; the
-server mode's transaction-model question applies here too.
+✔ First version (Python, `datorium.mcp`, read-only). Tools, all marked
+read-only for clients:
+
+| Tool | What it does |
+|---|---|
+| `stores` | the configured stores: name, kind, two-phase or not, whether `query` can read it, DSN with secrets masked |
+| `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `DATORIUM_MCP_MAX_ROWS`) |
+| `transaction` | one meta-transaction's journal record: state, commit time, branches, age |
+| `pending_transactions` | unfinished meta-transactions older than a cutoff: in flight, or left for recovery |
+
+The store itself refuses writes in `query`, so a mistaken or injected query
+cannot change data:
+- PostgreSQL: one prepared statement in a `READ ONLY` transaction whose mode
+  is fixed before the statement runs, always rolled back. Without both, the
+  tests showed `SET TRANSACTION READ WRITE` or `COMMIT; INSERT …` getting
+  through.
+- drevo: a transaction that is always rolled back, since drevo has no
+  read-only mode.
+- ClickHouse: `readonly = 2`, which also refuses lifting it per query.
+- Iceberg: a scan.
+
+As defence in depth, the DSNs can still use read-only accounts.
+
+Configuration is the environment, so secrets stay out of command lines:
+`DATORIUM_STORE_<NAME>=<dsn>` per store, `DATORIUM_JOURNAL=<dsn>`, and
+optionally `DATORIUM_MCP_MAX_ROWS` (default 1000). An MCP client starts it
+over stdio:
+
+```json
+{
+  "mcpServers": {
+    "datorium": {
+      "command": "datorium-mcp",
+      "env": {
+        "DATORIUM_STORE_ERP": "postgresql://reader:…@db:5432/erp",
+        "DATORIUM_STORE_LAKE": "iceberg+rest://catalog:8181/warehouse",
+        "DATORIUM_JOURNAL": "postgresql://reader:…@db:5432/erp"
+      }
+    }
+  }
+}
+```
+
+Next: writes through Units of Work (how a tool call maps to one is the open
+design question, shared with the server mode's transaction model), recovery
+runs, and entity reads once the repository lands.
 
 ---
 

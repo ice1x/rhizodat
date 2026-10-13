@@ -128,6 +128,14 @@ class ClickHouseStore:
         self._client.command(query, parameters=dict(params) if params else None)
         return Result(iter(()), columns=())
 
+    def read_only(self, query: str, params: Mapping[str, Any] | None = None) -> Result:
+        """A native read the server guarantees cannot write (``readonly = 2``: no writes,
+        no DDL; settings may still change for the query)."""
+        r = self._client.query(
+            query, parameters=dict(params) if params else None, settings={"readonly": 2}
+        )
+        return Result(iter(r.named_results()), columns=tuple(r.column_names), raw=r)
+
     def branch(self, dat_txn: uuid.UUID) -> "ClickHouseBranch":
         return ClickHouseBranch(self, dat_txn)
 

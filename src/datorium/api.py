@@ -127,6 +127,11 @@ class Datorium:
             rand=rand,
         )
 
+    @property
+    def store_names(self) -> tuple[str, ...]:
+        """The configured stores, in configuration order."""
+        return tuple(self._stores)
+
     def store(self, name: str) -> Store:
         """Native access to a store, outside any Unit of Work."""
         try:

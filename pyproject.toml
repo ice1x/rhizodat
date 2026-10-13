@@ -32,6 +32,11 @@ clickhouse = ["clickhouse-connect>=0.8"]
 drevo = ["neo4j>=5.20"]
 # pyarrow writes the data files; sqlalchemy is for iceberg+sql:// catalogs.
 iceberg = ["pyiceberg[pyarrow,sql-sqlite]>=0.12"]
+# datorium-MCP, the MCP server shipped with datorium (the datorium-mcp command).
+mcp = ["mcp>=2.3"]
+
+[project.scripts]
+datorium-mcp = "datorium.mcp.server:main"
 
 [project.urls]
 Repository = "https://github.com/ice1x/datorium"
@@ -48,6 +53,7 @@ dev = [
     "neo4j>=5.20",
     "clickhouse-connect>=0.8",
     "pyiceberg[pyarrow,sql-sqlite]>=0.12",
+    "mcp>=2.3",
 ]
 
 # Embedded drevo with two-phase commit; not on PyPI yet, so built from a pinned commit

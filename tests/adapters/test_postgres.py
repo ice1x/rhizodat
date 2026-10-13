@@ -59,6 +59,30 @@ def test_execute_returns_a_result_with_columns(store: PostgresStore) -> None:
     assert result.all() == [{"a": 1, "b": "x"}]
 
 
+def test_read_only_reads(store: PostgresStore) -> None:
+    result = store.read_only("SELECT %s::int AS a", (7,))
+    assert result.columns == ("a",)
+    assert result.all() == [{"a": 7}]
+
+
+def test_read_only_refuses_writes(store: PostgresStore) -> None:
+    store.execute("CREATE TABLE notes (body text)")
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        store.read_only("INSERT INTO notes VALUES ('x')")
+    for escape in (
+        "SET TRANSACTION READ WRITE",
+        "COMMIT; INSERT INTO notes VALUES ('x')",
+        "SET TRANSACTION READ WRITE; INSERT INTO notes VALUES ('x')",
+    ):
+        with pytest.raises(psycopg.Error):
+            store.read_only(escape)
+    assert count(store, "SELECT count(*) AS n FROM notes") == 0
+
+
+def test_read_only_keeps_a_literal_percent(store: PostgresStore) -> None:
+    assert store.read_only("SELECT '100%' AS p").one() == {"p": "100%"}
+
+
 def test_install_is_idempotent(store: PostgresStore) -> None:
     store.install()
     assert count(store, "SELECT count(*) AS n FROM dat_applied") == 0
