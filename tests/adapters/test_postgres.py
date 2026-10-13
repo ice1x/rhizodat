@@ -11,7 +11,7 @@ import pytest
 from datorium.adapters.postgres import PostgresBranch, PostgresJournal, PostgresStore
 from datorium.core.coordinator import gid_for
 from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord, JournalConflict, State
+from datorium.core.journal import BranchRecord, JournalConflict, State, open_journal
 
 
 @pytest.fixture
@@ -97,6 +97,47 @@ def test_dsn_password_is_not_in_repr(pg_dsn: str, pg_schema: str) -> None:
 def test_schema_name_is_validated(pg_dsn: str) -> None:
     with pytest.raises(ValueError, match="schema"):
         PostgresStore(pg_dsn, schema='x"; DROP TABLE y; --')
+    with pytest.raises(ValueError, match="schema"):
+        PostgresStore(with_schema(pg_dsn, "a-b"))
+
+
+def with_schema(dsn: str, schema: str) -> str:
+    return f"{dsn}{'&' if '?' in dsn else '?'}schema={schema}"
+
+
+def tables_in(pg_dsn: str, schema: str) -> set[str]:
+    with psycopg.connect(pg_dsn) as conn:
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s", (schema,)
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+def test_the_dsn_names_the_schema(pg_dsn: str, pg_schema: str) -> None:
+    s = PostgresStore(with_schema(pg_dsn, pg_schema), name="orders")
+    s.install()
+    s.execute("CREATE TABLE orders (id int)")
+    assert tables_in(pg_dsn, pg_schema) == {"dat_applied", "orders"}
+    assert s.applied_location[-1] == pg_schema
+    assert s.execute("SELECT current_schema() AS s").one()["s"] == pg_schema
+    s.close()
+
+
+def test_the_dsn_schema_and_the_argument_must_agree(pg_dsn: str, pg_schema: str) -> None:
+    PostgresStore(with_schema(pg_dsn, pg_schema), schema=pg_schema).close()
+    with pytest.raises(ValueError, match="schema"):
+        PostgresStore(with_schema(pg_dsn, pg_schema), schema="other")
+    with pytest.raises(ValueError, match="schema"):
+        PostgresJournal(with_schema(pg_dsn, pg_schema), schema="other")
+
+
+def test_the_journal_dsn_names_the_schema(pg_dsn: str, pg_schema: str) -> None:
+    j = open_journal(with_schema(pg_dsn, pg_schema))
+    txn = new_id()
+    j.begin(txn, [])
+    assert j.get(txn) is not None
+    assert "dat_journal" in tables_in(pg_dsn, pg_schema)
+    j.close()
 
 
 # --- one-phase -----------------------------------------------------------------------

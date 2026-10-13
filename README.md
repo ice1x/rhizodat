@@ -360,7 +360,9 @@ would wait for the first forever), the same drevo graph (the first branch's
 prepared fence refuses the second's prepare on every retry), or the same
 ClickHouse database (one store's marker would make the other's branch look
 applied). `Datorium` refuses such a configuration up front; give each store its
-own schema, database or graph. Stores report the place as `applied_location`.
+own schema, database or graph (for PostgreSQL also by DSN:
+`postgresql://…/erp?schema=orders`). Stores report the place as
+`applied_location`.
 
 ### Guarantees
 
@@ -536,6 +538,12 @@ raises `ResultConsumedError`.
 | `iceberg+rest://…`, `iceberg+sql://…`, `iceberg+glue://…` | Iceberg | `pyiceberg` | — |
 | `file:///path` | development journal only | — | — |
 
+- PostgreSQL: `schema=<name>` puts a store (its `dat_applied` and
+  `search_path`) or the journal in that schema, so stores configured only by
+  DSN, such as datorium-MCP's, can share a database. It is removed before the
+  DSN reaches the driver; a `schema=` argument as well must name the same
+  schema. A `search_path` set through `options=` is not seen by the
+  `dat_applied` check: use `schema=`.
 - Iceberg: `iceberg+rest://host:8181/<warehouse>` (`secure=true` for HTTPS);
   `iceberg+sql://user:pass@host:5432/db?warehouse=s3://…` keeps the catalog in
   PostgreSQL, `iceberg+sql:///abs/catalog.db?warehouse=file:///…` in SQLite.

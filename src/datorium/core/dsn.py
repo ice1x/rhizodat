@@ -15,17 +15,23 @@ DSN                                                 store       transport
 ``file:///abs/path``                                file        —
 ==================================================  ==========  ===========
 
+A PostgreSQL DSN may name the schema of a store or journal with ``schema=``
+(see ``postgres_schema``); it is removed before the DSN reaches the driver.
+
 ``postgres://`` is accepted as an alias. Scheme matching ignores case. User,
 password and path are percent-decoded. Passwords and secret-looking query
 parameters never appear in ``repr``/``str``; use ``unredacted()`` to get the
 original string for a driver.
 """
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit
 
-__all__ = ["DSN", "DSNError", "parse_dsn"]
+__all__ = ["DSN", "DSNError", "parse_dsn", "postgres_schema"]
+
+_PG_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 class DSNError(ValueError):
@@ -155,6 +161,31 @@ def parse_dsn(raw: str) -> DSN:
         _params=tuple(params.items()),
         _raw=raw,
     )
+
+
+def postgres_schema(raw: str, schema: str | None = None) -> tuple[str, str | None]:
+    """The DSN for the driver and the schema of a PostgreSQL store or journal.
+
+    The schema is the DSN's ``schema`` query parameter, or ``schema``; both given
+    must agree. The returned DSN is ``raw`` without that parameter.
+    """
+    dsn = parse_dsn(raw)
+    if dsn.store != "postgres":
+        raise DSNError(f"not a PostgreSQL connection string: {_scheme_hint(raw)!r}")
+    from_dsn = dsn.params.get("schema")
+    for value in (from_dsn, schema):
+        if value is not None and not _PG_IDENTIFIER.match(value):
+            raise DSNError(
+                f"invalid schema name {value!r}: a letter or '_', then letters, digits and"
+                " underscores, at most 63 characters"
+            )
+    if from_dsn is not None and schema is not None and from_dsn != schema:
+        raise DSNError(f"the DSN names schema {from_dsn!r} but schema={schema!r} was passed")
+    if from_dsn is None:
+        return raw, schema
+    base, _, query = raw.partition("?")
+    kept = [p for p in query.split("&") if unquote_plus(p.partition("=")[0]) != "schema"]
+    return (f"{base}?{'&'.join(kept)}" if kept else base), from_dsn
 
 
 def _scheme_hint(raw: str) -> str:

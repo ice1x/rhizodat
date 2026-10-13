@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use datorium_core::clock::{ClockError, HlcTimestamp, HybridLogicalClock};
 use datorium_core::coordinator::{Coordinator, Outcome};
-use datorium_core::dsn::parse_dsn;
+use datorium_core::dsn::{parse_dsn, postgres_schema};
 use datorium_core::gid::{gid_for, parse_gid};
 use datorium_core::identity::{IdError, IdGenerator};
 use datorium_core::journal::{
@@ -58,6 +58,7 @@ fn every_vector_file_is_exercised() {
         "gid.json",
         "journal.json",
         "dsn.json",
+        "postgres_schema.json",
         "rows.json",
         "staged_files.json",
         "crash_matrix.json",
@@ -298,6 +299,26 @@ fn journal_branches_column() {
 }
 
 // --- DSN -------------------------------------------------------------------------------
+
+#[test]
+fn postgres_schema_vectors() {
+    for case in load("postgres_schema.json")["cases"].as_array().unwrap() {
+        let raw = text(&case["dsn"]);
+        let schema = case["schema"].as_str();
+        let expect = &case["expect"];
+        let result = postgres_schema(raw, schema);
+        if expect.get("error").and_then(Value::as_bool) == Some(true) {
+            let err = result.expect_err(raw);
+            assert!(
+                !err.to_string().contains("s3cret"),
+                "{raw}: error echoes a secret"
+            );
+            continue;
+        }
+        let (dsn, schema) = result.unwrap_or_else(|e| panic!("{raw}: {e}"));
+        assert_eq!(json!({"dsn": dsn, "schema": schema}), *expect, "{raw}");
+    }
+}
 
 #[test]
 fn dsn() {

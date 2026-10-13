@@ -486,6 +486,17 @@ def test_postgres_stores_in_other_schemas_of_one_database_are_fine(faker: Faker)
         Datorium(stores={"a": default, "b": public})
 
 
+def test_postgres_dsns_pick_their_schema(faker: Faker) -> None:
+    """Stores configured only by DSN (datorium-MCP, config files) name their schema in it."""
+    db = f"postgresql://u:p@db.local/{faker.word()}"
+    dat = Datorium(stores={"orders": f"{db}?schema=orders", "ledger": f"{db}?schema=ledger"})
+    dat.close()
+    with pytest.raises(ValueError, match="share one dat_applied"):
+        Datorium(stores={"orders": f"{db}?schema=orders", "ledger": f"{db}?schema=orders"})
+    with pytest.raises(ValueError, match="share one dat_applied"):
+        Datorium(stores={"a": db, "b": f"{db}?schema=public"})
+
+
 def test_two_drevo_stores_cannot_share_a_graph() -> None:
     """The first branch's prepared fence would refuse the second's prepare on every retry."""
     with pytest.raises(ValueError, match="share one dat_applied"):

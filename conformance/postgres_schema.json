@@ -1,0 +1,30 @@
+{
+  "description": "The schema of a PostgreSQL store or journal: the schema query parameter of a postgresql:// DSN, or the schema argument, or neither. postgres_schema(dsn, schema) returns the DSN to hand to the driver (the schema parameter removed, every other byte kept) and the schema. Both given must agree. A schema is a letter or underscore, then letters, digits and underscores, at most 63 characters, after percent-decoding. Errors never echo secrets.",
+  "cases": [
+    {"dsn": "postgresql://app@db/erp", "schema": null,
+     "expect": {"dsn": "postgresql://app@db/erp", "schema": null}},
+    {"dsn": "postgresql://app@db/erp", "schema": "orders",
+     "expect": {"dsn": "postgresql://app@db/erp", "schema": "orders"}},
+    {"dsn": "postgresql://app@db/erp?schema=orders", "schema": null,
+     "expect": {"dsn": "postgresql://app@db/erp", "schema": "orders"}},
+    {"dsn": "postgresql://app:s3cret@db:6432/erp?sslmode=require&schema=stock&application_name=x", "schema": null,
+     "expect": {"dsn": "postgresql://app:s3cret@db:6432/erp?sslmode=require&application_name=x", "schema": "stock"}},
+    {"dsn": "postgres://db/erp?schema=_crm_2&sslmode=disable", "schema": null,
+     "expect": {"dsn": "postgres://db/erp?sslmode=disable", "schema": "_crm_2"}},
+    {"dsn": "postgresql://db/erp?schema=%6Frders", "schema": null,
+     "expect": {"dsn": "postgresql://db/erp", "schema": "orders"}},
+    {"dsn": "postgresql://db/erp?schema=orders", "schema": "orders",
+     "expect": {"dsn": "postgresql://db/erp", "schema": "orders"}},
+    {"dsn": "postgresql://db/erp?options=-csearch_path%3Dother", "schema": null,
+     "expect": {"dsn": "postgresql://db/erp?options=-csearch_path%3Dother", "schema": null}},
+    {"dsn": "postgresql://app:s3cret@db/erp?schema=orders", "schema": "stock", "expect": {"error": true}},
+    {"dsn": "postgresql://app:s3cret@db/erp?schema=", "schema": null, "expect": {"error": true}},
+    {"dsn": "postgresql://app:s3cret@db/erp?schema=a-b", "schema": null, "expect": {"error": true}},
+    {"dsn": "postgresql://app:s3cret@db/erp?schema=1st", "schema": null, "expect": {"error": true}},
+    {"dsn": "postgresql://app:s3cret@db/erp?schema=x%22y", "schema": null, "expect": {"error": true}},
+    {"dsn": "postgresql://app:s3cret@db/erp?schema=a&schema=b", "schema": null, "expect": {"error": true}},
+    {"dsn": "postgresql://app:s3cret@db/erp", "schema": "bad name", "expect": {"error": true}},
+    {"dsn": "postgresql://db/erp?schema=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "schema": null, "expect": {"error": true}},
+    {"dsn": "clickhouse://u:s3cret@ch/db?schema=x", "schema": null, "expect": {"error": true}}
+  ]
+}

@@ -13,6 +13,9 @@
 //! | `iceberg+sql://…`, `iceberg+glue://…` | iceberg | sql, glue |
 //! | `file:///abs/path` | file | — |
 //!
+//! A PostgreSQL DSN may name the schema of a store or journal with `schema=`
+//! (see [`postgres_schema`]); it is removed before the DSN reaches the driver.
+//!
 //! `postgres://` is an alias. Schemes match case-insensitively; user, password
 //! and path are percent-decoded. Passwords and secret-looking query parameters
 //! never appear in `Debug` / `Display`; [`Dsn::unredacted`] returns the original
@@ -404,6 +407,72 @@ pub fn parse_dsn(raw: &str) -> Result<Dsn, DsnError> {
         params,
         raw: raw.to_owned(),
     })
+}
+
+fn is_pg_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    value.len() <= 63
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The DSN for the driver and the schema of a PostgreSQL store or journal.
+///
+/// The schema is the DSN's `schema` query parameter, or `schema`; both given
+/// must agree. The returned DSN is `raw` without that parameter.
+///
+/// # Errors
+///
+/// [`DsnError`] for a DSN that does not parse or is not PostgreSQL, an invalid
+/// schema name, or two different schemas.
+pub fn postgres_schema(
+    raw: &str,
+    schema: Option<&str>,
+) -> Result<(String, Option<String>), DsnError> {
+    let dsn = parse_dsn(raw)?;
+    if dsn.store() != "postgres" {
+        return Err(error(format!(
+            "not a PostgreSQL connection string: {:?}",
+            scheme_hint(raw)
+        )));
+    }
+    let from_dsn = dsn
+        .params()
+        .iter()
+        .find(|(k, _)| k == "schema")
+        .map(|(_, v)| v.as_str());
+    for value in [from_dsn, schema].into_iter().flatten() {
+        if !is_pg_identifier(value) {
+            return Err(error(format!(
+                "invalid schema name {value:?}: a letter or '_', then letters, digits and \
+                 underscores, at most 63 characters"
+            )));
+        }
+    }
+    match (from_dsn, schema) {
+        (Some(d), Some(s)) if d != s => Err(error(format!(
+            "the DSN names schema {d:?} but schema {s:?} was passed"
+        ))),
+        (None, _) => Ok((raw.to_owned(), schema.map(str::to_owned))),
+        (Some(d), _) => {
+            let (base, query) = raw.split_once('?').unwrap_or((raw, ""));
+            let kept: Vec<&str> = query
+                .split('&')
+                .filter(|field| {
+                    let key = field.split_once('=').map_or(*field, |(k, _)| k);
+                    unquote(&key.replace('+', " ")) != "schema"
+                })
+                .collect();
+            let out = if kept.is_empty() {
+                base.to_owned()
+            } else {
+                format!("{base}?{}", kept.join("&"))
+            };
+            Ok((out, Some(d.to_owned())))
+        }
+    }
 }
 
 #[cfg(test)]
