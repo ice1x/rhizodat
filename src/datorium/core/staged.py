@@ -4,11 +4,14 @@ A one-phase branch over files (Iceberg) writes its data files before prepare
 and commits them only after the decision, possibly by recovery on another
 host, so the journal carries what was staged::
 
-    {"v": 1, "tables": [{"table": name, "files": [path, ...], "data_files": [object, ...]}]}
+    {"v": 1, "tables": [{"table": name, "files": [path, ...], "data_files": [object, ...],
+                         "erase": [dat_id, ...]}]}
 
 ``data_files`` is optional: the Rust adapter adds one Iceberg ``DataFile``
 JSON object per file (it cannot build one from a path); the Python adapter
-derives them from the Parquet footers and ignores the objects. Entries of one
+derives them from the Parquet footers and ignores the objects. ``erase`` is
+optional too: entity parts erased by the branch (a hard delete): their versions
+older than the transaction are deleted before the files are added. Entries of one
 table are merged in order of first appearance. The format is pinned by
 ``conformance/staged_files.json``.
 """
@@ -30,6 +33,8 @@ class StagedTable:
     table: str
     files: tuple[str, ...]
     data_files: tuple[dict[str, Any], ...] | None = None
+    erase: tuple[str, ...] = ()
+    """``dat_id`` of the entity parts erased from the table."""
 
 
 def encode_staged(tables: Sequence[StagedTable]) -> bytes:
@@ -38,6 +43,8 @@ def encode_staged(tables: Sequence[StagedTable]) -> bytes:
         entry: dict[str, Any] = {"table": t.table, "files": list(t.files)}
         if t.data_files is not None:
             entry["data_files"] = list(t.data_files)
+        if t.erase:
+            entry["erase"] = list(t.erase)
         entries.append(entry)
     return json.dumps({"v": _VERSION, "tables": entries}, separators=(",", ":")).encode()
 
@@ -60,7 +67,10 @@ def _entry(raw: Any) -> StagedTable:  # noqa: ANN401 - decoded JSON
             counts = f"{len(data_files)} data_files for {len(files)} files"
             raise _invalid(f"table {raw['table']!r}: {counts}")
         data_files = tuple(data_files)
-    return StagedTable(raw["table"], tuple(files), data_files)
+    erase = raw.get("erase", [])
+    if not isinstance(erase, list) or not all(isinstance(i, str) for i in erase):
+        raise _invalid(f"table {raw['table']!r}: erase is not a list of ids")
+    return StagedTable(raw["table"], tuple(files), data_files, tuple(erase))
 
 
 def decode_staged(raw: bytes | None) -> list[StagedTable]:
@@ -87,5 +97,6 @@ def decode_staged(raw: bytes | None) -> list[StagedTable]:
             entry.table,
             seen.files + entry.files,
             (seen.data_files or ()) + (entry.data_files or ()) if both else None,
+            seen.erase + entry.erase,
         )
     return list(merged.values())
