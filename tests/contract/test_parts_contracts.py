@@ -1,13 +1,16 @@
 """Every store that holds entity parts keeps the parts contract."""
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from datorium.adapters.clickhouse import ClickHouseStore
+from datorium.adapters.drevo import DrevoStore
 from datorium.adapters.postgres import PostgresStore
 from datorium.testing.memory import MemoryEntityStore
 from datorium.testing.parts import STORE, PartStoreContract
+from drevo_parts import clear_parts, drevo_parts_dsn
 
 
 class TestMemoryParts(PartStoreContract):
@@ -31,4 +34,14 @@ class TestClickHouseParts(PartStoreContract):
         store = ClickHouseStore(clickhouse_dsn, name=STORE)
         store.install()
         yield store
+        store.close()
+
+
+class TestDrevoParts(PartStoreContract):
+    @pytest.fixture(params=["memory", "file", "bolt"])
+    def parts_store(self, request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[DrevoStore]:
+        store = DrevoStore(drevo_parts_dsn(request, tmp_path), name=STORE)
+        clear_parts(store)
+        yield store
+        clear_parts(store)
         store.close()
