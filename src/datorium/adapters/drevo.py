@@ -15,10 +15,22 @@ or Bolt ``TransientError``), so branches here prepare last and commit first.
 Each branch writes an applied marker ``(:DatApplied {dat_txn, dat_tx_time})``
 inside its own transaction at stage, so ``is_applied`` is one lookup.
 
+Entity parts: one node per version, labelled after the type (``tracker.Issue`` →
+``tracker_issue``), with ``dat_id``, ``dat_txn``, ``dat_tx_time``,
+``dat_created``, ``dat_deleted`` and a property per field: ``str``, ``int``,
+``float``, ``bool`` natively, references and UUIDs as their string, anything
+else as tagged JSON. drevo keeps node ``title``s unique graph-wide, so a field
+named ``title`` is stored as ``dat_title``. Every referenced ``dat_id`` is also
+an edge, typed after the field, from the version to an anchor node
+``(:DatEntity {dat_id})``; anchors nothing points to are removed with the
+versions that pointed to them. A branch writes versions inside its transaction
+and fills ``dat_tx_time`` at stage.
+
 Drivers are imported on first use; neither is a core dependency.
 """
 
 import contextlib
+import json
 import re
 import threading
 import time
@@ -38,10 +50,14 @@ from datorium.core.journal import (
     decode_branches,
     encode_branches,
 )
+from datorium.core.mapping import Ref
+from datorium.core.parts import Part, Version
 from datorium.core.result import Result
+from datorium.core.rows import decode_value, encode_value
 
 __all__ = [
     "ADAPTER",
+    "ANCHOR",
     "DrevoBranch",
     "DrevoJournal",
     "DrevoParticipant",
@@ -55,6 +71,9 @@ _IS_APPLIED = "MATCH (m:DatApplied {dat_txn: $dat_txn}) RETURN count(m) AS n"
 _BOLT_UNKNOWN_GID = "no transaction is prepared as"
 
 Params = Mapping[str, Any] | None
+
+ANCHOR = "DatEntity"
+"""The label of the node a reference edge points to: one per referenced ``dat_id``."""
 
 
 class _UnknownGid(Exception):
@@ -236,6 +255,134 @@ def graph_location(dsn: str | DSN) -> tuple[str, ...] | None:
     return ("embedded", parsed.path or "")
 
 
+# --- entity parts ---------------------------------------------------------------------
+
+_SERVICE = ("dat_id", "dat_txn", "dat_tx_time", "dat_created", "dat_deleted")
+_NATIVE = (str, int, float, bool)
+_ORPHANS = f"MATCH (a:{ANCHOR}) WHERE a.dat_id IN $ids AND NOT (a)<--() DELETE a"
+
+
+def _field_kind(annotation: object) -> str:
+    """How a field is stored: ``native``, ``uuid`` (its string) or ``json`` (tagged)."""
+    import types
+    import typing
+
+    origin = typing.get_origin(annotation)
+    if origin is types.UnionType or origin is typing.Union:
+        args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        return _field_kind(args[0]) if len(args) == 1 else "json"
+    if annotation is Ref or origin is Ref or annotation is uuid.UUID:
+        return "uuid"
+    return "native" if annotation in _NATIVE else "json"
+
+
+def _targets(value: Any) -> list[str]:  # noqa: ANN401 - any stored value
+    """Every ``dat_id`` in a reference field's value, as strings."""
+    if isinstance(value, uuid.UUID):
+        return [str(value)]
+    if isinstance(value, list | tuple):
+        return [t for v in value for t in _targets(v)]
+    if isinstance(value, dict):
+        return [t for v in value.values() for t in _targets(v)]
+    return []
+
+
+class _PartNodes:
+    """How one part is stored: its label, properties and value conversions."""
+
+    def __init__(self, part: Part) -> None:
+        self.part = part
+        self.label = part.table
+        self.kinds = {f: _field_kind(part.types.get(f)) for f in part.fields}
+        self.names = {f: "dat_title" if f == "title" else f for f in part.fields}
+
+    def properties(
+        self,
+        dat_id: uuid.UUID,
+        dat_txn: uuid.UUID,
+        values: Mapping[str, Any],
+        created: int | None,
+        deleted: bool,
+    ) -> dict[str, Any]:
+        unknown = set(values) - set(self.part.fields)
+        if unknown:
+            raise ValueError(f"{sorted(unknown)} are not fields of {self.part.type_name}")
+        props: dict[str, Any] = {
+            "dat_id": str(dat_id),
+            "dat_txn": str(dat_txn),
+            "dat_deleted": deleted,
+        }
+        if created is not None:
+            props["dat_created"] = created
+        for f in self.part.fields:
+            value = values.get(f)
+            if value is not None:
+                props[self.names[f]] = self._store(f, value)
+        return props
+
+    def _store(self, field: str, value: Any) -> Any:  # noqa: ANN401 - any field value
+        kind = self.kinds[field]
+        if kind == "uuid" and isinstance(value, uuid.UUID):
+            return str(value)
+        if kind == "native" and isinstance(value, _NATIVE):
+            return value
+        return json.dumps(encode_value(value), separators=(",", ":"))
+
+    def edges(self, values: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+        """``(field, targets)`` for every reference field with a value."""
+        return [
+            (f, targets) for f in sorted(self.part.refs) if (targets := _targets(values.get(f)))
+        ]
+
+    def version(self, props: Mapping[str, Any]) -> Version:
+        values = {f: self._value(f, props.get(self.names[f])) for f in self.part.fields}
+        return Version(
+            dat_txn=uuid.UUID(props["dat_txn"]),
+            dat_tx_time=props.get("dat_tx_time"),
+            created=props.get("dat_created"),
+            deleted=bool(props.get("dat_deleted")),
+            values=values,
+        )
+
+    def _value(self, field: str, raw: Any) -> Any:  # noqa: ANN401 - any stored value
+        if raw is None:
+            return None
+        kind = self.kinds[field]
+        if kind == "uuid":
+            return uuid.UUID(raw)
+        if kind == "native":
+            return raw
+        return decode_value(json.loads(raw))
+
+    def select(self, where: str, order: str, limit: int | None = None) -> str:
+        query = f"MATCH (v:{self.label}) WHERE {where} RETURN properties(v) AS p ORDER BY {order}"
+        return query + (f" LIMIT {int(limit)}" if limit is not None else "")
+
+
+class _Parts:
+    """The parts a store has seen, created on first use."""
+
+    def __init__(self, backend: "_Backend") -> None:
+        self._backend = backend
+        self._lock = threading.Lock()
+        self._nodes: dict[Part, _PartNodes] = {}
+
+    def install(self, part: Part) -> _PartNodes:
+        with self._lock:
+            nodes = self._nodes.get(part)
+        if nodes is not None:
+            return nodes
+        nodes = _PartNodes(part)
+        for label in (nodes.label, ANCHOR):
+            self._backend.execute(
+                f"CREATE INDEX dat_{label.lower()} IF NOT EXISTS FOR (v:{label}) ON (v.dat_id)",
+                None,
+            )
+        with self._lock:
+            self._nodes[part] = nodes
+        return nodes
+
+
 # --- public surface ----------------------------------------------------------------------
 
 
@@ -250,6 +397,7 @@ class DrevoStore:
         self._dsn = parsed
         self._backend = _open_backend(parsed)
         self._participant = DrevoParticipant(self._backend)
+        self._parts = _Parts(self._backend)
 
     @property
     def location(self) -> tuple[str, ...] | None:
@@ -292,7 +440,43 @@ class DrevoStore:
         return Result(iter(rows), columns=result.columns)
 
     def branch(self, dat_txn: uuid.UUID) -> "DrevoBranch":
-        return DrevoBranch(self.name, self._backend, dat_txn)
+        return DrevoBranch(self.name, self._backend, dat_txn, parts=self._parts)
+
+    # --- entity parts (PartStore) ------------------------------------------------------
+    # Committed reads run in autocommit mode: they keep working under a prepared fence.
+
+    def install_part(self, part: Part) -> None:
+        """Create the ``dat_id`` indexes of the part's versions and of anchors, if missing."""
+        self._parts.install(part)
+
+    def read_part(
+        self, part: Part, dat_id: uuid.UUID, *, known_at: int | None = None
+    ) -> Version | None:
+        nodes = self._parts.install(part)
+        where = "v.dat_id = $id AND v.dat_tx_time IS NOT NULL"
+        if known_at is not None:
+            where += " AND v.dat_tx_time <= $k"
+        query = nodes.select(where, "v.dat_tx_time DESC", 1)
+        row = self._backend.execute(query, {"id": str(dat_id), "k": known_at}).first()
+        return nodes.version(row["p"]) if row else None
+
+    def part_history(self, part: Part, dat_id: uuid.UUID) -> list[Version]:
+        nodes = self._parts.install(part)
+        query = nodes.select("v.dat_id = $id AND v.dat_tx_time IS NOT NULL", "v.dat_tx_time")
+        return [nodes.version(r["p"]) for r in self._backend.execute(query, {"id": str(dat_id)})]
+
+    def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
+        if limit <= 0:
+            return []
+        label = self._parts.install(part).label
+        rows = self._backend.execute(
+            f"MATCH (v:{label}) WHERE v.dat_tx_time IS NOT NULL"
+            " WITH v.dat_id AS d, max(v.dat_tx_time) AS t"
+            f" MATCH (w:{label}) WHERE w.dat_id = d AND w.dat_tx_time = t"
+            f" AND w.dat_deleted AND t < $b RETURN d ORDER BY d LIMIT {int(limit)}",
+            {"b": deleted_before},
+        )
+        return [uuid.UUID(r["d"]) for r in rows]
 
     def participant(self) -> "DrevoParticipant":
         return self._participant
@@ -304,18 +488,87 @@ class DrevoStore:
 class DrevoBranch:
     two_phase = True
 
-    def __init__(self, store: str, backend: _Backend, dat_txn: uuid.UUID) -> None:
+    def __init__(
+        self,
+        store: str,
+        backend: _Backend,
+        dat_txn: uuid.UUID,
+        *,
+        parts: _Parts | None = None,
+    ) -> None:
         self.store = store
         self.dat_txn = dat_txn
         self._backend = backend
         self._tx = backend.begin()
         self._gid: str | None = None
+        self._parts = parts
+        self._written: set[str] = set()  # labels this branch wrote versions to
 
     def execute(self, query: str, params: Params = None) -> Result:
         """Run Cypher inside this branch's transaction (it reads its own writes)."""
         return self._tx.execute(query, params)
 
+    # --- entity parts (PartBranch) -----------------------------------------------------
+
+    def write_part(
+        self,
+        part: Part,
+        dat_id: uuid.UUID,
+        values: Mapping[str, Any],
+        *,
+        created: int | None,
+        deleted: bool = False,
+    ) -> None:
+        nodes = self._nodes(part)
+        props = nodes.properties(dat_id, self.dat_txn, values, created, deleted)
+        key = {"id": str(dat_id), "txn": str(self.dat_txn)}
+        self._remove(nodes, f"MATCH (v:{nodes.label} {{dat_id: $id, dat_txn: $txn}})", key)
+        self._tx.execute(f"CREATE (v:{nodes.label}) SET v += $p", {"p": props})
+        for field, targets in nodes.edges(values):
+            self._tx.execute(
+                f"MATCH (v:{nodes.label} {{dat_id: $id, dat_txn: $txn}})"
+                f" UNWIND $targets AS t MERGE (a:{ANCHOR} {{dat_id: t}})"
+                f" CREATE (v)-[:{field}]->(a)",
+                {**key, "targets": targets},
+            )
+        self._written.add(nodes.label)
+
+    def erase_part(self, part: Part, dat_id: uuid.UUID) -> None:
+        nodes = self._nodes(part)
+        self._remove(nodes, f"MATCH (v:{nodes.label} {{dat_id: $id}})", {"id": str(dat_id)})
+
+    def read_part(self, part: Part, dat_id: uuid.UUID) -> Version | None:
+        nodes = self._nodes(part)
+        rows = self._tx.execute(
+            nodes.select("v.dat_id = $id", "v.dat_tx_time"), {"id": str(dat_id)}
+        )
+        versions = [nodes.version(r["p"]) for r in rows]
+        # This branch's own version has no dat_tx_time yet: it comes first.
+        mine = [v for v in versions if v.dat_tx_time is None]
+        if mine:
+            return mine[0]
+        return max(versions, key=lambda v: v.dat_tx_time or 0, default=None)
+
+    def _remove(self, nodes: _PartNodes, match: str, params: Mapping[str, Any]) -> None:
+        """Delete the matched versions, then the anchors only they pointed to."""
+        rows = self._tx.execute(f"{match}-->(a:{ANCHOR}) RETURN DISTINCT a.dat_id AS a", params)
+        anchors = [r["a"] for r in rows]
+        self._tx.execute(f"{match} DETACH DELETE v", params)
+        if anchors:
+            self._tx.execute(_ORPHANS, {"ids": anchors})
+
+    def _nodes(self, part: Part) -> _PartNodes:
+        if self._parts is None:
+            raise TypeError("this branch was made without its store: it cannot hold parts")
+        return self._parts.install(part)
+
     def stage(self, dat_txn: uuid.UUID, dat_tx_time: int) -> bytes | None:
+        for label in sorted(self._written):
+            self._tx.execute(
+                f"MATCH (v:{label} {{dat_txn: $txn}}) SET v.dat_tx_time = $ts,"
+                " v.dat_created = coalesce(v.dat_created, $ts)",
+                {"txn": str(dat_txn), "ts": dat_tx_time},
+            )
         self._tx.execute(_MARKER, {"dat_txn": str(dat_txn), "dat_tx_time": dat_tx_time})
         return None
 
