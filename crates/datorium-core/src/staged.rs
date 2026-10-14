@@ -5,13 +5,16 @@
 //! another host, so the journal carries what was staged:
 //!
 //! ```json
-//! {"v": 1, "tables": [{"table": "erp.sales", "files": ["s3://…"], "data_files": [{…}]}]}
+//! {"v": 1, "tables": [{"table": "erp.sales", "files": ["s3://…"], "data_files": [{…}],
+//!                      "erase": ["0199…"]}]}
 //! ```
 //!
 //! `data_files` is optional: the Rust adapter adds one Iceberg `DataFile`
 //! JSON object per file (column statistics kept), the Python adapter writes
 //! paths only, and a reader without the objects derives each `DataFile` from
-//! the Parquet footer. Entries of one table are merged in order of first
+//! the Parquet footer. `erase` is optional too: entity parts erased by the
+//! branch (a hard delete), whose versions older than the transaction are
+//! deleted before the files are added. Entries of one table are merged in order of first
 //! appearance. The format is pinned by `conformance/staged_files.json`.
 
 use std::fmt;
@@ -29,6 +32,8 @@ pub struct StagedTable {
     pub files: Vec<String>,
     /// One Iceberg `DataFile` JSON object per file, in the same order.
     pub data_files: Option<Vec<Map<String, Json>>>,
+    /// `dat_id` of the entity parts erased from the table.
+    pub erase: Vec<String>,
 }
 
 /// A payload that is not a staged files payload.
@@ -57,6 +62,9 @@ pub fn encode_staged(tables: &[StagedTable]) -> Vec<u8> {
             if let Some(data_files) = &t.data_files {
                 entry["data_files"] =
                     Json::Array(data_files.iter().map(|d| Json::Object(d.clone())).collect());
+            }
+            if !t.erase.is_empty() {
+                entry["erase"] = json!(t.erase);
             }
             entry
         })
@@ -97,10 +105,18 @@ fn entry(raw: &Json) -> Result<StagedTable, StagedError> {
             Some(objects)
         }
     };
+    let erase: Vec<String> = match raw.get("erase") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(value) => value
+            .as_array()
+            .and_then(|ids| ids.iter().map(|i| i.as_str().map(str::to_owned)).collect())
+            .ok_or_else(|| invalid(format!("table {table:?}: erase is not a list of ids")))?,
+    };
     Ok(StagedTable {
         table: table.to_owned(),
         files,
         data_files,
+        erase,
     })
 }
 
@@ -136,6 +152,7 @@ pub fn decode_staged(raw: Option<&[u8]>) -> Result<Vec<StagedTable>, StagedError
             None => merged.push(e),
             Some(seen) => {
                 seen.files.extend(e.files);
+                seen.erase.extend(e.erase);
                 seen.data_files = match (seen.data_files.take(), e.data_files) {
                     (Some(mut a), Some(b)) => {
                         a.extend(b);
@@ -159,6 +176,7 @@ mod tests {
             table: "erp.sales".into(),
             files: vec!["f".into()],
             data_files: None,
+            erase: Vec::new(),
         }]);
         let doc: Json = serde_json::from_slice(&raw).unwrap();
         assert_eq!(

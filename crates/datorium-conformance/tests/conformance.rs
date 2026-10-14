@@ -484,7 +484,14 @@ fn rows() {
 fn staged_described(tables: &[StagedTable]) -> Value {
     tables
         .iter()
-        .map(|t| json!({"table": t.table, "files": t.files, "data_files": t.data_files.as_ref().map(Vec::len)}))
+        .map(|t| {
+            json!({
+                "table": t.table,
+                "files": t.files,
+                "data_files": t.data_files.as_ref().map(Vec::len),
+                "erase": t.erase,
+            })
+        })
         .collect()
 }
 

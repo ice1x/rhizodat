@@ -337,6 +337,7 @@ def staged_described(tables: list[StagedTable]) -> list[dict[str, Any]]:
             "table": t.table,
             "files": list(t.files),
             "data_files": None if t.data_files is None else len(t.data_files),
+            "erase": list(t.erase),
         }
         for t in tables
     ]

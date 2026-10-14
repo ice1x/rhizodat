@@ -280,6 +280,12 @@ impl Lake {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<(), BoxError> {
+        if let Some(staged) = tables.iter().find(|t| !t.erase.is_empty()) {
+            return Err(refuse(format!(
+                "{}: erasing entity parts is not supported by this adapter yet",
+                staged.table
+            )));
+        }
         for staged in tables {
             let table = self.load(&staged.table).await?;
             if Self::tagged(&table, dat_txn) || Self::referenced(&table, &staged.files).await? {
@@ -526,6 +532,7 @@ impl IcebergBranch {
             table: name.to_owned(),
             files: paths,
             data_files: Some(objects),
+            erase: Vec::new(),
         })
     }
 }

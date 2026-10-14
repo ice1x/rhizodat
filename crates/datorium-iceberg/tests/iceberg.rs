@@ -23,7 +23,7 @@ use datorium_core::gid::gid_for;
 use datorium_core::identity::IdGenerator;
 use datorium_core::journal::{BranchRecord, Journal, State};
 use datorium_core::recovery::Recovery;
-use datorium_core::staged::decode_staged;
+use datorium_core::staged::{decode_staged, encode_staged};
 use datorium_core::store::{Branch, Participant, Participants};
 use datorium_core::timer::TokioTimer;
 use datorium_iceberg::{IcebergBranch, IcebergStore, is_retryable};
@@ -605,6 +605,22 @@ async fn finish_commits_from_the_journal_payload() {
         assert_eq!(lake.snapshots("sales").await, [Some(txn.to_string())]);
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entity_part_erase_is_refused_not_skipped() {
+    // The Python adapter writes `erase` for hard-deleted entity parts; this adapter
+    // cannot erase yet, so it fails (recovery retries) rather than lose the delete.
+    let lake = Lake::memory().await;
+    let (txn, _, payload) = staged(&lake, 1).await;
+    let mut tables = decode_staged(Some(&payload)).unwrap();
+    tables[0].erase = vec![new_id().to_string()];
+    let rec = record("lake", txn, Some(encode_staged(&tables)));
+    let participant = lake.store.participant();
+    let err = participant.finish(&rec, txn, TS).await.unwrap_err();
+    assert!(err.to_string().contains("erasing entity parts"), "{err}");
+    assert_eq!(lake.snapshots("sales").await, Vec::<Option<String>>::new());
+    lake.drop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
