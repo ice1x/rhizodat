@@ -12,6 +12,7 @@ from types import TracebackType
 from typing import Any, Protocol, Self
 
 from datorium.core.coordinator import Branch, Committed, CommittedPending, Coordinator, Participant
+from datorium.core.errors import ErrorKind, classify
 from datorium.core.result import Result
 
 __all__ = ["Store", "UnitOfWork", "UnitOfWorkClosed"]
@@ -90,6 +91,13 @@ class UnitOfWork:
     def is_retryable(self, error: BaseException) -> bool:
         """Whether any touched store calls ``error`` transient."""
         return any(b.is_retryable(error) for b in self._branches.values())
+
+    def full_store(self, error: BaseException) -> str | None:
+        """The touched store that calls ``error`` a full store, if any."""
+        for name, branch in self._branches.items():
+            if classify(branch, error) is ErrorKind.STORE_FULL:
+                return name
+        return None
 
     def __enter__(self) -> Self:
         return self

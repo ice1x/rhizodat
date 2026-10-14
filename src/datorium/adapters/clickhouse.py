@@ -40,6 +40,7 @@ from typing import Any
 
 from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import parse_dsn
+from datorium.core.errors import ErrorKind
 from datorium.core.journal import BranchRecord
 from datorium.core.parts import Part, Version
 from datorium.core.result import Result
@@ -169,6 +170,21 @@ def _is_retryable(error: BaseException) -> bool:
     return getattr(error, "code", None) in _RETRYABLE_CODES
 
 
+_NOT_ENOUGH_SPACE = 243
+_VIOLATED_CONSTRAINT = 469
+
+
+def _classify(error: BaseException) -> ErrorKind:
+    code = getattr(error, "code", None)
+    if code == _NOT_ENOUGH_SPACE:
+        return ErrorKind.STORE_FULL
+    if _is_retryable(error):
+        return ErrorKind.TRANSIENT
+    if code == _VIOLATED_CONSTRAINT:
+        return ErrorKind.CONSTRAINT
+    return ErrorKind.PERMANENT
+
+
 class ClickHouseStore:
     """One ClickHouse database as a datorium store."""
 
@@ -242,6 +258,11 @@ class ClickHouseStore:
 
     def participant(self) -> "ClickHouseParticipant":
         return self._participant
+
+    def free_space(self) -> int | None:
+        """The least free space of the server's disks (``system.disks``), in bytes."""
+        rows = self._rows("SELECT min(free_space) AS free FROM system.disks", {})
+        return int(rows[0]["free"]) if rows and rows[0]["free"] is not None else None
 
     def close(self) -> None:
         self._client.close()
@@ -469,6 +490,9 @@ class ClickHouseBranch:
     def is_retryable(self, error: BaseException) -> bool:
         return _is_retryable(error)
 
+    def classify(self, error: BaseException) -> ErrorKind:
+        return _classify(error)
+
 
 class ClickHouseParticipant:
     def __init__(self, store: ClickHouseStore) -> None:
@@ -489,6 +513,9 @@ class ClickHouseParticipant:
 
     def is_retryable(self, error: BaseException) -> bool:
         return _is_retryable(error)
+
+    def classify(self, error: BaseException) -> ErrorKind:
+        return _classify(error)
 
 
 ADAPTER = Adapter(

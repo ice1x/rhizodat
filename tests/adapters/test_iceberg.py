@@ -28,6 +28,7 @@ from pyiceberg.types import (
 
 from datorium.adapters.iceberg import IcebergBranch, IcebergStore, catalog_properties
 from datorium.core.coordinator import gid_for
+from datorium.core.errors import Capacity, ErrorKind, classify
 from datorium.core.identity import new_id
 from datorium.core.journal import BranchRecord
 
@@ -431,3 +432,29 @@ def test_transient_errors_are_retryable(store: IcebergStore) -> None:
     assert participant.is_retryable(ConnectionError())
     assert not participant.is_retryable(NoSuchTableError("erp.x"))
     assert not participant.is_retryable(ValueError("schema"))
+
+
+# --- capacity --------------------------------------------------------------------------
+
+
+def test_a_local_warehouse_reports_its_disk_and_object_storage_cannot(
+    store: IcebergStore, dsn: str
+) -> None:
+    import shutil
+
+    assert isinstance(store, Capacity)
+    free = store.free_space()
+    if dsn.startswith("iceberg+rest"):
+        assert free is None  # S3 has quotas, not free space
+    else:
+        assert free is not None
+        assert abs(free - shutil.disk_usage(Path(dsn.split("file://")[1]).parent).free) < 1 << 30
+
+
+def test_a_write_to_a_full_device_is_a_full_store(store: IcebergStore) -> None:
+    import errno
+
+    branch = store.branch(new_id())
+    error = OSError(errno.ENOSPC, "No space left on device")
+    assert classify(branch, error) is ErrorKind.STORE_FULL
+    assert not branch.is_retryable(error)

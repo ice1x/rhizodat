@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from datorium.core.clock import HybridLogicalClock
+from datorium.core.errors import Capacity, ErrorKind, classify
 from datorium.core.journal import BranchRecord, Journal, JournalConflict, JournalRecord, State
 from datorium.core.retry import Retry
 
@@ -43,6 +44,7 @@ __all__ = [
     "Participant",
     "Recovery",
     "RecoveryReport",
+    "StoreFull",
     "gid_for",
     "parse_gid",
 ]
@@ -124,6 +126,18 @@ class Aborted(Exception):
         self.retryable = retryable
 
 
+class StoreFull(Aborted):
+    """Nothing was committed: store ``store`` has no room. Not retryable."""
+
+    def __init__(
+        self, dat_txn: uuid.UUID, *, store: str, reason: str, free: int | None = None
+    ) -> None:
+        super().__init__(dat_txn, retryable=False, reason=f"store {store!r} is full: {reason}")
+        self.store = store
+        self.free = free
+        """The free space the store reported (``Capacity``), when that is how it was found."""
+
+
 class InDoubt(Exception):
     """The decision write could not be confirmed; recovery resolves it from the journal.
     Do not re-run the Unit of Work: it may have committed."""
@@ -167,9 +181,15 @@ class Coordinator:
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         rand: Callable[[], float] = random.random,
+        capacity: Mapping[str, Capacity] | None = None,
+        min_free: int | None = None,
     ) -> None:
+        if min_free is not None and min_free < 0:
+            raise ValueError(f"min_free must not be negative, got {min_free}")
         self._journal = journal
         self._participants = participants
+        self._capacity = dict(capacity or {})
+        self._min_free = min_free
         self._clock = clock
         self._finish = finish or Retry(
             attempts=5, deadline_s=2.0, base_delay_s=0.02, max_delay_s=0.5
@@ -188,6 +208,7 @@ class Coordinator:
         except ValueError:
             self.rollback(dat_txn, branches)
             raise
+        self._check_capacity(dat_txn, branches)
         if len(branches) == 1:
             return self._commit_one_phase(dat_txn, branches[0])
         return self._commit_two_phase(dat_txn, branches)
@@ -213,6 +234,8 @@ class Coordinator:
             if self._applied(record, dat_txn):
                 return Committed(dat_txn, ts)
             self.rollback(dat_txn, [branch])
+            if classify(branch, exc) is ErrorKind.STORE_FULL:
+                raise StoreFull(dat_txn, store=branch.store, reason=str(exc)) from exc
             raise Aborted(dat_txn, retryable=branch.is_retryable(exc), reason=str(exc)) from exc
         return Committed(dat_txn, ts)
 
@@ -231,21 +254,28 @@ class Coordinator:
         ordered = sorted(branches, key=lambda b: b.two_phase)  # lock-free work first
         ts = self._clock.now().encode()
         journaled = False
+        current: Branch | None = None  # the branch at work when it fails (None: the journal)
         try:
             staged = {}
             for branch in ordered:
+                current = branch
                 payload = branch.stage(dat_txn, ts)
                 staged[branch.store] = BranchRecord(
                     branch.store, gid_for(dat_txn, branch.store), branch.two_phase, payload
                 )
+            current = None
             journaled = True  # from here a record may exist, even if begin() reports an error
             journal.begin(dat_txn, [staged[b.store] for b in branches])
             for branch in ordered:
                 if branch.two_phase:
+                    current = branch
                     branch.prepare(gid_for(dat_txn, branch.store))
+            current = None
             journal.transition(dat_txn, State.ACTIVE, State.PREPARED, dat_tx_time=ts)
         except Exception as exc:
             self._abort(dat_txn, branches, journaled)
+            if current is not None and classify(current, exc) is ErrorKind.STORE_FULL:
+                raise StoreFull(dat_txn, store=current.store, reason=str(exc)) from exc
             failing = next((b for b in branches if b.is_retryable(exc)), None)
             retryable = failing is not None or isinstance(exc, ConnectionError | TimeoutError)
             raise Aborted(dat_txn, retryable=retryable, reason=str(exc)) from exc
@@ -340,6 +370,31 @@ class Coordinator:
         return False
 
     # --- helpers --------------------------------------------------------------------
+
+    def _check_capacity(self, dat_txn: uuid.UUID, branches: Sequence[Branch]) -> None:
+        """Refuse, before anything is written, a store with less than ``min_free`` left.
+
+        A store that cannot tell (``None``) or fails to answer passes: a broken
+        free-space query must not stop every commit.
+        """
+        if self._min_free is None:
+            return
+        for branch in branches:
+            capacity = self._capacity.get(branch.store)
+            if capacity is None:
+                continue
+            try:
+                free = capacity.free_space()
+            except Exception:
+                continue
+            if free is not None and free < self._min_free:
+                self.rollback(dat_txn, branches)
+                raise StoreFull(
+                    dat_txn,
+                    store=branch.store,
+                    reason=f"{free} bytes free, min_free is {self._min_free}",
+                    free=free,
+                )
 
     def _applied(self, branch: BranchRecord, dat_txn: uuid.UUID) -> bool:
         try:

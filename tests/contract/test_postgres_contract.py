@@ -29,6 +29,11 @@ class PostgresHarness:
         row = store.execute("SELECT count(*) AS n FROM contract WHERE key = %s", (key,)).one()
         return int(row["n"])
 
+    def store_full_error(self) -> BaseException:
+        import psycopg
+
+        return psycopg.errors.DiskFull("could not extend file: No space left on device")
+
     def cleanup(self) -> None:
         for store in self.stores:
             participant = store.participant()

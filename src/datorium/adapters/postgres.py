@@ -32,6 +32,7 @@ from urllib.parse import unquote_plus
 
 from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import DSNError, parse_dsn
+from datorium.core.errors import ErrorKind
 from datorium.core.journal import (
     BranchRecord,
     JournalConflict,
@@ -111,6 +112,20 @@ def _is_retryable(error: BaseException) -> bool:
     # Connection loss / server shutdown; constraint and syntax errors are DatabaseError subclasses
     # with a sqlstate and are not OperationalError.
     return isinstance(error, pg.OperationalError) and getattr(error, "sqlstate", None) is None
+
+
+_DISK_FULL = "53100"
+
+
+def _classify(error: BaseException) -> ErrorKind:
+    state = getattr(error, "sqlstate", None)
+    if state == _DISK_FULL:
+        return ErrorKind.STORE_FULL
+    if _is_retryable(error):
+        return ErrorKind.TRANSIENT
+    if isinstance(state, str) and state.startswith("23"):  # integrity constraint violation
+        return ErrorKind.CONSTRAINT
+    return ErrorKind.PERMANENT
 
 
 def _literal(value: str) -> str:
@@ -518,6 +533,9 @@ class PostgresBranch:
     def is_retryable(self, error: BaseException) -> bool:
         return _is_retryable(error)
 
+    def classify(self, error: BaseException) -> ErrorKind:
+        return _classify(error)
+
 
 class PostgresParticipant:
     """Resolves prepared gids. One autocommit connection, reopened after a failure."""
@@ -557,6 +575,9 @@ class PostgresParticipant:
 
     def is_retryable(self, error: BaseException) -> bool:
         return _is_retryable(error)
+
+    def classify(self, error: BaseException) -> ErrorKind:
+        return _classify(error)
 
     def close(self) -> None:
         with self._lock:

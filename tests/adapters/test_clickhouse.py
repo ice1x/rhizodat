@@ -15,6 +15,7 @@ from faker import Faker
 
 from datorium.adapters.clickhouse import ClickHouseBranch, ClickHouseStore
 from datorium.core.coordinator import gid_for
+from datorium.core.errors import Capacity, ErrorKind
 from datorium.core.identity import new_id
 from datorium.core.journal import BranchRecord
 from datorium.core.rows import decode_batches
@@ -305,3 +306,53 @@ def test_transient_errors_are_retryable(store: ClickHouseStore) -> None:
     assert participant.is_retryable(TimeoutError())
     assert not participant.is_retryable(syntax)
     assert not participant.is_retryable(ValueError("bad row"))
+
+
+# --- error classification and capacity ---------------------------------------------------
+
+
+def _server_error(code: int, name: str) -> Exception:
+    from clickhouse_connect.driver.exceptions import DatabaseError
+
+    return DatabaseError(f"Code: {code}. DB::Exception: ... ({name})", code=code, name=name)
+
+
+@pytest.mark.parametrize(
+    ("code", "name", "kind"),
+    [
+        (243, "NOT_ENOUGH_SPACE", ErrorKind.STORE_FULL),
+        (469, "VIOLATED_CONSTRAINT", ErrorKind.CONSTRAINT),
+        (252, "TOO_MANY_PARTS", ErrorKind.TRANSIENT),
+        (60, "UNKNOWN_TABLE", ErrorKind.PERMANENT),
+    ],
+)
+def test_errors_are_classified_by_server_code(
+    store: ClickHouseStore, code: int, name: str, kind: ErrorKind
+) -> None:
+    error = _server_error(code, name)
+    branch = store.branch(new_id())
+    assert branch.classify(error) is kind
+    assert store.participant().classify(error) is kind
+    assert branch.is_retryable(error) is kind.retryable
+
+
+def test_a_real_constraint_violation_is_a_constraint(store: ClickHouseStore) -> None:
+    store.execute(
+        "CREATE TABLE checked (n Int64, dat_txn UUID, dat_tx_time Int64,"
+        " CONSTRAINT positive CHECK n > 0) ENGINE = MergeTree ORDER BY n"
+    )
+    branch = store.branch(new_id())
+    branch.insert("checked", [{"n": -1}])
+    branch.stage(branch.dat_txn, 1 << 16)
+    with pytest.raises(Exception) as err:  # noqa: PT011 - the driver's own error class
+        branch.commit_one_phase()
+    assert branch.classify(err.value) is ErrorKind.CONSTRAINT
+
+
+def test_free_space_is_the_least_free_disk(store: ClickHouseStore) -> None:
+    assert isinstance(store, Capacity)
+    free = store.free_space()
+    disks = store.execute("SELECT free_space FROM system.disks").all()
+    assert free is not None
+    # Other writers change it between the two queries: the same disk, not the same byte.
+    assert abs(free - min(int(d["free_space"]) for d in disks)) < 1 << 30
