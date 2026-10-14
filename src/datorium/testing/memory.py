@@ -135,10 +135,15 @@ class _Branch:
         if unknown:
             raise ValueError(f"{part.type_name}: {sorted(unknown)} are not fields of this part")
         version = Version(self.dat_txn, None, created, deleted, dict(values))
-        self._ops.append(_Op((part.table, dat_id), version))
+        self._replace((part.table, dat_id), version)
 
     def erase_part(self, part: Part, dat_id: uuid.UUID) -> None:
-        self._ops.append(_Op((part.table, dat_id), None))
+        self._replace((part.table, dat_id), None)
+
+    def _replace(self, key: _Key, version: Version | None) -> None:
+        """A branch keeps one version per part: a later write or an erase replaces it."""
+        self._ops = [op for op in self._ops if op.key != key or op.version is None]
+        self._ops.append(_Op(key, version))
 
     def read_part(self, part: Part, dat_id: uuid.UUID) -> Version | None:
         key = (part.table, dat_id)

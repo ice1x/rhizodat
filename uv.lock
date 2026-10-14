@@ -537,6 +537,7 @@ postgres = [
     { name = "psycopg", extra = ["binary"] },
 ]
 testing = [
+    { name = "faker" },
     { name = "pytest" },
 ]
 
@@ -561,6 +562,7 @@ drevo = [
 [package.metadata]
 requires-dist = [
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.8" },
+    { name = "faker", marker = "extra == 'testing'", specifier = ">=30" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3" },
     { name = "neo4j", marker = "extra == 'drevo'", specifier = ">=5.20" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },

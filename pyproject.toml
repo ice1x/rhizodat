@@ -35,7 +35,7 @@ iceberg = ["pyiceberg[pyarrow,sql-sqlite]>=0.12"]
 # datorium-MCP, the MCP server shipped with datorium (the datorium-mcp command).
 mcp = ["mcp>=2.3"]
 # datorium.testing: the adapter contract suite for adapter authors.
-testing = ["pytest>=8"]
+testing = ["pytest>=8", "faker>=30"]
 
 [project.scripts]
 datorium-mcp = "datorium.mcp.server:main"

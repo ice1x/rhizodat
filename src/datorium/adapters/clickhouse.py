@@ -21,9 +21,18 @@ server's ``max_insert_block_size``.
 Tables written through datorium need ``dat_txn UUID`` and ``dat_tx_time Int64``
 columns; a skip index on ``dat_txn`` keeps the idempotency check cheap.
 
+Entity parts (``PartStore``) live in append-only ``MergeTree`` tables ordered by
+``(dat_id, dat_tx_time)``, one per entity type: every version is one row. A
+branch keeps one version per entity; stage turns them into insert batches. An
+erase travels as an erase batch and deletes the entity's versions older than
+its own transaction, so a late erase (recovery) never removes a later write.
+Fields without an exact native type (``Decimal``, ``bytes``, lists, dicts) are
+tagged JSON in a ``String`` column.
+
 clickhouse-connect is imported on first use, so the driver stays an optional extra.
 """
 
+import json
 import re
 import uuid
 from collections.abc import Iterable, Mapping
@@ -32,8 +41,9 @@ from typing import Any
 from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import parse_dsn
 from datorium.core.journal import BranchRecord
+from datorium.core.parts import Part, Version
 from datorium.core.result import Result
-from datorium.core.rows import Batch, decode_batches, encode_batches
+from datorium.core.rows import Batch, decode_batches, decode_value, encode_batches, encode_value
 
 __all__ = ["ADAPTER", "ClickHouseBranch", "ClickHouseParticipant", "ClickHouseStore"]
 
@@ -58,6 +68,95 @@ def _driver() -> Any:  # noqa: ANN401 - the driver module, imported lazily
 
 def _quote(table: str) -> str:
     return ".".join(f"`{part}`" for part in table.split("."))
+
+
+_SERVICE = ("dat_id", "dat_created", "dat_deleted")
+
+
+def _column_type(annotation: object) -> str | None:
+    """The native ClickHouse type of a field, or ``None``: tagged JSON in a ``String``."""
+    import datetime as dt
+    import types
+    import typing
+
+    from datorium.core.mapping import Ref
+
+    origin = typing.get_origin(annotation)
+    if origin is types.UnionType or origin is typing.Union:
+        args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        return _column_type(args[0]) if len(args) == 1 else None
+    if annotation is Ref or origin is Ref:
+        return "UUID"
+    natives: dict[object, str] = {
+        str: "String",
+        bool: "Bool",
+        int: "Int64",
+        float: "Float64",
+        dt.datetime: "DateTime64(6, 'UTC')",
+        dt.date: "Date32",
+        uuid.UUID: "UUID",
+    }
+    return natives.get(annotation)
+
+
+class _PartTable:
+    """How one part is stored: its table, columns and value conversions."""
+
+    def __init__(self, part: Part) -> None:
+        self.part = part
+        self.table = part.table
+        self.json = frozenset(f for f in part.fields if _column_type(part.types.get(f)) is None)
+        self.times = frozenset(
+            f for f in part.fields if (_column_type(part.types.get(f)) or "").startswith("DateTime")
+        )
+        self.columns = (*_SERVICE, *part.fields, *_RESERVED)
+
+    def create(self) -> str:
+        fields = "".join(
+            f", `{f}` Nullable({_column_type(self.part.types.get(f)) or 'String'})"
+            for f in self.part.fields
+        )
+        return (
+            f"CREATE TABLE IF NOT EXISTS `{self.table}` ("
+            f" dat_id UUID, dat_created Int64, dat_deleted Bool{fields},"
+            " dat_txn UUID, dat_tx_time Int64,"
+            " INDEX dat_txn_idx dat_txn TYPE bloom_filter GRANULARITY 4"
+            ") ENGINE = MergeTree ORDER BY (dat_id, dat_tx_time)"
+        )
+
+    def row(self, dat_id: uuid.UUID, version: Version, dat_tx_time: int) -> list[Any]:
+        values = [
+            json.dumps(encode_value(version.values.get(f)), separators=(",", ":"))
+            if f in self.json and version.values.get(f) is not None
+            else version.values.get(f)
+            for f in self.part.fields
+        ]
+        created = version.created if version.created is not None else dat_tx_time
+        return [dat_id, created, version.deleted, *values, version.dat_txn, dat_tx_time]
+
+    def select(self) -> str:
+        return ", ".join(f"`{c}`" for c in self.columns)
+
+    def version(self, row: Mapping[str, Any]) -> Version:
+        values = {f: self._value(f, row[f]) for f in self.part.fields}
+        return Version(
+            dat_txn=row["dat_txn"],
+            dat_tx_time=row["dat_tx_time"],
+            created=row["dat_created"],
+            deleted=bool(row["dat_deleted"]),
+            values=values,
+        )
+
+    def _value(self, field: str, raw: Any) -> Any:  # noqa: ANN401 - any stored value
+        if raw is None:
+            return None
+        if field in self.json:
+            return decode_value(json.loads(raw))
+        if field in self.times and raw.tzinfo is None:  # the driver drops the column's zone
+            from datetime import UTC
+
+            return raw.replace(tzinfo=UTC)
+        return raw
 
 
 def _is_retryable(error: BaseException) -> bool:
@@ -97,6 +196,7 @@ class ClickHouseStore:
             autogenerate_session_id=False,  # sessions serialise queries; none are needed
         )
         self._participant = ClickHouseParticipant(self)
+        self._parts: dict[Part, _PartTable] = {}
 
     def __repr__(self) -> str:
         return f"ClickHouseStore({self.name!r}, {self._dsn.redacted()!r})"
@@ -146,6 +246,54 @@ class ClickHouseStore:
     def close(self) -> None:
         self._client.close()
 
+    # --- PartStore -------------------------------------------------------------------------
+
+    def install_part(self, part: Part) -> None:
+        table = _PartTable(part)
+        self._client.command(table.create())
+        self._parts[part] = table
+
+    def read_part(
+        self, part: Part, dat_id: uuid.UUID, *, known_at: int | None = None
+    ) -> Version | None:
+        table = self.part_table(part)
+        bound = "" if known_at is None else " AND dat_tx_time <= {k:Int64}"
+        rows = self._rows(
+            f"SELECT {table.select()} FROM `{table.table}` WHERE dat_id = {{i:UUID}}{bound}"
+            " ORDER BY dat_tx_time DESC LIMIT 1",
+            {"i": dat_id, "k": known_at},
+        )
+        return table.version(rows[0]) if rows else None
+
+    def part_history(self, part: Part, dat_id: uuid.UUID) -> list[Version]:
+        table = self.part_table(part)
+        rows = self._rows(
+            f"SELECT {table.select()} FROM `{table.table}` WHERE dat_id = {{i:UUID}}"
+            " ORDER BY dat_tx_time",
+            {"i": dat_id},
+        )
+        return [table.version(r) for r in rows]
+
+    def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
+        table = self.part_table(part)
+        rows = self._rows(
+            f"SELECT dat_id FROM `{table.table}` GROUP BY dat_id"
+            " HAVING argMax(dat_deleted, dat_tx_time) AND max(dat_tx_time) < {b:Int64}"
+            " ORDER BY dat_id LIMIT {n:UInt64}",
+            {"b": deleted_before, "n": limit},
+        )
+        return [r["dat_id"] for r in rows]
+
+    def part_table(self, part: Part) -> _PartTable:
+        table = self._parts.get(part)
+        if table is None:
+            self.install_part(part)
+            table = self._parts[part]
+        return table
+
+    def _rows(self, query: str, params: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return list(self._client.query(query, parameters=dict(params)).named_results())
+
     # --- used by the branch and the participant ------------------------------------------
 
     def columns(self, table: str) -> list[str]:
@@ -153,8 +301,20 @@ class ClickHouseStore:
         return [row[0] for row in r.result_rows]
 
     def apply(self, gid: str, batches: list[Batch], dat_txn: uuid.UUID, dat_tx_time: int) -> None:
-        """Insert every batch and then the marker, skipping what is already there."""
+        """Erase, insert every batch and then the marker, skipping what is already there."""
+        if self.is_applied(dat_txn):
+            return
+        for batch in batches:
+            if batch.erase:
+                self._client.command(
+                    f"DELETE FROM {_quote(batch.table)}"
+                    " WHERE dat_id IN {ids:Array(UUID)} AND dat_tx_time < {ts:Int64}",
+                    parameters={"ids": [row[0] for row in batch.rows], "ts": dat_tx_time},
+                    settings={"lightweight_deletes_sync": 2},
+                )
         for i, batch in enumerate(batches):
+            if batch.erase:
+                continue
             present = self._count(batch.table, dat_txn)
             if present >= len(batch.rows):
                 continue
@@ -197,6 +357,8 @@ class ClickHouseBranch:
         self.dat_txn = dat_txn
         self._ch = store
         self._buffer: dict[str, tuple[tuple[str, ...], list[list[Any]]]] = {}
+        self._versions: dict[Part, dict[uuid.UUID, Version]] = {}
+        self._erased: dict[Part, set[uuid.UUID]] = {}
         self._staged: tuple[list[Batch], int] | None = None
 
     def insert(self, table: str, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -221,8 +383,39 @@ class ClickHouseBranch:
         """Read from the store. Buffered rows are not visible: ClickHouse has no transaction."""
         return self._ch.execute(query, params)
 
+    # --- PartBranch ------------------------------------------------------------------------
+
+    def write_part(
+        self,
+        part: Part,
+        dat_id: uuid.UUID,
+        values: Mapping[str, Any],
+        *,
+        created: int | None,
+        deleted: bool = False,
+    ) -> None:
+        unknown = set(values) - set(part.fields)
+        if unknown:
+            raise ValueError(f"{part.type_name}: {sorted(unknown)} are not fields of this part")
+        version = Version(self.dat_txn, None, created, deleted, dict(values))
+        self._versions.setdefault(part, {})[dat_id] = version
+
+    def erase_part(self, part: Part, dat_id: uuid.UUID) -> None:
+        self._versions.get(part, {}).pop(dat_id, None)
+        self._erased.setdefault(part, set()).add(dat_id)
+
+    def read_part(self, part: Part, dat_id: uuid.UUID) -> Version | None:
+        mine = self._versions.get(part, {}).get(dat_id)
+        if mine is not None:
+            return mine
+        if dat_id in self._erased.get(part, ()):
+            return None
+        return self._ch.read_part(part, dat_id)
+
+    # --- commit ----------------------------------------------------------------------------
+
     def stage(self, dat_txn: uuid.UUID, dat_tx_time: int) -> bytes:
-        batches = []
+        batches = self._part_batches(dat_tx_time)
         for table, (columns, rows) in self._buffer.items():
             if len(rows) > self._ch.max_rows_per_table:
                 raise ValueError(
@@ -240,6 +433,24 @@ class ClickHouseBranch:
         self._staged = (batches, dat_tx_time)
         return payload
 
+    def _part_batches(self, dat_tx_time: int) -> list[Batch]:
+        batches = []
+        for part, erased in self._erased.items():
+            table = self._ch.part_table(part)
+            batches.append(Batch(table.table, ("dat_id",), [[i] for i in erased], erase=True))
+        for part, versions in self._versions.items():
+            if not versions:
+                continue
+            if len(versions) > self._ch.max_rows_per_table:
+                raise ValueError(
+                    f"{len(versions)} rows for {part.table!r} exceed max_rows_per_table="
+                    f"{self._ch.max_rows_per_table}"
+                )
+            table = self._ch.part_table(part)
+            rows = [table.row(i, v, dat_tx_time) for i, v in versions.items()]
+            batches.append(Batch(table.table, table.columns, rows))
+        return batches
+
     def prepare(self, gid: str) -> None:
         raise TypeError("a ClickHouse branch is not two-phase; it is applied after the decision")
 
@@ -251,6 +462,8 @@ class ClickHouseBranch:
 
     def rollback(self) -> None:
         self._buffer.clear()
+        self._versions.clear()
+        self._erased.clear()
         self._staged = None
 
     def is_retryable(self, error: BaseException) -> bool:
