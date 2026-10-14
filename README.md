@@ -25,8 +25,10 @@ purpose.
 > Status: v0.1 in progress. Implemented: identity, HLC, DSNs, entity mapping,
 > results, the journal, the commit coordinator and recovery, PostgreSQL, drevo,
 > ClickHouse and Iceberg adapters, journals in PostgreSQL and drevo, Units of
-> Work with retries. Not yet: repository persistence of entities, bitemporal
-> reads, migrations. This README is
+> Work with retries, the Repository (entity CRUD, versions, `as_of` in
+> transaction time, hard and soft delete) with entity parts in PostgreSQL. Not
+> yet: entity parts in drevo, ClickHouse and Iceberg, valid-time reads,
+> migrations. This README is
 > the specification v0.1 is built against.
 
 ---
@@ -394,8 +396,10 @@ datorium is **bitemporal**:
 - **Valid time** (opt-in per entity type): `valid_from` / `valid_to`, when the
   fact holds in the real world.
 
-A write creates a new version; a delete closes the interval. Nothing is
-overwritten in place.
+A write creates a new version; nothing is overwritten in place. A delete is a
+**hard delete** by default: every version of the entity is erased, in every
+store. A type declared with `soft_delete` keeps it instead (see
+[Repository](#repository)).
 
 ```python
 repo.get(order_id)                              # current
@@ -404,9 +408,64 @@ repo.get(order_id, as_of=t, known_at=t2)        # valid at t, as known at t2
 repo.history(order_id)                          # every version, every store
 ```
 
+Implemented so far: transaction time. Without valid time, `as_of=t` is the
+version known at `t` (inclusive, a time-zone-aware `datetime`); valid-time reads
+and `known_at` come next.
+
 How each store keeps history: Iceberg snapshots and time travel; drevo facts
 with validity windows; ClickHouse append-only versioned rows; PostgreSQL
 versioned rows. A retention / compaction policy bounds the growth.
+
+---
+
+## Repository
+
+`dat.repository(T)` is CRUD for one entity type; `uow.repository(T)` the same
+inside a Unit of Work, whose writes commit with the rest of the work and whose
+reads see them.
+
+```python
+orders = dat.repository(Order)
+orders.add(order)                     # fails if the dat_id exists (EntityExists)
+orders.update(order)                  # fails without a live version (EntityNotFound)
+orders.save(order)                    # add or update
+orders.get(order_id)                  # None when missing or deleted
+orders.get(order_id, as_of=t)         # the version known at t
+orders.get(order_id, include_deleted=True)
+orders.history(order_id)              # every version, oldest first
+orders.delete(order_id)               # hard: erased everywhere; soft: hidden
+orders.restore(order_id)              # soft delete only, within the window
+orders.purge_expired()                # erase soft deletes whose window is over
+```
+
+- **One write, one Unit of Work.** Every write of `dat.repository(T)` is a Unit
+  of Work of its own, with retries, and writes a version of **every** part of
+  the entity, so the parts of one version share a `dat_txn`. Writing parts in
+  separate transactions may come later, after monitoring and benchmarks.
+- **Times.** Each instance carries `dat_created_at`, `dat_updated_at` and
+  `dat_deleted_at` (UTC, from the HLC), set on reads and ignored by equality.
+  The creation time is stored in every version.
+- **Soft delete** (opt-in per type): `@entity(..., soft_delete=True)` uses the
+  configured window, `Datorium(soft_delete_window=timedelta(days=30))` (the
+  default); `soft_delete=timedelta(days=7)` gives the type its own, which wins.
+  A soft delete adds a version marked deleted; `restore` adds a live one;
+  `purge_expired` erases, physically, what left the window.
+- **Consistent reads.** Stores finish a meta-transaction one after another, so
+  for a moment one part may show a newer version than another. A read then
+  reads again at the oldest of the latest times and returns the newest version
+  every part already has.
+
+How parts are stored, per store:
+
+| Store | Layout |
+|---|---|
+| PostgreSQL | one table per type (`tracker.Issue` → `tracker_issue`), one row per version: `dat_id`, `dat_txn`, `dat_tx_time`, `dat_created`, `dat_deleted` and a typed column per field (`jsonb` for lists, dicts and other types); primary key `(dat_id, dat_txn)`. Created on first use. |
+| drevo, ClickHouse, Iceberg | next: version nodes with edges for references; append-only rows; append-only data files |
+
+A store joins by implementing the capabilities `PartStore` (committed reads)
+and, on its branches, `PartBranch` (writes and reads inside a Unit of Work;
+`dat_tx_time` is filled at stage). `datorium.testing.memory.MemoryEntityStore`
+is an in-memory reference.
 
 ---
 
@@ -524,6 +583,8 @@ class Store:                         # what open_store returns
 class ReadOnlyQueries:  def read_only(self, query, params=None) -> Result: ...  # the store refuses writes
 class AppliedLocation:  applied_location: tuple | None   # two stores in one place are refused
 class Fenced:           fence_location: tuple | None     # the journal must not live there
+class PartStore:        ...  # entity parts: install_part, read_part, part_history, expired_parts
+class PartBranch:       ...  # on a branch: write_part, erase_part, read_part (see Repository)
 
 class Branch:                        # one store's part of one Unit of Work
     store: str
@@ -668,7 +729,8 @@ datorium/
 │   ├── adapter.py       # adapter registry, plug-ins, capability protocols
 │   ├── dsn.py           # connection strings (schemes from the adapters)
 │   ├── mapping.py       # @entity, store mapping
-│   ├── repository.py
+│   ├── parts.py         # entity parts: versions, PartStore / PartBranch
+│   ├── repository.py    # entity CRUD, versions, soft delete
 │   ├── unit_of_work.py
 │   ├── coordinator.py   # commit protocol, recovery
 │   ├── journal.py
@@ -681,7 +743,7 @@ datorium/
 │   ├── clickhouse.py
 │   └── iceberg.py
 ├── mcp/                 # datorium-MCP: tools, configuration, server
-├── testing/             # the adapter contract suite (datorium[testing])
+├── testing/             # the adapter contract suite (datorium[testing]), memory stores
 └── migrations/
 ```
 
@@ -708,6 +770,9 @@ Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
    staged files deleted on abort.
 5. Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
    entity parts and repository persistence.
+   ✔ Repository CRUD, versions, `as_of` in transaction time, hard and soft
+   delete; parts in PostgreSQL.
+   Next: parts in drevo, ClickHouse and Iceberg; valid time; MCP entity tools.
 6. Migrations.
 7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
    bug tracker.

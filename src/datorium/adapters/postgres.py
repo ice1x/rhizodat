@@ -9,6 +9,11 @@
 - ``PostgresJournal``: the journal table in PostgreSQL, compare-and-set by
   ``UPDATE … WHERE state = expected``.
 
+Entity parts (``datorium.core.parts``) live in one table per part, named after
+the entity type, with one row per version: ``dat_id``, ``dat_txn``,
+``dat_tx_time`` (set at stage), ``dat_created``, ``dat_deleted`` and a typed
+column per field (``jsonb`` for lists, dicts and anything without a native type).
+
 Every branch inserts ``(dat_txn, dat_tx_time)`` into ``dat_applied`` inside its
 own transaction, so "did this branch commit?" is one primary-key lookup,
 whatever tables the application wrote. The server needs
@@ -37,6 +42,7 @@ from datorium.core.journal import (
     decode_branches,
     encode_branches,
 )
+from datorium.core.parts import Part, Version
 from datorium.core.result import Result
 
 if TYPE_CHECKING:
@@ -112,6 +118,121 @@ def _literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+# --- entity parts -----------------------------------------------------------------------
+
+_SERVICE_COLUMNS = ("dat_id", "dat_txn", "dat_tx_time", "dat_created", "dat_deleted")
+_DUPLICATE = {"42P07", "23505"}  # duplicate table / type: a concurrent CREATE TABLE won
+
+
+def _column_type(annotation: object) -> str:
+    """The PostgreSQL type of a field; ``jsonb`` when there is no native one."""
+    import datetime as dt
+    import decimal
+    import types
+    import typing
+
+    from datorium.core.mapping import Ref
+
+    origin = typing.get_origin(annotation)
+    if origin is types.UnionType or origin is typing.Union:
+        args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        return _column_type(args[0]) if len(args) == 1 else "jsonb"
+    if annotation is Ref or origin is Ref:
+        return "uuid"
+    natives: dict[object, str] = {
+        str: "text",
+        bool: "boolean",
+        int: "bigint",
+        float: "double precision",
+        decimal.Decimal: "numeric",
+        dt.datetime: "timestamptz",
+        dt.date: "date",
+        uuid.UUID: "uuid",
+        bytes: "bytea",
+    }
+    return natives.get(annotation, "jsonb")
+
+
+def _ident(name: str) -> str:
+    if not _IDENTIFIER.match(name):
+        raise ValueError(f"cannot store {name!r} in PostgreSQL: not a plain identifier")
+    return f'"{name}"'
+
+
+class _PartSql:
+    """The statements of one part's table."""
+
+    def __init__(self, part: Part) -> None:
+        self.part = part
+        self.table = _ident(part.table)
+        self.json = frozenset(f for f in part.fields if _column_type(part.types.get(f)) == "jsonb")
+        self.columns = ", ".join(_ident(c) for c in (*_SERVICE_COLUMNS, *part.fields))
+
+    def create(self) -> list[str]:
+        fields = "".join(
+            f", {_ident(f)} {_column_type(self.part.types.get(f))}" for f in self.part.fields
+        )
+        index = _ident(f"{self.part.table[:50]}_dat_time")
+        return [
+            f"CREATE TABLE IF NOT EXISTS {self.table} ("
+            " dat_id uuid NOT NULL, dat_txn uuid NOT NULL, dat_tx_time bigint,"
+            f" dat_created bigint, dat_deleted boolean NOT NULL DEFAULT false{fields},"
+            " PRIMARY KEY (dat_id, dat_txn))",
+            f"CREATE INDEX IF NOT EXISTS {index} ON {self.table} (dat_id, dat_tx_time)",
+        ]
+
+    def insert(self) -> str:
+        names = (*_SERVICE_COLUMNS, *self.part.fields)
+        updates = ", ".join(f"{_ident(c)} = EXCLUDED.{_ident(c)}" for c in names[3:])
+        return (
+            f"INSERT INTO {self.table} ({self.columns})"
+            f" VALUES ({', '.join(['%s'] * len(names))})"
+            f" ON CONFLICT (dat_id, dat_txn) DO UPDATE SET {updates}"
+        )
+
+    def params(
+        self,
+        dat_id: uuid.UUID,
+        dat_txn: uuid.UUID,
+        values: Mapping[str, Any],
+        created: int | None,
+        deleted: bool,
+    ) -> list[Any]:
+        unknown = set(values) - set(self.part.fields)
+        if unknown:
+            raise ValueError(
+                f"{self.part.type_name}: {sorted(unknown)} are not fields of this part"
+            )
+        from psycopg.types.json import Jsonb
+
+        from datorium.core.rows import encode_value
+
+        out: list[Any] = [dat_id, dat_txn, None, created, deleted]
+        for f in self.part.fields:
+            value = values.get(f)
+            out.append(Jsonb(encode_value(value)) if f in self.json else value)
+        return out
+
+    def select(self, where: str, order: str, limit: int | None = None) -> str:
+        tail = f" LIMIT {limit}" if limit is not None else ""
+        return f"SELECT {self.columns} FROM {self.table} WHERE {where} ORDER BY {order}{tail}"
+
+    def version(self, row: Mapping[str, Any]) -> Version:
+        from datorium.core.rows import decode_value
+
+        values = {
+            f: decode_value(row[f]) if f in self.json and row[f] is not None else row[f]
+            for f in self.part.fields
+        }
+        return Version(
+            dat_txn=row["dat_txn"],
+            dat_tx_time=row["dat_tx_time"],
+            created=row["dat_created"],
+            deleted=row["dat_deleted"],
+            values=values,
+        )
+
+
 class _Connector:
     def __init__(self, dsn: str, schema: str | None) -> None:
         self._dsn, self._schema = postgres_schema(dsn, schema)
@@ -160,6 +281,7 @@ class PostgresStore:
         self._connector = _Connector(dsn, schema)
         self._participant: PostgresParticipant | None = None
         self._lock = threading.Lock()
+        self._parts: dict[Part, _PartSql] = {}
 
     def __repr__(self) -> str:
         return f"PostgresStore({self.name!r}, {self._dsn.redacted()!r})"
@@ -222,8 +344,66 @@ class PostgresStore:
     def branch(self, dat_txn: uuid.UUID, *, isolation: Isolation | None = None) -> "PostgresBranch":
         """A new branch; ``isolation`` defaults to the store's (the server default if unset)."""
         return PostgresBranch(
-            self.name, self._connector, dat_txn, isolation=isolation or self._isolation
+            self.name,
+            self._connector,
+            dat_txn,
+            isolation=isolation or self._isolation,
+            parts=self._part_sql,
         )
+
+    # --- entity parts (PartStore) ------------------------------------------------------
+
+    def install_part(self, part: Part) -> None:
+        """Create the part's table and index if missing (and ``dat_applied``)."""
+        if part in self._parts:
+            return
+        sql = _PartSql(part)
+        self.install()
+        with self.connect(autocommit=True) as conn:
+            for statement in sql.create():
+                try:
+                    conn.execute(statement)
+                except Exception as exc:
+                    if getattr(exc, "sqlstate", None) not in _DUPLICATE:
+                        raise
+        with self._lock:
+            self._parts[part] = sql
+
+    def read_part(
+        self, part: Part, dat_id: uuid.UUID, *, known_at: int | None = None
+    ) -> Version | None:
+        sql = self._part_sql(part)
+        where = "dat_id = %s AND dat_tx_time IS NOT NULL"
+        params: list[Any] = [dat_id]
+        if known_at is not None:
+            where += " AND dat_tx_time <= %s"
+            params.append(known_at)
+        rows = self.execute(sql.select(where, "dat_tx_time DESC", 1), params).all()
+        return sql.version(rows[0]) if rows else None
+
+    def part_history(self, part: Part, dat_id: uuid.UUID) -> list[Version]:
+        sql = self._part_sql(part)
+        where = "dat_id = %s AND dat_tx_time IS NOT NULL"
+        rows = self.execute(sql.select(where, "dat_tx_time"), [dat_id]).all()
+        return [sql.version(r) for r in rows]
+
+    def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
+        sql = self._part_sql(part)
+        rows = self.execute(
+            "SELECT dat_id FROM (SELECT DISTINCT ON (dat_id) dat_id, dat_deleted, dat_tx_time"
+            f" FROM {sql.table} WHERE dat_tx_time IS NOT NULL"
+            " ORDER BY dat_id, dat_tx_time DESC) latest"
+            " WHERE dat_deleted AND dat_tx_time < %s ORDER BY dat_id LIMIT %s",
+            (deleted_before, max(limit, 0)),
+        ).all()
+        return [r["dat_id"] for r in rows]
+
+    def _part_sql(self, part: Part) -> _PartSql:
+        sql = self._parts.get(part)
+        if sql is None:
+            self.install_part(part)
+            sql = self._parts[part]
+        return sql
 
     def participant(self) -> "PostgresParticipant":
         with self._lock:
@@ -248,12 +428,15 @@ class PostgresBranch:
         dat_txn: uuid.UUID,
         *,
         isolation: Isolation | None = None,
+        parts: "Callable[[Part], _PartSql] | None" = None,
     ) -> None:
         self.store = store
         self.dat_txn = dat_txn
         self._connector = connector
         self._conn = connector.connect()
         self._gid: str | None = None
+        self._parts = parts
+        self._written: dict[str, _PartSql] = {}  # tables this branch wrote versions to
         if isolation is not None:
             self._conn.execute(f"SET TRANSACTION ISOLATION LEVEL {isolation.upper()}")
 
@@ -261,7 +444,44 @@ class PostgresBranch:
         """Run a statement inside this branch's open transaction."""
         return _result(self._conn.execute(sql, params))
 
+    # --- entity parts (PartBranch) -----------------------------------------------------
+
+    def write_part(
+        self,
+        part: Part,
+        dat_id: uuid.UUID,
+        values: Mapping[str, Any],
+        *,
+        created: int | None,
+        deleted: bool = False,
+    ) -> None:
+        sql = self._sql(part)
+        self._conn.execute(sql.insert(), sql.params(dat_id, self.dat_txn, values, created, deleted))
+        self._written[sql.table] = sql
+
+    def erase_part(self, part: Part, dat_id: uuid.UUID) -> None:
+        sql = self._sql(part)
+        self._conn.execute(f"DELETE FROM {sql.table} WHERE dat_id = %s", (dat_id,))
+
+    def read_part(self, part: Part, dat_id: uuid.UUID) -> Version | None:
+        sql = self._sql(part)
+        # This branch's own versions have no dat_tx_time yet: they come first.
+        query = sql.select("dat_id = %s", "dat_tx_time DESC NULLS FIRST", 1)
+        rows = self._conn.execute(query, (dat_id,)).fetchall()
+        return sql.version(rows[0]) if rows else None
+
+    def _sql(self, part: Part) -> _PartSql:
+        if self._parts is None:
+            raise TypeError("this branch was made without its store: it cannot hold parts")
+        return self._parts(part)
+
     def stage(self, dat_txn: uuid.UUID, dat_tx_time: int) -> bytes | None:
+        for sql in self._written.values():
+            self._conn.execute(
+                f"UPDATE {sql.table} SET dat_tx_time = %s,"
+                " dat_created = COALESCE(dat_created, %s) WHERE dat_txn = %s",
+                (dat_tx_time, dat_tx_time, dat_txn),
+            )
         self._conn.execute("SET CONSTRAINTS ALL IMMEDIATE")  # fail here, not at prepare
         self._conn.execute(
             "INSERT INTO dat_applied (dat_txn, dat_tx_time) VALUES (%s, %s)", (dat_txn, dat_tx_time)

@@ -1,6 +1,7 @@
 """@entity declarations: per-type store mapping, references, valid time."""
 
 import dataclasses
+import typing
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -257,3 +258,65 @@ def test_ref_to_a_plain_object_is_rejected() -> None:
 def test_ref_requires_a_uuid() -> None:
     with pytest.raises(TypeError, match="UUID"):
         Ref("not-a-uuid")  # type: ignore[arg-type]
+
+
+# --- service times and soft delete ------------------------------------------------
+
+
+def test_instances_carry_service_times_that_do_not_affect_equality() -> None:
+    order = make_order()
+    assert order.dat_created_at is None  # type: ignore[attr-defined]
+    assert order.dat_updated_at is None  # type: ignore[attr-defined]
+    assert order.dat_deleted_at is None  # type: ignore[attr-defined]
+    later = dataclasses.replace(order, dat_updated_at=datetime.now(UTC))  # type: ignore[call-arg]
+    assert later == order
+
+
+def test_soft_delete_is_off_by_default() -> None:
+    m = mapping_of(Customer)
+    assert m.soft_delete is False
+    assert m.soft_delete_window is None
+
+
+def test_soft_delete_takes_the_configured_window_or_its_own() -> None:
+    from datetime import timedelta
+
+    @entity(stores={"pg": ["title"]}, soft_delete=True)
+    class Note:
+        title: str
+
+    @entity(stores={"pg": ["title"]}, soft_delete=timedelta(hours=6))
+    class Draft:
+        title: str
+
+    assert mapping_of(Note).soft_delete is True
+    assert mapping_of(Note).soft_delete_window is None
+    assert mapping_of(Draft).soft_delete is True
+    assert mapping_of(Draft).soft_delete_window == timedelta(hours=6)
+
+
+@pytest.mark.parametrize("window", ["30d", 0, -1.5])
+def test_soft_delete_must_be_a_flag_or_a_timedelta(window: object) -> None:
+    with pytest.raises(MappingError, match="soft_delete"):
+
+        @entity(stores={"pg": ["title"]}, soft_delete=window)  # type: ignore[arg-type]
+        class Note:
+            title: str
+
+
+def test_soft_delete_window_must_be_positive() -> None:
+    from datetime import timedelta
+
+    with pytest.raises(MappingError, match="positive"):
+
+        @entity(stores={"pg": ["title"]}, soft_delete=timedelta(0))
+        class Note:
+            title: str
+
+
+def test_field_types_are_resolved_once_the_targets_exist() -> None:
+    types = mapping_of(Order).field_types()
+    assert types["status"] is str
+    assert types["amount"] is Decimal
+    assert typing.get_origin(types["customer"]) is Ref
+    assert typing.get_origin(types["related"]) is list

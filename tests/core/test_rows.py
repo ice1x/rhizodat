@@ -89,3 +89,13 @@ values = st.recursive(
 def test_any_supported_batch_round_trips(rows: list[list[object]]) -> None:
     batch = Batch("t", ("a", "b"), rows)
     assert decode_batches(encode_batches([batch])) == [batch]
+
+
+def test_single_values_round_trip_through_json(faker: Faker) -> None:
+    from datorium.core.rows import decode_value, encode_value
+
+    value = {"ids": [uuid.uuid4(), uuid.uuid4()], "total": decimal.Decimal("1.50"), "n": None}
+    encoded = encode_value(value)
+    assert decode_value(json.loads(json.dumps(encoded))) == value
+    word = faker.word()
+    assert decode_value(encode_value(word)) == word
