@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Batch", "decode_batches", "encode_batches"]
+__all__ = ["Batch", "decode_batches", "decode_value", "encode_batches", "encode_value"]
 
 _VERSION = 1
 
@@ -55,6 +55,16 @@ def decode_batches(raw: bytes) -> list[Batch]:
         Batch(b["table"], tuple(b["columns"]), [[_decode(v) for v in row] for row in b["rows"]])
         for b in doc["batches"]
     ]
+
+
+def encode_value(value: Any) -> Any:  # noqa: ANN401 - any storable value
+    """One value as JSON data, tagged like row payloads (for JSON columns)."""
+    return _encode(value)
+
+
+def decode_value(value: Any) -> Any:  # noqa: ANN401 - JSON data
+    """The inverse of ``encode_value``."""
+    return _decode(value)
 
 
 def _encode_rows(batch: Batch) -> list[list[Any]]:

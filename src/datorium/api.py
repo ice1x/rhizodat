@@ -6,7 +6,9 @@ import random
 import re
 import time
 from collections.abc import Callable, Mapping
-from typing import Any, Concatenate, overload
+from datetime import timedelta
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Concatenate, Self, overload
 
 from datorium.core.clock import HybridLogicalClock
 from datorium.core.coordinator import Aborted, Committed, CommittedPending, Coordinator, Recovery
@@ -14,6 +16,9 @@ from datorium.core.identity import new_id
 from datorium.core.journal import Journal, open_journal
 from datorium.core.retry import Retry
 from datorium.core.unit_of_work import Store, UnitOfWork
+
+if TYPE_CHECKING:
+    from datorium.core.repository import EntityRepository, Repository, _Kind
 
 __all__ = ["Datorium"]
 
@@ -82,7 +87,13 @@ class Datorium:
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         rand: Callable[[], float] = random.random,
+        soft_delete_window: timedelta = timedelta(days=30),
     ) -> None:
+        if soft_delete_window <= timedelta(0):
+            raise ValueError(f"soft_delete_window must be positive, got {soft_delete_window}")
+        self.soft_delete_window = soft_delete_window
+        """How long a soft-deleted entity stays restorable, unless its type sets its own."""
+        self._kinds: dict[type, _Kind] = {}
         for name in stores:
             if not _STORE_NAME.match(name):
                 raise ValueError(f"invalid store name {name!r}: letters, digits, '_', '.', '-'")
@@ -129,7 +140,39 @@ class Datorium:
 
     def unit_of_work(self) -> UnitOfWork:
         """A Unit of Work that runs once; use ``transactional`` for retries."""
-        return UnitOfWork(new_id(), self.store, self._coordinator)
+        return UnitOfWork(
+            new_id(), self.store, self._coordinator, repositories=self._uow_repository
+        )
+
+    def repository[T](self, entity_type: type[T]) -> "EntityRepository[T]":
+        """CRUD for one entity type: committed reads, one Unit of Work per write."""
+        from datorium.core.repository import EntityRepository
+
+        return EntityRepository(self, entity_type, self._kind(entity_type))
+
+    def _kind(self, entity_type: type) -> "_Kind":
+        """The type's parts, installed once in every store that holds one."""
+        from datorium.core.parts import PartStore
+        from datorium.core.repository import _Kind
+
+        kind = self._kinds.get(entity_type)
+        if kind is None:
+            kind = _Kind(entity_type, self.soft_delete_window)
+            for name, part in kind.parts.items():
+                store = self.store(name)
+                if not isinstance(store, PartStore):
+                    raise TypeError(
+                        f"store {name!r} cannot hold entity parts of"
+                        f" {kind.mapping.type_name} (its adapter has no PartStore)"
+                    )
+                store.install_part(part)
+            self._kinds[entity_type] = kind
+        return kind
+
+    def _uow_repository(self, uow: UnitOfWork, entity_type: type) -> "Repository[Any]":
+        from datorium.core.repository import Repository
+
+        return Repository(uow, self._kind(entity_type), lambda: self.clock.now().encode())
 
     @overload
     def transactional[**P, T](
@@ -169,6 +212,17 @@ class Datorium:
             participants={name: s.participant() for name, s in self._stores.items()},
             **kwargs,
         )
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
 
     def close(self) -> None:
         for s in self._stores.values():

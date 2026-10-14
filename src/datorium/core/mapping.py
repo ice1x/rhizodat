@@ -12,11 +12,19 @@ no central registry. Rules:
 
 ``@entity`` turns the class into a keyword-only dataclass with a ``dat_id``
 field (a new UUIDv7 unless given) and, with ``valid_time=True``, the
-``valid_from`` / ``valid_to`` fields.
+``valid_from`` / ``valid_to`` fields. Every instance also carries the service
+times ``dat_created_at``, ``dat_updated_at`` and ``dat_deleted_at``, set by the
+repository on reads and ignored by equality.
+
+``soft_delete=True`` makes ``delete`` hide the entity for the configured window
+(``Datorium(soft_delete_window=...)``) instead of erasing it;
+``soft_delete=timedelta(...)`` sets this type's own window.
 """
 
 import dataclasses
+import functools
 import inspect
+import operator
 import re
 import sys
 import types
@@ -24,7 +32,7 @@ import typing
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, ClassVar, TypeGuard, TypeVar, dataclass_transform
 
 from datorium.core.identity import new_id
@@ -36,6 +44,7 @@ T = TypeVar("T")
 _MAPPING_ATTR = "__datorium_mapping__"
 _SERVICE_PREFIX = "dat_"
 _VALIDITY_FIELDS = ("valid_from", "valid_to")
+_SERVICE_TIMES = ("dat_created_at", "dat_updated_at", "dat_deleted_at")
 _REF_IN_STRING = re.compile(r"""\bRef\[\s*['"]?([\w.]+)['"]?\s*\]""")
 
 
@@ -66,6 +75,33 @@ class EntityMapping:
     refs: Mapping[str, str]
     valid_time: bool
     cls: type
+    soft_delete: bool = False
+    soft_delete_window: timedelta | None = None
+    """The type's own window; ``None``: the configured default."""
+
+    @property
+    def fields(self) -> tuple[str, ...]:
+        return tuple(f for fields in self.stores.values() for f in fields)
+
+    def field_types(self) -> dict[str, Any]:
+        """Each mapped field's type, resolved now that referenced classes exist;
+        a field whose annotation still cannot be resolved maps to ``object``."""
+        module = sys.modules.get(self.cls.__module__)
+        namespace = dict(vars(module)) if module is not None else {}
+        namespace.setdefault("Ref", Ref)
+        raw = _own_annotations(self.cls)
+        types_: dict[str, Any] = {}
+        for f in self.fields:
+            ann = raw.get(f, object)
+            if isinstance(ann, typing.ForwardRef):
+                ann = ann.__forward_arg__
+            if isinstance(ann, str):
+                try:
+                    ann = eval(ann, namespace)
+                except Exception:
+                    ann = object
+            types_[f] = _resolve_forward(ann, namespace)
+        return types_
 
     def store_of(self, field: str) -> str:
         for store, fields in self.stores.items():
@@ -119,9 +155,11 @@ def entity(
     stores: Mapping[str, Iterable[str]],
     name: str | None = None,
     valid_time: bool = False,
+    soft_delete: bool | timedelta = False,
 ) -> Callable[[type[T]], type[T]]:
     """Declare an entity type and which of its fields live in which store."""
     store_fields = {store: tuple(fields) for store, fields in stores.items()}
+    soft, window = _soft_delete(name, soft_delete)
 
     def wrap(cls: type[T]) -> type[T]:
         type_name = name or cls.__name__
@@ -135,6 +173,9 @@ def entity(
             cls.__annotations__ |= {"valid_from": datetime | None, "valid_to": datetime | None}
             cls.valid_from = None  # type: ignore[attr-defined]
             cls.valid_to = None  # type: ignore[attr-defined]
+        for service in _SERVICE_TIMES:
+            cls.__annotations__[service] = datetime | None
+            setattr(cls, service, dataclasses.field(default=None, compare=False))
         data_cls = dataclasses.dataclass(kw_only=True)(cls)
 
         refs: dict[str, str] = {}
@@ -156,11 +197,49 @@ def entity(
                 refs=types.MappingProxyType(refs),
                 valid_time=valid_time,
                 cls=data_cls,
+                soft_delete=soft,
+                soft_delete_window=window,
             ),
         )
         return data_cls
 
     return wrap
+
+
+def _soft_delete(name: str | None, value: object) -> tuple[bool, timedelta | None]:
+    if isinstance(value, bool):
+        return value, None
+    if isinstance(value, timedelta):
+        if value <= timedelta(0):
+            raise MappingError(f"{name or 'entity'}: the soft_delete window must be positive")
+        return True, value
+    raise MappingError(
+        f"{name or 'entity'}: soft_delete is True, False or a timedelta, not {value!r}"
+    )
+
+
+def _resolve_forward(annotation: object, namespace: dict[str, Any]) -> object:
+    """Resolve string arguments such as ``Ref["Customer"]`` inside an annotation."""
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+    if origin is None or not args:
+        return annotation
+    resolved = []
+    for arg in args:
+        if isinstance(arg, typing.ForwardRef):
+            arg = arg.__forward_arg__
+        if isinstance(arg, str):
+            try:
+                arg = eval(arg, namespace)
+            except Exception:
+                return annotation
+        resolved.append(_resolve_forward(arg, namespace))
+    if origin is types.UnionType or origin is typing.Union:
+        return functools.reduce(operator.or_, resolved)
+    try:
+        return origin[tuple(resolved)] if len(resolved) > 1 else origin[resolved[0]]
+    except TypeError:
+        return annotation
 
 
 def _validate(

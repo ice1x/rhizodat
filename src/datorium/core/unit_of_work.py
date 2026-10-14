@@ -40,8 +40,12 @@ class UnitOfWork:
         dat_txn: uuid.UUID,
         stores: Callable[[str], Store],
         coordinator: Coordinator,
+        *,
+        repositories: "Callable[[UnitOfWork, type], Any] | None" = None,
     ) -> None:
         self.dat_txn = dat_txn
+        self._repositories = repositories
+        self._repos: dict[type, Any] = {}
         self.outcome: Committed | CommittedPending | None = None
         self._stores = stores
         self._coordinator = coordinator
@@ -60,6 +64,16 @@ class UnitOfWork:
             branch = self._stores(name).branch(self.dat_txn)
             self._branches[name] = branch
         return branch
+
+    def repository(self, entity_type: type) -> Any:  # noqa: ANN401 - Repository[entity_type]
+        """CRUD for ``entity_type`` inside this Unit of Work (``datorium.core.repository``)."""
+        self._check_open()
+        if self._repositories is None:
+            raise RuntimeError("this Unit of Work has no repositories (made outside Datorium)")
+        repo = self._repos.get(entity_type)
+        if repo is None:
+            repo = self._repos[entity_type] = self._repositories(self, entity_type)
+        return repo
 
     def commit(self) -> Committed | CommittedPending:
         self._check_open()
