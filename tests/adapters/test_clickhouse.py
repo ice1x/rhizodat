@@ -353,4 +353,6 @@ def test_free_space_is_the_least_free_disk(store: ClickHouseStore) -> None:
     assert isinstance(store, Capacity)
     free = store.free_space()
     disks = store.execute("SELECT free_space FROM system.disks").all()
-    assert free == min(int(d["free_space"]) for d in disks)
+    assert free is not None
+    # Other writers change it between the two queries: the same disk, not the same byte.
+    assert abs(free - min(int(d["free_space"]) for d in disks)) < 1 << 30
