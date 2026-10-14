@@ -27,7 +27,8 @@ purpose.
 > ClickHouse and Iceberg adapters, journals in PostgreSQL and drevo, Units of
 > Work with retries, the Repository (entity CRUD, versions, `as_of` in
 > transaction time, hard and soft delete) with entity parts in PostgreSQL,
-> ClickHouse, drevo and Iceberg. Not yet: valid-time reads, migrations. This README is
+> ClickHouse, drevo and Iceberg, and bitemporal reads (`as_of` in valid time,
+> `known_at`). Not yet: migrations. This README is
 > the specification v0.1 is built against.
 
 ---
@@ -432,9 +433,23 @@ repo.get(order_id, as_of=t, known_at=t2)        # valid at t, as known at t2
 repo.history(order_id)                          # every version, every store
 ```
 
-Implemented so far: transaction time. Without valid time, `as_of=t` is the
-version known at `t` (inclusive, a time-zone-aware `datetime`); valid-time reads
-and `known_at` come next.
+Both are implemented. Every time is a time-zone-aware `datetime`, and
+`known_at` is inclusive to the millisecond.
+
+- **Without valid time**, `as_of=t` (or `known_at=t`) is the version known at
+  `t`. Giving both is refused, since they would name the same moment.
+- **With valid time** (`@entity(..., valid_time=True)`), each version holds
+  for its period: `valid_from` inclusive, `valid_to` exclusive, `None`
+  unbounded. The period is checked (time zones, `valid_from < valid_to`) and
+  stored with every part as two ordinary datetime fields, so every store keeps
+  it.
+- `get(id, as_of=t, known_at=k)` takes the versions every store had committed
+  by `k`, then returns the latest one whose period contains `t`. `t` and `k`
+  both default to now. A later version for an overlapping period therefore
+  wins where it overlaps, and the earlier one stays in force elsewhere.
+- If the latest known version is a soft delete, the entity holds nowhere,
+  unless `include_deleted` is given.
+- `history(id)` lists every version with its period.
 
 How each store keeps history: Iceberg snapshots and time travel; drevo facts
 with validity windows; ClickHouse append-only versioned rows; PostgreSQL
@@ -844,7 +859,8 @@ Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
    entity parts and repository persistence.
    ✔ Repository CRUD, versions, `as_of` in transaction time, hard and soft
    delete; parts in PostgreSQL, ClickHouse, drevo and Iceberg; the parts
-   contract. Next: valid time.
+   contract. ✔ Valid time: periods stored with every part, `as_of` /
+   `known_at` reads.
 6. Migrations.
 7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
    bug tracker.
@@ -1108,8 +1124,8 @@ so one Unit of Work over every store holding the entity's fields.
 
 | Tool | What it does |
 |---|---|
-| `entity_types` | each offered type: its fields and how to write each (a reference is the target's `dat_id`, a decimal a string, a date or time ISO 8601, bytes `{"base64": …}`), the stores holding them, and whether delete is soft (restorable, for how long) or hard |
-| `get_entity` | `{"entity": …}` by `dat_id`: now, or as known at `as_of` (ISO 8601 with a time zone); `null` when there is none; soft-deleted ones only with `include_deleted` |
+| `entity_types` | each offered type: its fields (with `valid_from` / `valid_to` for a valid-time type) and how to write each (a reference is the target's `dat_id`, a decimal a string, a date or time ISO 8601, bytes `{"base64": …}`), the stores holding them, and whether delete is soft (restorable, for how long) or hard |
+| `get_entity` | `{"entity": …}` by `dat_id`, as known at `known_at` (default now); for a valid-time type the version holding at `as_of`; times ISO 8601 with a time zone; `null` when there is none; soft-deleted ones only with `include_deleted` |
 | `entity_history` | every committed version, oldest first |
 | `create_entity` | a new entity from a value for every field; returns it with its `dat_id` |
 | `update_entity` | a new version with some fields changed; the others are kept |

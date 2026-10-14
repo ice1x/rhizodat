@@ -26,6 +26,7 @@ from typing import Any, Protocol, runtime_checkable
 from datorium.core.mapping import Ref, mapping_of
 
 __all__ = [
+    "VALIDITY",
     "Part",
     "PartBranch",
     "PartStore",
@@ -35,6 +36,9 @@ __all__ = [
     "hlc_datetime",
     "to_storage",
 ]
+
+VALIDITY = ("valid_from", "valid_to")
+"""The validity fields every part of a valid-time type carries."""
 
 _LOGICAL_BITS = 16
 _NOT_IDENT = re.compile(r"[^a-z0-9_]")
@@ -58,11 +62,15 @@ class Part:
             raise KeyError(f"{mapping.type_name} has no part in store {store!r}")
         types = mapping.field_types()
         fields = mapping.stores[store]
+        field_types = {f: types[f] for f in fields}
+        if mapping.valid_time:  # every part carries the period its version holds for
+            fields = (*fields, *VALIDITY)
+            field_types |= dict.fromkeys(VALIDITY, datetime | None)
         return cls(
             type_name=mapping.type_name,
             store=store,
             fields=fields,
-            types={f: types[f] for f in fields},
+            types=field_types,
             refs=frozenset(f for f in fields if f in mapping.refs),
         )
 

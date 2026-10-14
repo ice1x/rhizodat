@@ -19,12 +19,13 @@ import dataclasses
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from datorium.core.coordinator import Committed, CommittedPending
 from datorium.core.mapping import EntityMapping, mapping_of
 from datorium.core.parts import (
+    VALIDITY,
     Part,
     PartBranch,
     PartStore,
@@ -86,24 +87,51 @@ class _Kind:
     def split(self, obj: object) -> dict[str, dict[str, Any]]:
         if not isinstance(obj, self.mapping.cls):
             raise TypeError(f"expected a {self.mapping.type_name}, got {type(obj).__name__}")
+        validity = self._validity(obj)
         return {
-            store: {f: to_storage(v) for f, v in values.items()}
+            store: {f: to_storage(v) for f, v in values.items()} | validity
             for store, values in self.mapping.split(obj).items()
         }
+
+    def _validity(self, obj: object) -> dict[str, Any]:
+        """The period ``obj`` holds for, checked; empty for a type without valid time."""
+        if not self.mapping.valid_time:
+            return {}
+        start, end = obj.valid_from, obj.valid_to  # type: ignore[attr-defined]
+        for name, at in (("valid_from", start), ("valid_to", end)):
+            if at is not None and (not isinstance(at, datetime) or at.tzinfo is None):
+                raise ValueError(
+                    f"{self.mapping.type_name}.{name} needs a time zone (e.g. UTC), got {at!r}"
+                )
+        if start is not None and end is not None and start >= end:
+            raise ValueError(
+                f"{self.mapping.type_name}: valid_from must be before valid_to"
+                f" ({start.isoformat()} >= {end.isoformat()})"
+            )
+        return {"valid_from": start, "valid_to": end}
+
+    def holds_at(self, snap: "_Snapshot", at: datetime) -> bool:
+        """Whether the version's period contains ``at`` (from inclusive, to exclusive)."""
+        values = snap.any.values
+        start, end = values.get("valid_from"), values.get("valid_to")
+        return (start is None or start <= at) and (end is None or at < end)
 
     def assemble(self, snap: _Snapshot) -> object:
         parts = {
             store: {
                 f: from_storage(v, ref=f in self.parts[store].refs)
                 for f, v in version.values.items()
+                if f not in VALIDITY
             }
             for store, version in snap.versions.items()
         }
         v = snap.any
         updated = v.dat_tx_time
+        validity = {f: v.values.get(f) for f in VALIDITY} if self.mapping.valid_time else {}
         return self.mapping.assemble(
             snap.dat_id,
             parts,
+            **validity,
             dat_created_at=hlc_datetime(v.created) if v.created is not None else None,
             dat_updated_at=hlc_datetime(updated) if updated is not None else None,
             dat_deleted_at=hlc_datetime(updated) if v.deleted and updated is not None else None,
@@ -259,29 +287,53 @@ class EntityRepository[T]:
         dat_id: uuid.UUID,
         *,
         as_of: datetime | None = None,
+        known_at: datetime | None = None,
         include_deleted: bool = False,
     ) -> T | None:
-        """The entity as it was known at ``as_of`` (now if ``None``)."""
-        if as_of is not None and self._kind.mapping.valid_time:
-            raise NotImplementedError("valid-time reads (as_of / known_at) are not available yet")
-        snap = self._consistent(dat_id, None if as_of is None else hlc_bound(as_of))
-        if snap is None or (snap.any.deleted and not include_deleted):
+        """The entity as known at ``known_at`` (now if ``None``).
+
+        For a type with valid time, the version that holds at ``as_of`` (now if
+        ``None``): among the versions known then, the latest one whose period
+        contains it. Without valid time ``as_of`` and ``known_at`` both name the
+        moment of knowledge; give one of them.
+        """
+        if not self._kind.mapping.valid_time:
+            if as_of is not None and known_at is not None:
+                raise ValueError(
+                    f"{self._kind.mapping.type_name} has no valid time:"
+                    " as_of and known_at are the same moment, give one"
+                )
+            at = as_of if as_of is not None else known_at
+            snap = self._consistent(dat_id, None if at is None else hlc_bound(at))
+            if snap is None or (snap.any.deleted and not include_deleted):
+                return None
+            return cast("T", self._kind.assemble(snap))
+        known = self._snapshots(dat_id, None if known_at is None else hlc_bound(known_at))
+        if not known or (known[-1].any.deleted and not include_deleted):
             return None
-        return cast("T", self._kind.assemble(snap))
+        valid_at = as_of if as_of is not None else datetime.now(UTC)
+        hlc_bound(valid_at)  # refuses a moment without a time zone
+        holding = [s for s in known if self._kind.holds_at(s, valid_at)]
+        return cast("T", self._kind.assemble(holding[-1])) if holding else None
 
     def history(self, dat_id: uuid.UUID) -> list[T]:
         """Every committed version, oldest first (soft deletes included)."""
+        return [cast("T", self._kind.assemble(s)) for s in self._snapshots(dat_id, None)]
+
+    def _snapshots(self, dat_id: uuid.UUID, known_at: int | None) -> list[_Snapshot]:
+        """Every version every store has (and knew at ``known_at``), oldest first."""
         by_txn: dict[uuid.UUID, dict[str, Version]] = {}
         for store, part in self._kind.parts.items():
             for v in self._store(store).part_history(part, dat_id):
-                by_txn.setdefault(v.dat_txn, {})[store] = v
+                if known_at is None or (v.dat_tx_time is not None and v.dat_tx_time <= known_at):
+                    by_txn.setdefault(v.dat_txn, {})[store] = v
         complete = [
             _Snapshot(dat_id, parts)
             for parts in by_txn.values()
             if len(parts) == len(self._kind.parts)
         ]
         complete.sort(key=lambda s: s.any.dat_tx_time or 0)
-        return [cast("T", self._kind.assemble(s)) for s in complete]
+        return complete
 
     # --- writes --------------------------------------------------------------------------
 
