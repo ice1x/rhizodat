@@ -38,6 +38,7 @@ mcp = ["mcp>=2.3"]
 testing = ["pytest>=8", "faker>=30"]
 
 [project.scripts]
+datorium = "datorium.check:main"
 datorium-mcp = "datorium.mcp.server:main"
 
 [project.urls]
