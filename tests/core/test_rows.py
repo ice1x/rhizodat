@@ -99,3 +99,12 @@ def test_single_values_round_trip_through_json(faker: Faker) -> None:
     assert decode_value(json.loads(json.dumps(encoded))) == value
     word = faker.word()
     assert decode_value(encode_value(word)) == word
+
+
+def test_an_erase_batch_round_trips_and_old_payloads_are_inserts() -> None:
+    ids = [[uuid.uuid4()], [uuid.uuid4()]]
+    erase = Batch("tracker_issue", ("dat_id",), ids, erase=True)
+    insert = Batch("tracker_issue", ("dat_id",), ids)
+    assert decode_batches(encode_batches([erase, insert])) == [erase, insert]
+    old = b'{"v":1,"batches":[{"table":"t","columns":["a"],"rows":[[1]]}]}'
+    assert decode_batches(old) == [Batch("t", ("a",), [[1]])]

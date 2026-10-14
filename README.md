@@ -26,8 +26,8 @@ purpose.
 > results, the journal, the commit coordinator and recovery, PostgreSQL, drevo,
 > ClickHouse and Iceberg adapters, journals in PostgreSQL and drevo, Units of
 > Work with retries, the Repository (entity CRUD, versions, `as_of` in
-> transaction time, hard and soft delete) with entity parts in PostgreSQL. Not
-> yet: entity parts in drevo, ClickHouse and Iceberg, valid-time reads,
+> transaction time, hard and soft delete) with entity parts in PostgreSQL and
+> ClickHouse. Not yet: entity parts in drevo and Iceberg, valid-time reads,
 > migrations. This README is
 > the specification v0.1 is built against.
 
@@ -460,12 +460,23 @@ How parts are stored, per store:
 | Store | Layout |
 |---|---|
 | PostgreSQL | one table per type (`tracker.Issue` → `tracker_issue`), one row per version: `dat_id`, `dat_txn`, `dat_tx_time`, `dat_created`, `dat_deleted` and a typed column per field (`jsonb` for lists, dicts and other types); primary key `(dat_id, dat_txn)`. Created on first use. |
-| drevo, ClickHouse, Iceberg | next: version nodes with edges for references; append-only rows; append-only data files |
+| ClickHouse | one `MergeTree` table per type, `ORDER BY (dat_id, dat_tx_time)`, one row per version, the same service columns plus `dat_txn` / `dat_tx_time`; a column per field, `Nullable` of the native type (`String`, `Int64`, `Float64`, `Bool`, `UUID`, `Date32`, `DateTime64(6, 'UTC')`) or tagged JSON in a `String` (`Decimal`, `bytes`, lists, dicts), so values round-trip exactly. Rows are inserted after the decision like any ClickHouse batch; an erase travels in the payload too and deletes (lightweight `DELETE`) only the versions older than its own `dat_tx_time`, so an erase finished late by recovery never removes a later write. |
+| drevo, Iceberg | next: version nodes with edges for references; append-only data files |
 
 A store joins by implementing the capabilities `PartStore` (committed reads)
 and, on its branches, `PartBranch` (writes and reads inside a Unit of Work;
 `dat_tx_time` is filled at stage). `datorium.testing.memory.MemoryEntityStore`
-is an in-memory reference.
+is an in-memory reference. A branch keeps one version per entity part: a second
+write in the same Unit of Work replaces the first, an erase drops it.
+
+**The parts contract** (`datorium.testing.parts`) checks a store's parts on the
+real store: subclass `PartStoreContract` and provide a `parts_store` fixture.
+It covers exact round trips of every field type, own writes visible only to
+their branch, one version per Unit of Work, `known_at` reads and history, soft
+deletes as versions, erase (alone, before and after a write in one branch),
+rollback, idempotent `finish` (and, for one-phase stores, applying from the
+journal payload) and `expired_parts`. The memory store, PostgreSQL and
+ClickHouse pass it in `tests/contract/test_parts_contracts.py`.
 
 ---
 
@@ -743,7 +754,7 @@ datorium/
 │   ├── clickhouse.py
 │   └── iceberg.py
 ├── mcp/                 # datorium-MCP: tools, configuration, server
-├── testing/             # the adapter contract suite (datorium[testing]), memory stores
+├── testing/             # the adapter and parts contract suites (datorium[testing]), memory stores
 └── migrations/
 ```
 
@@ -771,8 +782,8 @@ Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
 5. Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
    entity parts and repository persistence.
    ✔ Repository CRUD, versions, `as_of` in transaction time, hard and soft
-   delete; parts in PostgreSQL.
-   Next: parts in drevo, ClickHouse and Iceberg; valid time; MCP entity tools.
+   delete; parts in PostgreSQL and ClickHouse; the parts contract.
+   Next: parts in drevo and Iceberg; valid time; MCP entity tools.
 6. Migrations.
 7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
    bug tracker.

@@ -30,18 +30,24 @@ _VERSION = 1
 
 @dataclass(frozen=True, slots=True)
 class Batch:
-    """Rows for one table, in column order."""
+    """Rows for one table, in column order.
+
+    ``erase``: not rows to insert but entities to erase; ``rows`` are their ids.
+    """
 
     table: str
     columns: tuple[str, ...]
     rows: list[list[Any]]
+    erase: bool = False
 
 
 def encode_batches(batches: Sequence[Batch]) -> bytes:
     doc = {
         "v": _VERSION,
         "batches": [
-            {"table": b.table, "columns": list(b.columns), "rows": _encode_rows(b)} for b in batches
+            {"table": b.table, "columns": list(b.columns), "rows": _encode_rows(b)}
+            | ({"erase": True} if b.erase else {})
+            for b in batches
         ],
     }
     return json.dumps(doc, separators=(",", ":"), allow_nan=False).encode()
@@ -52,7 +58,12 @@ def decode_batches(raw: bytes) -> list[Batch]:
     if doc.get("v") != _VERSION:
         raise ValueError(f"unsupported row payload version {doc.get('v')!r}")
     return [
-        Batch(b["table"], tuple(b["columns"]), [[_decode(v) for v in row] for row in b["rows"]])
+        Batch(
+            b["table"],
+            tuple(b["columns"]),
+            [[_decode(v) for v in row] for row in b["rows"]],
+            erase=b.get("erase", False),
+        )
         for b in doc["batches"]
     ]
 
