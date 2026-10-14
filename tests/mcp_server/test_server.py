@@ -163,3 +163,112 @@ def test_stdio_server_reads_postgres_and_refuses_writes(
     check = PostgresStore(pg_dsn, schema=pg_schema)
     assert check.execute("SELECT count(*) AS n FROM customers").one()["n"] == 1
     check.close()
+
+
+# --- entity tools ----------------------------------------------------------------------
+
+
+def entity_tools(*, writes: bool) -> Tools:
+    from datorium.testing.memory import MemoryEntityStore
+    from mcp_tracker import Bug, Person
+
+    dat = Datorium(
+        stores={"pg": MemoryEntityStore("pg"), "graph": MemoryEntityStore("graph")},
+        journal=MemoryJournal(),
+    )
+    return Tools(dat, entities=[Person, Bug], writes=writes)
+
+
+def listed(tools: Tools) -> dict[str, Any]:
+    async def go() -> Any:
+        async with Client(build_server(tools)) as client:
+            return await client.list_tools()
+
+    return {t.name: t for t in anyio.run(go).tools}
+
+
+READ_ENTITY_TOOLS = {"entity_types", "get_entity", "entity_history"}
+WRITE_ENTITY_TOOLS = {"create_entity", "update_entity", "delete_entity", "restore_entity"}
+
+
+def test_entity_reads_are_offered_read_only_and_writes_only_when_enabled() -> None:
+    reading = entity_tools(writes=False)
+    tools = listed(reading)
+    assert set(tools) == TOOLS | READ_ENTITY_TOOLS
+    assert all(tools[n].annotations.read_only_hint for n in READ_ENTITY_TOOLS)
+    reading.close()
+
+    writing = entity_tools(writes=True)
+    tools = listed(writing)
+    assert set(tools) == TOOLS | READ_ENTITY_TOOLS | WRITE_ENTITY_TOOLS
+    for name in WRITE_ENTITY_TOOLS:
+        assert tools[name].annotations.read_only_hint is False, name
+    assert tools["delete_entity"].annotations.destructive_hint is True
+    assert tools["create_entity"].annotations.destructive_hint is False
+    writing.close()
+
+
+def test_without_entities_no_entity_tool_is_listed(tools: Tools) -> None:
+    assert set(listed(tools)) == TOOLS
+
+
+def test_an_agent_creates_and_reads_a_person_through_the_server(faker: Faker) -> None:
+    t = entity_tools(writes=True)
+    name, email = faker.name(), faker.email()
+
+    async def go() -> tuple[Any, Any, Any]:
+        async with Client(build_server(t)) as client:
+            created = await client.call_tool(
+                "create_entity",
+                {"type": "tracker.Person", "values": {"name": name, "email": email}},
+            )
+            dat_id = created.structured_content["entity"]["dat_id"]
+            got = await client.call_tool("get_entity", {"type": "tracker.Person", "dat_id": dat_id})
+            bad = await client.call_tool(
+                "create_entity", {"type": "tracker.Person", "values": {"name": name}}
+            )
+            return created, got, bad
+
+    _, got, bad = anyio.run(go)
+    assert got.structured_content["entity"]["name"] == name
+    assert got.structured_content["entity"]["email"] == email
+    assert bad.is_error
+    assert "missing field(s) email" in bad.content[0].text
+    t.close()
+
+
+def test_stdio_server_offers_entity_crud_from_the_environment(
+    pg_dsn: str, pg_schema: str, tmp_path: Path, faker: Faker
+) -> None:
+    tests_dir = str(Path(__file__).resolve().parents[1])
+    dsn = f"{pg_dsn}?schema={pg_schema}"
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": tests_dir,
+        "DATORIUM_STORE_PG": dsn,
+        "DATORIUM_JOURNAL": f"file://{tmp_path / 'journal.db'}",
+        "DATORIUM_MCP_ENTITIES": "mcp_tracker:Person",
+        "DATORIUM_MCP_WRITES": "1",
+    }
+    server = StdioServerParameters(command=sys.executable, args=["-m", "datorium.mcp"], env=env)
+    name = faker.name()
+
+    async def go() -> tuple[Any, Any, Any]:
+        async with Client(server) as client:
+            created = await client.call_tool(
+                "create_entity",
+                {"type": "tracker.Person", "values": {"name": name, "email": faker.email()}},
+            )
+            dat_id = created.structured_content["entity"]["dat_id"]
+            deleted = await client.call_tool(
+                "delete_entity", {"type": "tracker.Person", "dat_id": dat_id}
+            )
+            after = await client.call_tool(
+                "get_entity", {"type": "tracker.Person", "dat_id": dat_id, "include_deleted": True}
+            )
+            return created, deleted, after
+
+    created, deleted, after = anyio.run(go)
+    assert created.structured_content["entity"]["name"] == name
+    assert deleted.structured_content["deleted"] == "hard"
+    assert after.structured_content == {"entity": None}

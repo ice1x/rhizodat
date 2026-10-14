@@ -5,7 +5,11 @@ stay out of command lines:
 
 - ``DATORIUM_STORE_<NAME>=<dsn>``: one per store; the name is lower-cased;
 - ``DATORIUM_JOURNAL=<dsn>``: the journal (optional until writes need it);
-- ``DATORIUM_MCP_MAX_ROWS=<n>``: the most rows one query returns (default 1000).
+- ``DATORIUM_MCP_MAX_ROWS=<n>``: the most rows one query returns (default 1000);
+- ``DATORIUM_MCP_ENTITIES=<module:Class>,...``: the ``@entity`` classes offered
+  for CRUD (the application's package must be importable);
+- ``DATORIUM_MCP_WRITES=1``: enable creating, updating, deleting and restoring
+  entities (off by default: a delete is a hard erase unless the type says soft).
 
 Transactions and recovery are not the agent's business: the former recovery
 settings are refused, so a stale configuration does not pass silently.
@@ -18,6 +22,8 @@ __all__ = ["Config", "ConfigError", "config_from_env"]
 
 _STORE_PREFIX = "DATORIUM_STORE_"
 DEFAULT_MAX_ROWS = 1000
+_YES = {"1", "true", "yes", "on"}
+_NO = {"", "0", "false", "no", "off"}
 _REMOVED = ("DATORIUM_MCP_RECOVERY", "DATORIUM_MCP_RECOVERY_STALE_S")
 
 
@@ -30,6 +36,8 @@ class Config:
     stores: dict[str, str] = field(default_factory=dict)
     journal: str | None = None
     max_rows: int = DEFAULT_MAX_ROWS
+    entities: tuple[str, ...] = ()
+    writes: bool = False
 
 
 def config_from_env(environ: Mapping[str, str]) -> Config:
@@ -53,4 +61,16 @@ def config_from_env(environ: Mapping[str, str]) -> Config:
                 f"{removed} was removed: datorium-MCP no longer runs recovery or shows"
                 " transactions; run Datorium.recovery() from an operator process instead"
             )
-    return Config(stores, environ.get("DATORIUM_JOURNAL") or None, max_rows)
+    entities = tuple(
+        e.strip() for e in environ.get("DATORIUM_MCP_ENTITIES", "").split(",") if e.strip()
+    )
+    flag = environ.get("DATORIUM_MCP_WRITES", "").strip().lower()
+    if flag not in _YES | _NO:
+        raise ConfigError(f"DATORIUM_MCP_WRITES must be 1 or 0, not {flag!r}")
+    return Config(
+        stores,
+        environ.get("DATORIUM_JOURNAL") or None,
+        max_rows,
+        entities=entities,
+        writes=flag in _YES,
+    )

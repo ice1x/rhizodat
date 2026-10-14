@@ -817,7 +817,7 @@ Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
    entity parts and repository persistence.
    ✔ Repository CRUD, versions, `as_of` in transaction time, hard and soft
    delete; parts in PostgreSQL, ClickHouse, drevo and Iceberg; the parts
-   contract. Next: valid time; MCP entity tools.
+   contract. Next: valid time.
 6. Migrations.
 7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
    bug tracker.
@@ -1054,7 +1054,8 @@ As defence in depth, the DSNs can still use read-only accounts.
 
 Configuration is the environment, so secrets stay out of command lines:
 `DATORIUM_STORE_<NAME>=<dsn>` per store, `DATORIUM_JOURNAL=<dsn>`, and
-optionally `DATORIUM_MCP_MAX_ROWS` (default 1000). The former
+optionally `DATORIUM_MCP_MAX_ROWS` (default 1000), `DATORIUM_MCP_ENTITIES`
+and `DATORIUM_MCP_WRITES` (below). The former
 `DATORIUM_MCP_RECOVERY*` settings are refused with an error, so a stale
 configuration does not pass silently. An MCP client starts it over stdio:
 
@@ -1073,7 +1074,28 @@ configuration does not pass silently. An MCP client starts it over stdio:
 }
 ```
 
-Next: entity CRUD tools over the Repository (each call one Unit of Work).
+✔ Entity CRUD tools over the Repository. `DATORIUM_MCP_ENTITIES` names the
+application's `@entity` classes by module path (`tracker.models:Bug,…`; the
+package must be importable by the server). Each tool is one Repository call,
+so one Unit of Work over every store holding the entity's fields.
+
+| Tool | What it does |
+|---|---|
+| `entity_types` | each offered type: its fields and how to write each (a reference is the target's `dat_id`, a decimal a string, a date or time ISO 8601, bytes `{"base64": …}`), the stores holding them, and whether delete is soft (restorable, for how long) or hard |
+| `get_entity` | `{"entity": …}` by `dat_id`: now, or as known at `as_of` (ISO 8601 with a time zone); `null` when there is none; soft-deleted ones only with `include_deleted` |
+| `entity_history` | every committed version, oldest first |
+| `create_entity` | a new entity from a value for every field; returns it with its `dat_id` |
+| `update_entity` | a new version with some fields changed; the others are kept |
+| `delete_entity` | soft delete (hidden, restorable) for a type that has it, else erased for good; marked destructive |
+| `restore_entity` | brings a soft-deleted entity back within its window |
+
+The read tools are always offered with `DATORIUM_MCP_ENTITIES`. The write
+tools only appear with `DATORIUM_MCP_WRITES=1`: off by default, since a
+delete erases unless the type says otherwise. Values are checked against
+each field's type before anything is written: unknown or missing fields,
+service fields (`dat_id`, `dat_*_at`) and values that do not fit are refused,
+with the field named. A result says `pending: true` when the decision is
+durable but a store applied after it is still being finished.
 
 ---
 

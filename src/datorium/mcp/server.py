@@ -21,7 +21,9 @@ INSTRUCTIONS = """\
 datorium is one data layer over several stores (relational, analytical, graph, lakehouse,
 or any other a plug-in adapter adds). Call `stores` first: it names the configured stores
 and their kind. `query` runs a native read in a store's own language; the store refuses
-writes."""
+writes. Entities (records whose fields may span several stores) are read and, if enabled,
+written through the entity tools: `entity_types` lists them and how to write each field.
+Each entity call is atomic across its stores; times are ISO 8601 with a time zone."""
 
 QUERY_HELP = """\
 A native read on one store, which refuses any write. Returns at most `limit` rows and
@@ -82,7 +84,72 @@ def build_server(tools: Tools) -> "MCPServer":
     ) -> dict[str, Any]:
         return tools.query(store, query, params, limit)
 
+    if tools.entity_type_names:
+        _entity_tools(server, tools, read_only)
     return server
+
+
+def _entity_tools(server: "MCPServer", tools: Tools, read_only: Any) -> None:  # noqa: ANN401
+    from mcp_types import ToolAnnotations
+
+    @server.tool(annotations=read_only)
+    @_guarded
+    def entity_types() -> list[dict[str, Any]]:
+        """The entity types offered: each field and how to write it (references are the
+        target's dat_id, decimals strings, bytes {"base64": ...}), the stores holding
+        them, and whether delete is soft (restorable) or hard (erased for good)."""
+        return tools.entity_types()
+
+    @server.tool(annotations=read_only)
+    @_guarded
+    def get_entity(
+        type: str,
+        dat_id: str,
+        as_of: str | None = None,
+        include_deleted: bool = False,
+    ) -> dict[str, Any]:
+        """One entity by dat_id: now, or as it was known at `as_of` (ISO 8601 with a time
+        zone), as {"entity": ...}; the entity is null when there is none. Soft-deleted ones
+        only with include_deleted."""
+        found = tools.get_entity(type, dat_id, as_of=as_of, include_deleted=include_deleted)
+        return {"entity": found}
+
+    @server.tool(annotations=read_only)
+    @_guarded
+    def entity_history(type: str, dat_id: str) -> list[dict[str, Any]]:
+        """Every committed version of one entity, oldest first."""
+        return tools.entity_history(type, dat_id)
+
+    if not tools.writes:
+        return
+    write = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
+    erase = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
+
+    @server.tool(annotations=write)
+    @_guarded
+    def create_entity(type: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Create an entity from a value for every field (see entity_types); returns it with
+        its new dat_id. Atomic across the stores holding its fields."""
+        return tools.create_entity(type, values)
+
+    @server.tool(annotations=write)
+    @_guarded
+    def update_entity(type: str, dat_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Change some fields of an entity (a new version; the old one stays in history)."""
+        return tools.update_entity(type, dat_id, values)
+
+    @server.tool(annotations=erase)
+    @_guarded
+    def delete_entity(type: str, dat_id: str) -> dict[str, Any]:
+        """Delete an entity. For a type with soft delete it is hidden and restorable for a
+        while; otherwise every version is erased for good."""
+        return tools.delete_entity(type, dat_id)
+
+    @server.tool(annotations=write)
+    @_guarded
+    def restore_entity(type: str, dat_id: str) -> dict[str, Any]:
+        """Bring back a soft-deleted entity within its restore window."""
+        return tools.restore_entity(type, dat_id)
 
 
 def main() -> None:
@@ -92,7 +159,20 @@ def main() -> None:
     except ConfigError as exc:
         print(f"datorium-mcp: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
-    tools = Tools.open(config.stores, journal=config.journal, max_rows=config.max_rows)
+    from datorium.mcp.entities import load_entity_types
+
+    try:
+        entities = load_entity_types(",".join(config.entities))
+    except ValueError as exc:
+        print(f"datorium-mcp: DATORIUM_MCP_ENTITIES: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    tools = Tools.open(
+        config.stores,
+        journal=config.journal,
+        max_rows=config.max_rows,
+        entities=entities,
+        writes=config.writes,
+    )
     try:
         build_server(tools).run()
     finally:
