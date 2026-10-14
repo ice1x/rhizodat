@@ -17,6 +17,7 @@ use arrow_array::{
     TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
+use datorium_core::adapter::Adapter;
 use datorium_core::clock::HybridLogicalClock;
 use datorium_core::coordinator::{Coordinator, Outcome};
 use datorium_core::gid::gid_for;
@@ -49,15 +50,13 @@ fn env_test(key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The DSN under `key`, or `None` (skip) when it comes from `.env.test` and nothing listens.
-fn dsn(key: &str) -> Option<String> {
+/// The DSN under `key` (of `adapter`'s store), or `None` (skip) when it comes from `.env.test` and nothing listens.
+fn dsn(key: &str, adapter: &Adapter) -> Option<String> {
     if let Ok(dsn) = std::env::var(key) {
         return Some(dsn);
     }
     let dsn = env_test(key)?;
-    let parsed = datorium_iceberg::ADAPTER
-        .parse(&dsn)
-        .expect("a valid DSN in .env.test");
+    let parsed = adapter.parse(&dsn).expect("a valid DSN in .env.test");
     let addr = (
         parsed.host().unwrap_or("127.0.0.1"),
         parsed.port().unwrap_or(0),
@@ -167,7 +166,7 @@ impl Lake {
     }
 
     async fn rest() -> Option<Self> {
-        let dsn = dsn("DATORIUM_TEST_ICEBERG_REST_DSN")?;
+        let dsn = dsn("DATORIUM_TEST_ICEBERG_REST_DSN", &datorium_iceberg::ADAPTER)?;
         let store = IcebergStore::connect(&dsn, "lake").await.unwrap();
         Some(Self::setup(store, None).await)
     }
@@ -759,7 +758,7 @@ struct Erp {
 
 impl Erp {
     async fn new() -> Option<Self> {
-        let pg_dsn = dsn("DATORIUM_TEST_PG_DSN")?;
+        let pg_dsn = dsn("DATORIUM_TEST_PG_DSN", &datorium_postgres::ADAPTER)?;
         let turn = REST.lock().await;
         let lake = Lake::rest().await?;
         let (admin, conn) = tokio_postgres::connect(&pg_dsn, tokio_postgres::NoTls)
@@ -901,9 +900,12 @@ async fn sales_left_uncommitted_by_a_crash_are_committed_by_recovery() {
         Some(&format!("{}_orders", erp.schema)),
     )
     .unwrap();
-    let lake = IcebergStore::connect(&dsn("DATORIUM_TEST_ICEBERG_REST_DSN").unwrap(), "lake")
-        .await
-        .unwrap();
+    let lake = IcebergStore::connect(
+        &dsn("DATORIUM_TEST_ICEBERG_REST_DSN", &datorium_iceberg::ADAPTER).unwrap(),
+        "lake",
+    )
+    .await
+    .unwrap();
     let journal = Arc::new(
         PostgresJournal::open(&erp.pg_dsn, Some(&erp.schema), "dat_journal")
             .await

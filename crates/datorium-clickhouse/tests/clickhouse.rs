@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use clickhouse::Client;
 use datorium_clickhouse::{ClickHouseStore, is_retryable};
+use datorium_core::adapter::Adapter;
 use datorium_core::clock::HybridLogicalClock;
 use datorium_core::coordinator::{Coordinator, Outcome};
 use datorium_core::gid::gid_for;
@@ -32,15 +33,13 @@ fn env_test(key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The DSN under `key`, or `None` (skip) when it comes from `.env.test` and nothing listens.
-fn dsn(key: &str) -> Option<String> {
+/// The DSN under `key` (of `adapter`'s store), or `None` (skip) when it comes from `.env.test` and nothing listens.
+fn dsn(key: &str, adapter: &Adapter) -> Option<String> {
     if let Ok(dsn) = std::env::var(key) {
         return Some(dsn);
     }
     let dsn = env_test(key)?;
-    let parsed = datorium_clickhouse::ADAPTER
-        .parse(&dsn)
-        .expect("a valid DSN in .env.test");
+    let parsed = adapter.parse(&dsn).expect("a valid DSN in .env.test");
     let addr = (
         parsed.host().unwrap_or("127.0.0.1"),
         parsed.port().unwrap_or(0),
@@ -70,7 +69,10 @@ struct Db {
 
 impl Db {
     async fn new() -> Option<Self> {
-        let server = dsn("DATORIUM_TEST_CLICKHOUSE_DSN")?;
+        let server = dsn(
+            "DATORIUM_TEST_CLICKHOUSE_DSN",
+            &datorium_clickhouse::ADAPTER,
+        )?;
         let parsed = datorium_clickhouse::ADAPTER.parse(&server).unwrap();
         let name = format!("dat_rs_{}", &new_id().simple().to_string()[20..]);
         let admin = Client::default()
@@ -377,7 +379,7 @@ struct Tracker {
 
 impl Tracker {
     async fn new() -> Option<Self> {
-        let pg_dsn = dsn("DATORIUM_TEST_PG_DSN")?;
+        let pg_dsn = dsn("DATORIUM_TEST_PG_DSN", &datorium_postgres::ADAPTER)?;
         let db = Db::new().await?;
         db.activity().await;
         let (admin, conn) = tokio_postgres::connect(&pg_dsn, tokio_postgres::NoTls)
