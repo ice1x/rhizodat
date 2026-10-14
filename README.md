@@ -720,6 +720,10 @@ It checks:
 datorium's own adapters pass it in `tests/contract/` (PostgreSQL, ClickHouse,
 drevo embedded and over Bolt, Iceberg on SQLite and REST).
 
+The guide for adapter authors, with the criteria a store must meet and a
+table of supported, candidate and non-viable databases, is
+[docs/adapters.md](docs/adapters.md).
+
 **A dry run first: `datorium adapter check`.** Before the contract, the CLI
 reports what an adapter implements, without writing anything:
 
