@@ -17,7 +17,7 @@ import psycopg
 import pytest
 from faker import Faker
 
-from datorium import Datorium, StoreFull, entity
+from datorium import Datorium, StoreFull, UnitOfWork, entity
 from datorium.adapters.clickhouse import ClickHouseStore
 from datorium.adapters.postgres import PostgresJournal, PostgresStore
 
@@ -88,9 +88,9 @@ def test_postgres_disk_full_inside_the_work_is_store_full(
     calls = []
 
     @dat.transactional
-    def write(uow: object) -> None:
+    def write(uow: UnitOfWork) -> None:
         calls.append(1)
-        uow.store("work").execute("SELECT 1")  # type: ignore[attr-defined]
+        uow.store("work").execute("SELECT 1")
         raise psycopg.errors.DiskFull("could not extend file: No space left on device")
 
     try:
