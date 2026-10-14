@@ -70,24 +70,34 @@ class DSN:
         return self._raw
 
     def redacted(self) -> str:
-        parts = urlsplit(self._raw)
-        netloc = parts.netloc
-        if self.password is not None:
-            userinfo, _, hostinfo = netloc.rpartition("@")
-            name = userinfo.partition(":")[0]
-            netloc = f"{name}:{_MASK}@{hostinfo}"
-        query = "&".join(
-            f"{k}={_MASK if _is_secret(k) else v}"
-            for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        )
-        out = f"{parts.scheme}://{netloc}{parts.path}"
-        return f"{out}?{query}" if query else out
+        return redact(self._raw)
 
     def __str__(self) -> str:
         return self.redacted()
 
     def __repr__(self) -> str:
         return f"DSN({self.redacted()!r})"
+
+
+def redact(raw: str) -> str:
+    """``raw`` with its password and secret-looking query parameters masked.
+
+    Needs no registered adapter: for connection strings that may not parse.
+    """
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return f"{_scheme_hint(raw)}{_MASK}"
+    netloc = parts.netloc
+    userinfo, at, hostinfo = netloc.rpartition("@")
+    if at and ":" in userinfo:
+        netloc = f"{userinfo.partition(':')[0]}:{_MASK}@{hostinfo}"
+    query = "&".join(
+        f"{k}={_MASK if _is_secret(k) else v}"
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    )
+    out = f"{parts.scheme}://{netloc}{parts.path}"
+    return f"{out}?{query}" if query else out
 
 
 def _is_secret(key: str) -> bool:

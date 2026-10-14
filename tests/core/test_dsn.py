@@ -3,6 +3,7 @@
 from urllib.parse import quote
 
 import pytest
+from faker import Faker
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -192,3 +193,12 @@ def test_dsn_is_immutable_and_hashable() -> None:
         dsn.host = "other"  # type: ignore[misc]
     assert hash(dsn) == hash(parse_dsn("clickhouse://localhost/a?secure=true"))
     assert isinstance(dsn, DSN)
+
+
+def test_redact_needs_no_registered_scheme(faker: Faker) -> None:
+    from datorium.core.dsn import redact
+
+    secret = faker.pystr(min_chars=12, max_chars=12)
+    raw = f"nosuchstore://me:{secret}@host:1/db?api_token={secret}&region=eu"
+    assert redact(raw) == "nosuchstore://me:***@host:1/db?api_token=***&region=eu"
+    assert redact("nosuchstore://host/db") == "nosuchstore://host/db"

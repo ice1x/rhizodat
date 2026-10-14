@@ -720,6 +720,29 @@ It checks:
 datorium's own adapters pass it in `tests/contract/` (PostgreSQL, ClickHouse,
 drevo embedded and over Bolt, Iceberg on SQLite and REST).
 
+**A dry run first: `datorium adapter check`.** Before the contract, the CLI
+reports what an adapter implements, without writing anything:
+
+```bash
+datorium adapter check datorium_mysql:ADAPTER --dsn mysql://localhost/test
+datorium adapter check postgres --dsn postgresql://localhost/app --json
+```
+
+Without `--dsn` it checks the declaration only (kind, DSN schemes, what it
+opens). With one it opens the store and checks:
+- the methods datorium calls on the store, a branch (opened and rolled back)
+  and the participant (`prepared_gids()` listed);
+- that plain errors are not retryable and a device out of space is
+  `STORE_FULL`;
+- every optional capability: `ReadOnlyQueries`, `AppliedLocation`, `Fenced`,
+  `Classifies`, `Capacity` (with the bytes it reports), `PartStore` /
+  `PartBranch`.
+
+Each check is required or optional and passed, failed or not run. The
+summary counts them, with a completeness percentage. The DSN's password and
+secret parameters are masked. Exit status: 0 when every required check that
+ran passed, 1 otherwise, 2 when the adapter cannot be loaded.
+
 **In Rust** the core knows no store either (`datorium_core::adapter`): each
 adapter crate exports `ADAPTER` (kind, `Scheme`s with the same host / path
 rules, whether it holds the journal, its query language) and parses its own
