@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use datorium_core::adapter::Adapter;
 use datorium_core::clock::HybridLogicalClock;
 use datorium_core::coordinator::{Coordinator, Outcome};
 use datorium_core::gid::gid_for;
@@ -48,15 +49,13 @@ fn reachable(host: &str, port: u16) -> bool {
         .is_some_and(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok())
 }
 
-/// The DSN under `key`, or `None` (skip) when it comes from `.env.test` and nothing listens.
-fn dsn(key: &str) -> Option<String> {
+/// The DSN under `key` (of `adapter`'s store), or `None` (skip) when it comes from `.env.test` and nothing listens.
+fn dsn(key: &str, adapter: &Adapter) -> Option<String> {
     if let Ok(dsn) = std::env::var(key) {
         return Some(dsn);
     }
     let dsn = env_test(key)?;
-    let parsed = datorium_drevo::ADAPTER
-        .parse(&dsn)
-        .expect("a valid DSN in .env.test");
+    let parsed = adapter.parse(&dsn).expect("a valid DSN in .env.test");
     if reachable(
         parsed.host().unwrap_or("127.0.0.1"),
         parsed.port().unwrap_or(0),
@@ -96,7 +95,7 @@ impl Graph {
         let name = format!("graph_{tag}");
         let (dsn, store, turn) = match target {
             Target::Bolt => {
-                let dsn = dsn("DATORIUM_TEST_DREVO_BOLT")?;
+                let dsn = dsn("DATORIUM_TEST_DREVO_BOLT", &datorium_drevo::ADAPTER)?;
                 let turn = FENCE.lock().await;
                 let store = DrevoStore::new(&dsn, &name).unwrap();
                 (Some(dsn), store, Some(turn))
@@ -515,7 +514,7 @@ struct Tracker {
 
 impl Tracker {
     async fn new(target: Target) -> Option<Self> {
-        let pg_dsn = dsn("DATORIUM_TEST_PG_DSN")?;
+        let pg_dsn = dsn("DATORIUM_TEST_PG_DSN", &datorium_postgres::ADAPTER)?;
         let graph = Graph::new(target).await?;
         let (admin, conn) = tokio_postgres::connect(&pg_dsn, tokio_postgres::NoTls)
             .await
