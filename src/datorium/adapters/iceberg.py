@@ -247,6 +247,20 @@ class _PartTable:
         return raw
 
 
+def _local_free_space(location: str) -> int | None:
+    import shutil
+    from pathlib import Path
+    from urllib.parse import unquote, urlsplit
+
+    parts = urlsplit(location)
+    if parts.scheme != "file":
+        return None
+    path = Path(unquote(parts.path))
+    while not path.exists() and path != path.parent:  # not created yet: its disk
+        path = path.parent
+    return shutil.disk_usage(path).free
+
+
 class IcebergStore:
     """One Iceberg catalog as a datorium store; ``catalog`` is the pyiceberg catalog."""
 
@@ -288,6 +302,10 @@ class IcebergStore:
 
     def participant(self) -> "IcebergParticipant":
         return self._participant
+
+    def free_space(self) -> int | None:
+        """Free bytes of a local (``file://``) warehouse's disk; ``None`` for object storage."""
+        return _local_free_space(str(self.catalog.properties.get("warehouse", "")))
 
     def close(self) -> None:
         engine = getattr(self.catalog, "engine", None)  # SqlCatalog keeps a SQLAlchemy engine

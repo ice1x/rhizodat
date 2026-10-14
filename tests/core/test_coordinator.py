@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 
+from datorium import StoreFull
 from datorium.core.clock import HybridLogicalClock
 from datorium.core.coordinator import (
     Aborted,
@@ -17,7 +18,7 @@ from datorium.core.coordinator import (
 from datorium.core.identity import new_id
 from datorium.core.journal import JournalConflict, JournalRecord, MemoryJournal, State
 from datorium.core.retry import Retry
-from fakes import Crash, FakeBranch, Faults, Permanent, Transient, World
+from fakes import Crash, FakeBranch, FakeCapacity, Faults, Full, Permanent, Transient, World
 
 
 class Clock:
@@ -509,3 +510,85 @@ def test_faults_helper_counts_down() -> None:
         with pytest.raises(Transient):
             faults.hit("x")
     faults.hit("x")
+
+
+# --- a full store ------------------------------------------------------------------
+
+
+def test_a_full_store_aborts_one_branch_with_store_full(clock: Clock) -> None:
+    world = World()
+    world.store("pg", two_phase=True)
+    world.faults.add("pg.commit_one_phase", Full("53100 disk full"))
+    txn, branches = new_id(), world.branches()
+    with pytest.raises(StoreFull) as err:
+        coordinator(world, None, clock).commit(txn, branches)
+    assert (err.value.store, err.value.retryable) == ("pg", False)
+    assert branches[0].state == "rolled back"
+
+
+@pytest.mark.parametrize("point", ["clickhouse.stage", "graph.prepare"])
+def test_a_full_store_before_the_decision_aborts_everything(
+    world: World, journal: MemoryJournal, clock: Clock, point: str
+) -> None:
+    world.faults.add(point, Full("no space"))
+    txn = new_id()
+    with pytest.raises(StoreFull) as err:
+        coordinator(world, journal, clock).commit(txn, world.branches())
+    assert err.value.store == point.split(".")[0]
+    assert not any(world.applied(txn).values())
+    assert world.leftover_prepared() == {}
+
+
+def test_a_store_below_min_free_is_refused_before_anything_is_written(
+    world: World, journal: MemoryJournal, clock: Clock
+) -> None:
+    world.stores["clickhouse"].free = 10
+    world.stores["pg"].free = 10_000
+    txn = new_id()
+    with pytest.raises(StoreFull) as err:
+        coordinator(world, journal, clock, capacity=world.capacity(), min_free=100).commit(
+            txn, world.branches()
+        )
+    assert (err.value.store, err.value.free) == ("clickhouse", 10)
+    assert not [p for p in world.faults.seen if p.endswith((".stage", ".prepare"))]
+    assert journal.get(txn) is None
+
+
+def test_stores_above_min_free_or_unknown_commit(
+    world: World, journal: MemoryJournal, clock: Clock
+) -> None:
+    world.stores["pg"].free = 100
+    world.stores["clickhouse"].free = None  # the store cannot tell
+    capacity = world.capacity()
+    del capacity["graph"]  # no Capacity at all
+    txn = new_id()
+    outcome = coordinator(world, journal, clock, capacity=capacity, min_free=100).commit(
+        txn, world.branches()
+    )
+    assert isinstance(outcome, Committed)
+
+
+def test_a_capacity_check_that_fails_does_not_block_the_commit(
+    world: World, journal: MemoryJournal, clock: Clock
+) -> None:
+    capacity = {"pg": FakeCapacity(world.stores["pg"], fail=TimeoutError("system.disks"))}
+    txn = new_id()
+    outcome = coordinator(world, journal, clock, capacity=capacity, min_free=100).commit(
+        txn, world.branches()
+    )
+    assert isinstance(outcome, Committed)
+
+
+def test_without_min_free_capacity_is_not_asked(
+    world: World, journal: MemoryJournal, clock: Clock
+) -> None:
+    world.stores["pg"].free = 0
+    outcome = coordinator(world, journal, clock, capacity=world.capacity()).commit(
+        new_id(), world.branches()
+    )
+    assert isinstance(outcome, Committed)
+
+
+def test_min_free_must_not_be_negative(world: World, clock: Clock) -> None:
+    with pytest.raises(ValueError, match="min_free"):
+        coordinator(world, None, clock, min_free=-1)

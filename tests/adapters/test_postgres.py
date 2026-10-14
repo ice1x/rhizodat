@@ -10,6 +10,7 @@ import pytest
 
 from datorium.adapters.postgres import PostgresBranch, PostgresJournal, PostgresStore
 from datorium.core.coordinator import gid_for
+from datorium.core.errors import Capacity, ErrorKind
 from datorium.core.identity import new_id
 from datorium.core.journal import BranchRecord, JournalConflict, State, open_journal
 
@@ -342,3 +343,45 @@ def test_journal_happy_path_and_cas(journal: PostgresJournal) -> None:
     journal.transition(txn, State.COMMITTED, State.DONE)
     journal.forget(txn)
     assert journal.get(txn) is None
+
+
+# --- error classification --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        (psycopg.errors.DiskFull("could not extend file"), ErrorKind.STORE_FULL),
+        (psycopg.errors.UniqueViolation("duplicate key"), ErrorKind.CONSTRAINT),
+        (psycopg.errors.ForeignKeyViolation("no such row"), ErrorKind.CONSTRAINT),
+        (psycopg.errors.SerializationFailure("could not serialize"), ErrorKind.TRANSIENT),
+        (psycopg.errors.DeadlockDetected("deadlock"), ErrorKind.TRANSIENT),
+        (psycopg.errors.SyntaxError("syntax error"), ErrorKind.PERMANENT),
+    ],
+)
+def test_errors_are_classified_by_sqlstate(
+    store: PostgresStore, error: Exception, kind: ErrorKind
+) -> None:
+    branch = store.branch(new_id())
+    try:
+        assert branch.classify(error) is kind
+        assert store.participant().classify(error) is kind
+        assert branch.is_retryable(error) is kind.retryable
+    finally:
+        branch.rollback()
+
+
+def test_a_real_constraint_violation_is_a_constraint(store: PostgresStore) -> None:
+    store.execute("CREATE TABLE uniq (k int PRIMARY KEY)")
+    branch = store.branch(new_id())
+    try:
+        branch.execute("INSERT INTO uniq VALUES (1)")
+        with pytest.raises(psycopg.Error) as err:
+            branch.execute("INSERT INTO uniq VALUES (1)")
+        assert branch.classify(err.value) is ErrorKind.CONSTRAINT
+    finally:
+        branch.rollback()
+
+
+def test_postgres_cannot_tell_its_free_space(store: PostgresStore) -> None:
+    assert not isinstance(store, Capacity)  # SQL shows sizes, not the disk's free space

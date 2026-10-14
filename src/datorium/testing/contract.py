@@ -21,6 +21,7 @@ process dying (``Harness.abandon``) and run ``Recovery`` once.
 """
 
 import contextlib
+import errno
 import uuid
 from collections.abc import Callable, Iterator
 from typing import Any, Protocol
@@ -29,6 +30,7 @@ import pytest
 
 from datorium.core.clock import HybridLogicalClock
 from datorium.core.coordinator import Branch, Coordinator, Participant, Recovery, gid_for
+from datorium.core.errors import Capacity, ErrorKind, classify
 from datorium.core.identity import new_id
 from datorium.core.journal import BranchRecord, JournalRecord, MemoryJournal, State
 from datorium.core.retry import Retry
@@ -54,6 +56,10 @@ class Harness(Protocol):
     def count(self, store: Store, key: str) -> int:
         """Committed records with ``key``, read through native access."""
         ...
+
+    # Optional: ``store_full_error(self) -> BaseException``, an instance of the error the
+    # store's driver raises when the store has no room (PostgreSQL ``DiskFull``,
+    # ClickHouse code 243). The contract then checks it is classified ``STORE_FULL``.
 
 
 class Crash(BaseException):
@@ -389,6 +395,35 @@ class AdapterContract:
         assert not branch.is_retryable(error)
         assert not store.participant().is_retryable(error)
         branch.rollback()
+
+    def test_errors_are_classified(self, harness: Harness) -> None:
+        store = harness.open_store("classified")
+        branch = store.branch(new_id())
+        no_room = OSError(errno.ENOSPC, "No space left on device")
+        for source in (branch, store.participant()):
+            assert classify(source, ValueError("a bug")) is ErrorKind.PERMANENT
+            assert classify(source, no_room) is ErrorKind.STORE_FULL
+            assert not source.is_retryable(no_room)
+        branch.rollback()
+
+    def test_the_stores_own_full_error_is_store_full(self, harness: Harness) -> None:
+        sample = getattr(harness, "store_full_error", None)
+        if sample is None:
+            return  # the harness names no driver error for a full store: nothing to check
+        store = harness.open_store("full")
+        branch = store.branch(new_id())
+        error = sample()
+        for source in (branch, store.participant()):
+            assert classify(source, error) is ErrorKind.STORE_FULL
+            assert not source.is_retryable(error)
+        branch.rollback()
+
+    def test_free_space_is_bytes_or_unknown(self, harness: Harness) -> None:
+        store = harness.open_store("capacity")
+        if not isinstance(store, Capacity):
+            return  # optional: a store that cannot tell does not implement it
+        free = store.free_space()
+        assert free is None or (isinstance(free, int) and free >= 0)
 
     # --- the commit protocol under crashes ----------------------------------------------
 

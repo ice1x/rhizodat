@@ -189,3 +189,17 @@ def test_embedded_file_store_keeps_prepared_state_across_reopen(tmp_path: Path) 
 def test_dsn_must_be_drevo() -> None:
     with pytest.raises(ValueError, match="drevo"):
         DrevoStore("postgresql://localhost/x")
+
+
+# --- capacity --------------------------------------------------------------------------
+
+
+def test_an_embedded_graph_file_reports_its_disk(store: DrevoStore, tmp_path: Path) -> None:
+    import shutil
+
+    free = store.free_space()
+    if store.location is not None and store.location[0] == "embedded":
+        assert free is not None
+        assert abs(free - shutil.disk_usage(tmp_path).free) < 1 << 30
+    else:
+        assert free is None  # in memory, or a server whose disk is not ours to see

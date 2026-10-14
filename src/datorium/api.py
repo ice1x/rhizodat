@@ -11,7 +11,15 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, Self, overload
 
 from datorium.core.clock import HybridLogicalClock
-from datorium.core.coordinator import Aborted, Committed, CommittedPending, Coordinator, Recovery
+from datorium.core.coordinator import (
+    Aborted,
+    Committed,
+    CommittedPending,
+    Coordinator,
+    Recovery,
+    StoreFull,
+)
+from datorium.core.errors import Capacity
 from datorium.core.identity import new_id
 from datorium.core.journal import Journal, open_journal
 from datorium.core.retry import Retry
@@ -88,7 +96,10 @@ class Datorium:
         monotonic: Callable[[], float] = time.monotonic,
         rand: Callable[[], float] = random.random,
         soft_delete_window: timedelta = timedelta(days=30),
+        min_free: int | None = None,
     ) -> None:
+        if min_free is not None and min_free < 0:
+            raise ValueError(f"min_free must not be negative, got {min_free}")
         if soft_delete_window <= timedelta(0):
             raise ValueError(f"soft_delete_window must be positive, got {soft_delete_window}")
         self.soft_delete_window = soft_delete_window
@@ -124,7 +135,13 @@ class Datorium:
             sleep=sleep,
             monotonic=monotonic,
             rand=rand,
+            capacity={n: s for n, s in self._stores.items() if isinstance(s, Capacity)},
+            min_free=min_free,
         )
+        self.min_free = min_free
+        """Bytes a store reporting its free space (``Capacity``) must keep: a meta-transaction
+        touching one below it fails with ``StoreFull`` before anything is written.
+        ``None``: not checked (a full store still fails when the store reports it)."""
 
     @property
     def store_names(self) -> tuple[str, ...]:
@@ -244,6 +261,9 @@ class Datorium:
                 value = func(uow, *args, **kwargs)
             except Exception as exc:
                 uow.rollback()
+                full = uow.full_store(exc)
+                if full is not None:
+                    raise StoreFull(uow.dat_txn, store=full, reason=str(exc)) from exc
                 if not uow.is_retryable(exc):
                     raise
                 failure = Aborted(uow.dat_txn, retryable=True, reason=str(exc))

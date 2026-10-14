@@ -5,13 +5,13 @@ import uuid
 import pytest
 from faker import Faker
 
-from datorium import Datorium
+from datorium import Datorium, StoreFull
 from datorium.core.coordinator import Aborted, Committed, CommittedPending, InDoubt
 from datorium.core.identity import is_uuid7
 from datorium.core.journal import JournalRecord, MemoryJournal, State
 from datorium.core.retry import Retry
 from datorium.core.unit_of_work import UnitOfWork, UnitOfWorkClosed
-from fakes import Crash, FakeStoreHandle, Permanent, Transient, World
+from fakes import Crash, FakeStoreHandle, Full, Permanent, Transient, World
 
 
 class Clock:
@@ -522,3 +522,46 @@ def _drevo() -> bool:
     from conftest import drevo_embedded_available
 
     return drevo_embedded_available()
+
+
+# --- a full store ------------------------------------------------------------------
+
+
+def test_a_full_store_inside_the_work_is_store_full_not_retried(
+    dat: Datorium, world: World
+) -> None:
+    calls = []
+
+    @dat.transactional
+    def write(uow: UnitOfWork) -> None:
+        calls.append(1)
+        uow.store("pg").execute("row")
+        raise Full("53100 could not extend file")
+
+    with pytest.raises(StoreFull) as err:
+        write()
+    assert (err.value.store, len(calls)) == ("pg", 1)
+    assert isinstance(err.value.__cause__, Full)
+
+
+def test_min_free_checks_the_stores_that_report_capacity(world: World, clock: Clock) -> None:
+    world.stores["clickhouse"].free = 5
+    dat = Datorium(
+        stores={name: FakeStoreHandle(s) for name, s in world.stores.items()},
+        journal=MemoryJournal(),
+        min_free=64,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+    uow = dat.unit_of_work()
+    uow.store("pg").execute("row")
+    uow.store("clickhouse").execute("row")
+    with pytest.raises(StoreFull) as err:
+        uow.commit()
+    assert err.value.store == "clickhouse"
+    assert not any(s.committed for s in world.stores.values())
+
+
+def test_min_free_is_validated_before_any_store_opens(tmp_path: object) -> None:
+    with pytest.raises(ValueError, match="min_free"):
+        Datorium(stores={"g": "drevo+mem://"}, min_free=-1)

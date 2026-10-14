@@ -324,6 +324,31 @@ aborted and re-run; after the decision it may only be finished.**
 | ClickHouse | network errors, timeouts, too many parts | type / schema errors |
 | datorium | journal unreachable before the decision (→ presumed abort) | invariant / reference validation failures |
 
+**Error kinds and a full store.** Adapters classify their errors:
+`classify(error) -> ErrorKind` on a branch and a participant, one of
+`TRANSIENT` (worth re-running), `STORE_FULL`, `CONSTRAINT`, `PERMANENT`.
+`is_retryable` stays, true only for `TRANSIENT`. An adapter without
+`classify` is classified by `is_retryable`, and an error caused by a device out
+of space (`ENOSPC`, `EDQUOT`) is `STORE_FULL` whoever raised it.
+
+| Store | `STORE_FULL` | `CONSTRAINT` | free space (`Capacity`) |
+|---|---|---|---|
+| PostgreSQL | `53100` disk full | class `23` (unique, foreign key, check, not null) | not visible from SQL (none) |
+| ClickHouse | code 243 `NOT_ENOUGH_SPACE` | code 469 `VIOLATED_CONSTRAINT` | least `free_space` of `system.disks` |
+| Iceberg | `ENOSPC` writing a staged file | — | a `file://` warehouse's disk; object storage: none |
+| drevo | `ENOSPC` (embedded) | — | an embedded graph file's disk; memory, Bolt: none |
+
+A full store fails the meta-transaction with `StoreFull` (an `Aborted`,
+not retryable, naming the store): from a branch before the decision, or from
+the work itself inside a `transactional` function. A store written after the
+decision (ClickHouse, Iceberg) can only fail before it if asked first:
+`Datorium(min_free=<bytes>)` makes the coordinator ask every touched store with
+`Capacity` before anything is written and refuse with `StoreFull` (and the
+reported `free`) when one is below. A store that cannot tell, or whose query
+fails, passes. `min_free` is off by default: it costs one query per store and
+commit. Once decided, a full post-decision store leaves the transaction
+`CommittedPending` until recovery can finish it.
+
 **After the decision (steps 5–7): retry each branch until it is done, never abort.**
 
 - The coordinator retries in-process up to a short deadline, then hands the
@@ -607,6 +632,7 @@ class Branch:                        # one store's part of one Unit of Work
     def commit_one_phase(self) -> None: ...    # the only branch: native commit
     def rollback(self) -> None: ...            # before the decision
     def is_retryable(self, error: Exception) -> bool: ...
+    def classify(self, error: Exception) -> ErrorKind: ...  # optional (Classifies)
 
 class Participant:                   # the store after the decision and for recovery
     def finish(self, branch, dat_txn, dat_tx_time) -> None: ...  # idempotent; unknown gid = done
@@ -614,6 +640,9 @@ class Participant:                   # the store after the decision and for reco
     def abort(self, branch) -> None: ...                         # roll back a prepared gid
     def prepared_gids(self) -> list[str]: ...
     def is_retryable(self, error: Exception) -> bool: ...
+    def classify(self, error: Exception) -> ErrorKind: ...  # optional (Classifies)
+
+class Capacity:          ...  # optional, on a store: free_space() -> bytes | None
 
 class Result:                        # single pass over rows (mappings)
     columns: tuple[str, ...] | None
@@ -679,7 +708,10 @@ It checks:
 - `abort` discards and is idempotent, and an aborted branch never becomes
   visible;
 - a single branch commits natively, and rollback before the decision discards;
-- plain errors are not retryable;
+- plain errors are not retryable; errors are classified (`PERMANENT`, and
+  `STORE_FULL` for a device out of space), and the store's own full-store error
+  is `STORE_FULL` when the harness names one (`store_full_error()`);
+- `free_space()`, where the store has it, is bytes or `None`;
 - the commit protocol, crashed at every step: a meta-transaction over the
   adapter's store and an in-memory two-phase store, the process "dies" (open
   transactions die with it, prepared ones and staged data stay), and one

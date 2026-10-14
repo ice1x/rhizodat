@@ -29,6 +29,16 @@ class ClickHouseHarness:
     def write(self, branch: ClickHouseBranch, key: str) -> None:
         branch.insert("contract", [{"key": key}])
 
+    def store_full_error(self) -> BaseException:
+        from clickhouse_connect.driver.exceptions import DatabaseError
+
+        return DatabaseError(
+            "Code: 243. DB::Exception: Cannot reserve 1.00 MiB, not enough space."
+            " (NOT_ENOUGH_SPACE)",
+            code=243,
+            name="NOT_ENOUGH_SPACE",
+        )
+
     def count(self, store: ClickHouseStore, key: str) -> int:
         row = store.execute("SELECT count() AS n FROM contract WHERE key = {k:String}", {"k": key})
         return int(row.one()["n"])

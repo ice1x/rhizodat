@@ -403,6 +403,18 @@ class DrevoStore:
     def location(self) -> tuple[str, ...] | None:
         return graph_location(self._dsn)
 
+    def free_space(self) -> int | None:
+        """Free bytes of an embedded graph file's disk; ``None`` in memory or over Bolt."""
+        if self._dsn.transport != "embedded" or not self._dsn.path:
+            return None
+        import shutil
+        from pathlib import Path
+
+        path = Path(self._dsn.path)
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        return shutil.disk_usage(path).free
+
     @property
     def fence_location(self) -> tuple[str, ...] | None:
         """The graph a prepared branch of this store fences: the journal must live elsewhere."""

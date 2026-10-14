@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+from datorium.core.errors import ErrorKind
 from datorium.core.journal import BranchRecord, JournalRecord, MemoryJournal, State
 from datorium.core.result import Result
 
@@ -22,6 +23,10 @@ class Transient(Exception):
 
 class Permanent(Exception):
     """A non-retryable store error (constraint violation)."""
+
+
+class Full(Exception):
+    """The store's own "no space left" error (PostgreSQL 53100, ClickHouse 243)."""
 
 
 class Crash(BaseException):
@@ -55,6 +60,7 @@ class FakeStore:
     committed: dict[uuid.UUID, list[str]] = field(default_factory=dict)
     prepared: dict[str, tuple[uuid.UUID, list[str]]] = field(default_factory=dict)
     lose_commit_ack: int = 0  # commits that apply but then report a timeout
+    free: int | None = None  # bytes left, as Capacity reports them (None: unknown)
 
     def rows_of(self, dat_txn: uuid.UUID) -> list[str] | None:
         return self.committed.get(dat_txn)
@@ -112,6 +118,17 @@ class FakeBranch:
     def is_retryable(self, error: BaseException) -> bool:
         return isinstance(error, Transient | TimeoutError)
 
+    def classify(self, error: BaseException) -> ErrorKind:
+        return _classify(error)
+
+
+def _classify(error: BaseException) -> ErrorKind:
+    if isinstance(error, Full):
+        return ErrorKind.STORE_FULL
+    if isinstance(error, Transient | TimeoutError):
+        return ErrorKind.TRANSIENT
+    return ErrorKind.PERMANENT
+
 
 class FakeParticipant:
     def __init__(self, store: FakeStore) -> None:
@@ -143,6 +160,22 @@ class FakeParticipant:
     def is_retryable(self, error: BaseException) -> bool:
         return isinstance(error, Transient | TimeoutError)
 
+    def classify(self, error: BaseException) -> ErrorKind:
+        return _classify(error)
+
+
+class FakeCapacity:
+    """``Capacity`` of a fake store: reports ``FakeStore.free``, or raises ``fail``."""
+
+    def __init__(self, store: FakeStore, fail: BaseException | None = None) -> None:
+        self.db = store
+        self.fail = fail
+
+    def free_space(self) -> int | None:
+        if self.fail is not None:
+            raise self.fail
+        return self.db.free
+
 
 @dataclass
 class World:
@@ -154,6 +187,9 @@ class World:
     def store(self, name: str, *, two_phase: bool) -> FakeStore:
         self.stores[name] = FakeStore(name, two_phase, self.faults)
         return self.stores[name]
+
+    def capacity(self) -> dict[str, FakeCapacity]:
+        return {name: FakeCapacity(s) for name, s in self.stores.items()}
 
     def participants(self) -> dict[str, FakeParticipant]:
         return {name: FakeParticipant(s) for name, s in self.stores.items()}
@@ -207,6 +243,9 @@ class FakeStoreHandle:
 
     def participant(self) -> FakeParticipant:
         return FakeParticipant(self.db)
+
+    def free_space(self) -> int | None:
+        return self.db.free
 
     def execute(self, query: str, params: object = None) -> Result:
         rows = [{"row": row} for rows in self.db.committed.values() for row in rows]
