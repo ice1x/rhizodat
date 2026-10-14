@@ -4,7 +4,6 @@
 import importlib.metadata
 import json
 import sys
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -17,15 +16,13 @@ from mcp.client.stdio import StdioServerParameters
 
 from datorium import Datorium
 from datorium.adapters.postgres import PostgresStore
-from datorium.core.coordinator import gid_for
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord, MemoryJournal, State, open_journal
+from datorium.core.journal import MemoryJournal
 from datorium.core.result import Result
 from datorium.mcp.server import build_server
 from datorium.mcp.tools import Tools
 from fakes import FakeStoreHandle, World
 
-TOOLS = {"stores", "query", "transaction", "pending_transactions"}
+TOOLS = {"stores", "query"}
 
 
 class Readable(FakeStoreHandle):
@@ -64,22 +61,14 @@ def test_every_tool_is_listed_as_read_only(tools: Tools) -> None:
         assert t.description, t.name
 
 
-def test_recovery_is_offered_only_when_enabled(tools: Tools) -> None:
+def test_the_server_never_exposes_transactions_or_recovery(tools: Tools) -> None:
     async def go() -> Any:
-        async with Client(build_server(tools, recovery=True)) as client:
-            listed = await client.list_tools()
-            ran = await client.call_tool("run_recovery", {})
-            return listed, ran
+        async with Client(build_server(tools)) as client:
+            return await client.list_tools()
 
-    listed, ran = anyio.run(go)
-    [tool] = [t for t in listed.tools if t.name == "run_recovery"]
-    assert {t.name for t in listed.tools} == TOOLS | {"run_recovery"}
-    assert tool.annotations is not None
-    assert tool.annotations.read_only_hint is False
-    assert tool.annotations.destructive_hint is True
-    assert tool.annotations.idempotent_hint is True
-    assert not ran.is_error
-    assert ran.structured_content["aborted"] == []
+    names = {t.name for t in anyio.run(go).tools}
+    assert not names & {"transaction", "pending_transactions", "run_recovery"}
+    assert "transaction" not in (build_server(tools).instructions or "").lower()
 
 
 def test_the_query_tool_describes_the_configured_kinds() -> None:
@@ -104,8 +93,6 @@ def test_tools_return_structured_results(tools: Tools) -> None:
     assert result.structured_content["rows"] == [{"q": "SELECT 1"}]
     stores = call(tools, "stores")
     assert [s["name"] for s in stores.structured_content["result"]] == ["orders"]
-    missing = call(tools, "transaction", {"dat_txn": "0199e0a4-6f39-7cc1-8a3a-5a2b6d8f1c00"})
-    assert missing.structured_content == {"result": None}
 
 
 def test_store_errors_reach_the_client_as_tool_errors(tools: Tools) -> None:
@@ -155,7 +142,7 @@ def test_stdio_server_reads_postgres_and_refuses_writes(
     }
     server = StdioServerParameters(command=sys.executable, args=["-m", "datorium.mcp"], env=env)
 
-    async def go() -> tuple[Any, Any, Any, Any]:
+    async def go() -> tuple[Any, Any, Any]:
         async with Client(server) as client:
             stores = await client.call_tool("stores", {})
             read = await client.call_tool(
@@ -164,68 +151,15 @@ def test_stdio_server_reads_postgres_and_refuses_writes(
             write = await client.call_tool(
                 "query", {"store": "crm", "query": "DELETE FROM customers"}
             )
-            pending = await client.call_tool("pending_transactions", {})
-            return stores, read, write, pending
+            return stores, read, write
 
-    stores, read, write, pending = anyio.run(go)
+    stores, read, write = anyio.run(go)
     [entry] = stores.structured_content["result"]
     assert entry["kind"] == "postgres"
     assert "datorium@" not in json.dumps(entry)  # the password is masked
     assert read.structured_content["rows"] == [{"name": customer}]
     assert write.is_error
     assert "read-only transaction" in write.content[0].text
-    assert pending.structured_content["transactions"] == []
     check = PostgresStore(pg_dsn, schema=pg_schema)
     assert check.execute("SELECT count(*) AS n FROM customers").one()["n"] == 1
     check.close()
-
-
-def test_stdio_recovery_cleans_up_after_a_crashed_erp_coordinator(
-    pg_dsn: str, pg_schema: str, tmp_path: Path, faker: Faker
-) -> None:
-    """A coordinator died mid-commit: one order undecided, one decided but unfinished.
-    An operator's agent runs recovery through datorium-MCP: the first is rolled back,
-    the second committed, and the journal says so."""
-    name = f"crm_{faker.pystr(min_chars=8, max_chars=8).lower()}"
-    store = PostgresStore(pg_dsn, name=name, schema=pg_schema)
-    store.install()
-    store.execute("CREATE TABLE orders (dat_id uuid PRIMARY KEY, customer text)")
-    journal_dsn = f"file://{tmp_path / 'journal.db'}"
-    journal = open_journal(journal_dsn)
-    lost, decided = new_id(), new_id()
-    for txn in (lost, decided):
-        branch = store.branch(txn)
-        branch.execute("INSERT INTO orders VALUES (%s, %s)", (txn, faker.name()))
-        branch.stage(txn, 1)
-        journal.begin(txn, [BranchRecord(name, gid_for(txn, name), two_phase=True)])
-        branch.prepare(gid_for(txn, name))
-    journal.transition(decided, State.ACTIVE, State.PREPARED, dat_tx_time=1)
-    journal.transition(decided, State.PREPARED, State.COMMITTED)
-    journal.close()
-    time.sleep(0.05)
-    env = {
-        "PATH": "/usr/bin:/bin",
-        f"DATORIUM_STORE_{name.upper()}": f"{pg_dsn}?schema={pg_schema}",
-        "DATORIUM_JOURNAL": journal_dsn,
-        "DATORIUM_MCP_RECOVERY": "1",
-        "DATORIUM_MCP_RECOVERY_STALE_S": "0.01",
-    }
-    server = StdioServerParameters(command=sys.executable, args=["-m", "datorium.mcp"], env=env)
-
-    async def go() -> tuple[Any, Any, Any]:
-        async with Client(server) as client:
-            pending = await client.call_tool("pending_transactions", {})
-            ran = await client.call_tool("run_recovery", {})
-            after = await client.call_tool("transaction", {"dat_txn": str(decided)})
-            return pending, ran, after
-
-    pending, ran, after = anyio.run(go)
-    assert len(pending.structured_content["transactions"]) == 2
-    assert not ran.is_error, ran.content
-    assert ran.structured_content["aborted"] == [str(lost)]
-    assert ran.structured_content["finished"] == [str(decided)]
-    assert after.structured_content["result"]["state"] == "DONE"
-    rows = store.execute("SELECT dat_id FROM orders").all()
-    assert [r["dat_id"] for r in rows] == [decided]
-    assert not [g for g in store.participant().prepared_gids() if g.endswith(f":{name}")]
-    store.close()

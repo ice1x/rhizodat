@@ -4,7 +4,6 @@
 ``datorium.mcp.config``) and serves the tools over stdio.
 """
 
-import math
 import os
 import sys
 from collections.abc import Callable
@@ -22,10 +21,7 @@ INSTRUCTIONS = """\
 datorium is one data layer over several stores (relational, analytical, graph, lakehouse,
 or any other a plug-in adapter adds). Call `stores` first: it names the configured stores
 and their kind. `query` runs a native read in a store's own language; the store refuses
-writes. Writes in datorium are meta-transactions over several stores; `transaction` and
-`pending_transactions` show them in the journal, including any a crashed process left for
-recovery. If `run_recovery` is offered, it finishes or rolls back what crashed processes
-left: run it only when asked."""
+writes."""
 
 QUERY_HELP = """\
 A native read on one store, which refuses any write. Returns at most `limit` rows and
@@ -56,9 +52,8 @@ def _guarded[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return run
 
 
-def build_server(tools: Tools, *, recovery: bool = False) -> "MCPServer":
-    """The MCP server over ``tools``; ``recovery`` also offers ``run_recovery``, the one
-    tool that writes."""
+def build_server(tools: Tools) -> "MCPServer":
+    """The MCP server over ``tools``."""
     from mcp.server.mcpserver import MCPServer
     from mcp_types import ToolAnnotations
 
@@ -87,41 +82,6 @@ def build_server(tools: Tools, *, recovery: bool = False) -> "MCPServer":
     ) -> dict[str, Any]:
         return tools.query(store, query, params, limit)
 
-    @server.tool(annotations=read_only)
-    @_guarded
-    def transaction(dat_txn: str) -> dict[str, Any] | None:
-        """One meta-transaction's journal record: its state (ACTIVE, PREPARED, COMMITTED,
-        ABORTED, DONE), commit time, branches per store, and how long since it changed;
-        null if the journal does not know it."""
-        return tools.transaction(dat_txn)
-
-    @server.tool(annotations=read_only)
-    @_guarded
-    def pending_transactions(older_than_s: float = 0, limit: int = DEFAULT_LIMIT) -> dict[str, Any]:
-        """Unfinished meta-transactions (ACTIVE, PREPARED, COMMITTED) unchanged for at least
-        `older_than_s` seconds, oldest first: in flight, or left by a crash for recovery."""
-        return tools.pending_transactions(older_than_s, limit)
-
-    if recovery:
-
-        @server.tool(
-            annotations=ToolAnnotations(
-                read_only_hint=False,
-                destructive_hint=True,
-                idempotent_hint=True,
-                open_world_hint=False,
-            )
-        )
-        @_guarded
-        def run_recovery(limit: int = DEFAULT_LIMIT) -> dict[str, list[str]]:
-            """One recovery run over the journal and the stores, as a crashed process
-            would need: rolls back prepared transactions the journal has no decision for
-            (orphans), aborts meta-transactions left undecided past the stale cutoff, and
-            finishes decided ones on every store. Never touches a transaction a live
-            process may still be deciding. Returns the dat_txn of each, by outcome; `stuck`
-            ones stay decided but unfinished for too long and need attention."""
-            return tools.run_recovery(limit)
-
     return server
 
 
@@ -132,13 +92,8 @@ def main() -> None:
     except ConfigError as exc:
         print(f"datorium-mcp: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
-    tools = Tools.open(
-        config.stores,
-        journal=config.journal,
-        max_rows=config.max_rows,
-        stale_after_ms=math.ceil(config.stale_after_s * 1000),
-    )
+    tools = Tools.open(config.stores, journal=config.journal, max_rows=config.max_rows)
     try:
-        build_server(tools, recovery=config.recovery).run()
+        build_server(tools).run()
     finally:
         tools.close()
