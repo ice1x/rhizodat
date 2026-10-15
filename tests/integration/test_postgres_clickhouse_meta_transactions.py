@@ -13,11 +13,11 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium import Aborted, Committed, CommittedPending, Datorium, Retry, UnitOfWork
-from datorium.adapters.clickhouse import ClickHouseStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.journal import State
 from fakes import Crash
+from rhizodat import Aborted, Committed, CommittedPending, Retry, Rhizodat, UnitOfWork
+from rhizodat.adapters.clickhouse import ClickHouseStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.journal import State
 
 
 class Wall:
@@ -30,7 +30,7 @@ class Wall:
 
 @dataclass
 class Erp:
-    dat: Datorium
+    dat: Rhizodat
     pg: PostgresStore
     ch: ClickHouseStore
     journal: PostgresJournal
@@ -67,7 +67,7 @@ def erp(pg_dsn: str, pg_schema: str, clickhouse_dsn: str) -> Iterator[Erp]:
     wall = Wall()
     journal = PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall)
     no_wait = Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0)
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"pg": pg, "ch": ch}, journal=journal, finish=no_wait, sleep=lambda s: None
     )
     yield Erp(dat, pg, ch, journal, wall)
@@ -197,7 +197,7 @@ def test_clickhouse_down_after_the_decision_is_pending_not_failed(erp: Erp, fake
 
 
 def test_stores_open_from_connection_strings(clickhouse_dsn: str) -> None:
-    dat = Datorium(stores={"ch": clickhouse_dsn})
+    dat = Rhizodat(stores={"ch": clickhouse_dsn})
     dat.store("ch").install()  # type: ignore[attr-defined]
     assert dat.store("ch").execute("SELECT 1 AS one").one() == {"one": 1}
     dat.close()

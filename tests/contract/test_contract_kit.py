@@ -5,11 +5,11 @@ from collections.abc import Callable
 
 import pytest
 
-from datorium.core.coordinator import Branch
-from datorium.core.journal import BranchRecord
-from datorium.core.unit_of_work import Store
-from datorium.testing.contract import CRASH_POINTS, AdapterContract, MemoryStore
-from datorium.testing.contract import _MemoryParticipant as MemoryParticipant
+from rhizodat.core.coordinator import Branch
+from rhizodat.core.journal import BranchRecord
+from rhizodat.core.unit_of_work import Store
+from rhizodat.testing.contract import CRASH_POINTS, AdapterContract, MemoryStore
+from rhizodat.testing.contract import _MemoryParticipant as MemoryParticipant
 
 
 class MemoryHarness:
@@ -28,7 +28,7 @@ class MemoryHarness:
 
 
 class TestMemoryStoreContract(AdapterContract):
-    """The reference: datorium's in-memory two-phase store keeps the contract."""
+    """The reference: rhizodat's in-memory two-phase store keeps the contract."""
 
     @pytest.fixture
     def harness(self) -> MemoryHarness:

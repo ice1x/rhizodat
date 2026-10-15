@@ -1,10 +1,10 @@
 """A bug tracker's entities, importable by module path (``mcp_tracker:Bug``) for the
-datorium-MCP entity tests: a bug split between two stores, its reporter in one."""
+rhizodat-MCP entity tests: a bug split between two stores, its reporter in one."""
 
 import datetime as dt
 from decimal import Decimal
 
-from datorium import Ref, entity
+from rhizodat import Ref, entity
 
 
 @entity(stores={"pg": ["name", "email"]}, name="tracker.Person")

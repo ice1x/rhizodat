@@ -10,8 +10,8 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 
-from datorium.core.identity import new_id
-from datorium.core.journal import (
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import (
     BranchRecord,
     Journal,
     JournalConflict,
@@ -43,13 +43,13 @@ JournalFactory = Callable[..., Journal]  # (wall, index=None): index reopens a j
 def make_journal(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[JournalFactory]:
     opened: list[Journal] = []
     if request.param == "postgres":
-        from datorium.adapters.postgres import PostgresJournal
+        from rhizodat.adapters.postgres import PostgresJournal
 
         pg_dsn: str = request.getfixturevalue("pg_dsn")
         pg_schema: str = request.getfixturevalue("pg_schema")
     if request.param.startswith("drevo"):
         from conftest import drevo_embedded_available
-        from datorium.adapters.drevo import DrevoJournal
+        from rhizodat.adapters.drevo import DrevoJournal
 
         if request.param == "drevo-bolt":
             drevo_dsn: str = request.getfixturevalue("drevo_bolt_dsn")
@@ -331,7 +331,7 @@ def test_open_journal_rejects_a_store_that_cannot_be_a_journal() -> None:
 
 def test_open_journal_for_drevo(tmp_path: Path) -> None:
     from conftest import drevo_embedded_available
-    from datorium.adapters.drevo import DrevoJournal
+    from rhizodat.adapters.drevo import DrevoJournal
 
     if not drevo_embedded_available():
         pytest.skip("drevo-py with 2PC is not installed")
@@ -343,7 +343,7 @@ def test_open_journal_for_drevo(tmp_path: Path) -> None:
 
 
 def test_drevo_journal_label_is_validated() -> None:
-    from datorium.adapters.drevo import DrevoJournal
+    from rhizodat.adapters.drevo import DrevoJournal
 
     with pytest.raises(ValueError, match="label"):
         DrevoJournal("drevo+bolt://127.0.0.1:1", label="X) DETACH DELETE (n")
@@ -408,7 +408,7 @@ TestJournalMachine.settings = settings(max_examples=50, stateful_step_count=30)
 
 
 def test_every_journal_keeps_the_migration_history(journal: Journal) -> None:
-    from datorium.core.journal import AppliedMigration, MigrationHistory
+    from rhizodat.core.journal import AppliedMigration, MigrationHistory
 
     assert isinstance(journal, MigrationHistory)
     assert journal.applied_migrations() == []
@@ -424,7 +424,7 @@ def test_every_journal_keeps_the_migration_history(journal: Journal) -> None:
 
 
 def test_the_migration_history_survives_reopening(make_journal: JournalFactory) -> None:
-    from datorium.core.journal import AppliedMigration, MemoryJournal, MigrationHistory
+    from rhizodat.core.journal import AppliedMigration, MemoryJournal, MigrationHistory
 
     wall = Wall()
     journal = make_journal(wall)

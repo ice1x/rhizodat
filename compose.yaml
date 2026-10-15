@@ -1,6 +1,6 @@
 # Stores for development and tests: docker compose up -d --wait, then uv run pytest.
 # DSNs are in .env.test; ports are bound to 127.0.0.1 only. Not a production deployment.
-name: datorium-test
+name: rhizodat-test
 
 services:
   postgres:
@@ -8,12 +8,12 @@ services:
     # Two-phase commit needs prepared transactions, off by default.
     command: ["postgres", "-c", "max_prepared_transactions=50"]
     environment:
-      POSTGRES_PASSWORD: datorium
-      POSTGRES_DB: datorium
+      POSTGRES_PASSWORD: rhizodat
+      POSTGRES_DB: rhizodat
     ports: ["127.0.0.1:55440:5432"]
     tmpfs: ["/var/lib/postgresql/data"]
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "datorium"]
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "rhizodat"]
       interval: 1s
       timeout: 3s
       retries: 30
@@ -34,9 +34,9 @@ services:
     profiles: ["clickhouse"]
     image: clickhouse/clickhouse-server:25.8.33.6-alpine
     environment:
-      CLICKHOUSE_USER: datorium
-      CLICKHOUSE_PASSWORD: datorium
-      CLICKHOUSE_DB: datorium
+      CLICKHOUSE_USER: rhizodat
+      CLICKHOUSE_PASSWORD: rhizodat
+      CLICKHOUSE_DB: rhizodat
     ports: ["127.0.0.1:58123:8123"]
     tmpfs: ["/var/lib/clickhouse"]
     ulimits:
@@ -56,8 +56,8 @@ services:
     profiles: ["iceberg"]
     image: rustfs/rustfs:1.0.1
     environment:
-      RUSTFS_ACCESS_KEY: datorium
-      RUSTFS_SECRET_KEY: datorium-secret
+      RUSTFS_ACCESS_KEY: rhizodat
+      RUSTFS_SECRET_KEY: rhizodat-secret
     ports: ["127.0.0.1:59000:9000"]
     tmpfs: ["/data:uid=10001,gid=10001", "/logs:uid=10001,gid=10001"]
     healthcheck:
@@ -79,7 +79,7 @@ services:
       - --aws-sigv4
       - aws:amz:us-east-1:s3
       - --user
-      - datorium:datorium-secret
+      - rhizodat:rhizodat-secret
       - http://s3:9000/warehouse
 
   iceberg-rest:
@@ -92,8 +92,8 @@ services:
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
       CATALOG_S3_ENDPOINT: http://s3:9000
       CATALOG_S3_PATH__STYLE__ACCESS: "true"
-      AWS_ACCESS_KEY_ID: datorium
-      AWS_SECRET_ACCESS_KEY: datorium-secret
+      AWS_ACCESS_KEY_ID: rhizodat
+      AWS_SECRET_ACCESS_KEY: rhizodat-secret
       AWS_REGION: us-east-1
     ports: ["127.0.0.1:58181:8181"]
     healthcheck:

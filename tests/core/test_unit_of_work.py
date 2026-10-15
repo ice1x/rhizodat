@@ -1,17 +1,17 @@
-"""Unit of Work, the Datorium facade and whole-Unit-of-Work retries."""
+"""Unit of Work, the Rhizodat facade and whole-Unit-of-Work retries."""
 
 import uuid
 
 import pytest
 from faker import Faker
 
-from datorium import Datorium, StoreFull
-from datorium.core.coordinator import Aborted, Committed, CommittedPending, InDoubt
-from datorium.core.identity import is_uuid7
-from datorium.core.journal import JournalRecord, MemoryJournal, State
-from datorium.core.retry import Retry
-from datorium.core.unit_of_work import UnitOfWork, UnitOfWorkClosed
 from fakes import Crash, FakeStoreHandle, Full, Permanent, Transient, World
+from rhizodat import Rhizodat, StoreFull
+from rhizodat.core.coordinator import Aborted, Committed, CommittedPending, InDoubt
+from rhizodat.core.identity import is_uuid7
+from rhizodat.core.journal import JournalRecord, MemoryJournal, State
+from rhizodat.core.retry import Retry
+from rhizodat.core.unit_of_work import UnitOfWork, UnitOfWorkClosed
 
 
 class Clock:
@@ -42,8 +42,8 @@ def clock() -> Clock:
 
 
 @pytest.fixture
-def dat(world: World, clock: Clock) -> Datorium:
-    return Datorium(
+def dat(world: World, clock: Clock) -> Rhizodat:
+    return Rhizodat(
         stores={name: FakeStoreHandle(s) for name, s in world.stores.items()},
         journal=MemoryJournal(),
         retry=Retry(attempts=4, deadline_s=10.0, base_delay_s=0.1, max_delay_s=1.0),
@@ -56,7 +56,7 @@ def dat(world: World, clock: Clock) -> Datorium:
 # --- Unit of Work ------------------------------------------------------------------
 
 
-def test_branches_open_lazily_one_per_store(dat: Datorium, world: World) -> None:
+def test_branches_open_lazily_one_per_store(dat: Rhizodat, world: World) -> None:
     with dat.unit_of_work() as uow:
         assert is_uuid7(uow.dat_txn)
         assert not uow.stores_touched
@@ -68,7 +68,7 @@ def test_branches_open_lazily_one_per_store(dat: Datorium, world: World) -> None
     assert uow.outcome == Committed(uow.dat_txn, uow.outcome.dat_tx_time)  # type: ignore[union-attr]
 
 
-def test_single_store_uow_skips_the_journal(dat: Datorium, world: World) -> None:
+def test_single_store_uow_skips_the_journal(dat: Rhizodat, world: World) -> None:
     with dat.unit_of_work() as uow:
         uow.store("clickhouse").execute("event")
     assert dat.journal is not None
@@ -76,7 +76,7 @@ def test_single_store_uow_skips_the_journal(dat: Datorium, world: World) -> None
     assert world.stores["clickhouse"].rows_of(uow.dat_txn) == ["event"]
 
 
-def test_multi_store_uow_commits_through_the_journal(dat: Datorium, world: World) -> None:
+def test_multi_store_uow_commits_through_the_journal(dat: Rhizodat, world: World) -> None:
     with dat.unit_of_work() as uow:
         for name in ("pg", "graph", "clickhouse"):
             uow.store(name).execute(f"{name}-row")
@@ -87,7 +87,7 @@ def test_multi_store_uow_commits_through_the_journal(dat: Datorium, world: World
     assert record.state is State.DONE
 
 
-def test_exception_in_the_block_rolls_back_and_propagates(dat: Datorium, world: World) -> None:
+def test_exception_in_the_block_rolls_back_and_propagates(dat: Rhizodat, world: World) -> None:
     uow = dat.unit_of_work()
 
     def block() -> None:
@@ -105,7 +105,7 @@ def test_exception_in_the_block_rolls_back_and_propagates(dat: Datorium, world: 
     assert world.faults.seen.count("graph.rollback") == 1
 
 
-def test_a_crash_inside_the_block_leaves_branches_for_recovery(dat: Datorium, world: World) -> None:
+def test_a_crash_inside_the_block_leaves_branches_for_recovery(dat: Rhizodat, world: World) -> None:
     uow = dat.unit_of_work()
 
     def block() -> None:
@@ -118,7 +118,7 @@ def test_a_crash_inside_the_block_leaves_branches_for_recovery(dat: Datorium, wo
     assert "pg.rollback" not in world.faults.seen
 
 
-def test_explicit_commit_and_rollback(dat: Datorium, world: World) -> None:
+def test_explicit_commit_and_rollback(dat: Rhizodat, world: World) -> None:
     uow = dat.unit_of_work()
     uow.store("pg").execute("row")
     outcome = uow.commit()
@@ -136,18 +136,18 @@ def test_explicit_commit_and_rollback(dat: Datorium, world: World) -> None:
     assert world.faults.seen.count("pg.rollback") == 1
 
 
-def test_store_names_keep_the_configuration_order(dat: Datorium) -> None:
+def test_store_names_keep_the_configuration_order(dat: Rhizodat) -> None:
     assert dat.store_names == ("pg", "graph", "clickhouse")
 
 
-def test_unknown_store_name_is_an_error(dat: Datorium) -> None:
+def test_unknown_store_name_is_an_error(dat: Rhizodat) -> None:
     uow = dat.unit_of_work()
     with pytest.raises(KeyError, match="'nope'"):
         uow.store("nope")
     uow.rollback()
 
 
-def test_a_with_block_runs_once_and_does_not_retry(dat: Datorium, world: World) -> None:
+def test_a_with_block_runs_once_and_does_not_retry(dat: Rhizodat, world: World) -> None:
     world.faults.add("pg.prepare", Transient("fence"))
     runs = 0
 
@@ -164,7 +164,7 @@ def test_a_with_block_runs_once_and_does_not_retry(dat: Datorium, world: World) 
     assert err.value.retryable is True
 
 
-def test_uow_is_not_reusable_across_threads_of_work(dat: Datorium) -> None:
+def test_uow_is_not_reusable_across_threads_of_work(dat: Rhizodat) -> None:
     uow = dat.unit_of_work()
     assert isinstance(uow, UnitOfWork)
     uow.rollback()
@@ -176,7 +176,7 @@ def test_uow_is_not_reusable_across_threads_of_work(dat: Datorium) -> None:
 
 
 def test_transactional_returns_the_outcome_with_the_function_value(
-    dat: Datorium, world: World
+    dat: Rhizodat, world: World
 ) -> None:
     @dat.transactional
     def place_order(uow: UnitOfWork, sku: str) -> str:
@@ -191,7 +191,7 @@ def test_transactional_returns_the_outcome_with_the_function_value(
 
 
 def test_transient_failure_before_the_decision_reruns_with_a_new_dat_txn(
-    dat: Datorium, world: World, clock: Clock
+    dat: Rhizodat, world: World, clock: Clock
 ) -> None:
     world.faults.add("graph.prepare", Transient("prepared fence"), times=2)
     seen: list[uuid.UUID] = []
@@ -211,7 +211,7 @@ def test_transient_failure_before_the_decision_reruns_with_a_new_dat_txn(
     assert len(clock.sleeps) == 2
 
 
-def test_backoff_uses_full_jitter_and_grows(dat: Datorium, world: World, clock: Clock) -> None:
+def test_backoff_uses_full_jitter_and_grows(dat: Rhizodat, world: World, clock: Clock) -> None:
     world.faults.add("pg.prepare", Transient("x"), times=3)
 
     @dat.transactional
@@ -224,7 +224,7 @@ def test_backoff_uses_full_jitter_and_grows(dat: Datorium, world: World, clock: 
     assert clock.sleeps == pytest.approx([0.05, 0.1, 0.2])
 
 
-def test_retryable_error_raised_by_the_work_itself_is_retried(dat: Datorium, world: World) -> None:
+def test_retryable_error_raised_by_the_work_itself_is_retried(dat: Rhizodat, world: World) -> None:
     world.faults.add("pg.execute", Transient("40001 serialization failure"))
     runs = 0
 
@@ -239,7 +239,7 @@ def test_retryable_error_raised_by_the_work_itself_is_retried(dat: Datorium, wor
     assert outcome.value == 2
 
 
-def test_non_retryable_failure_is_not_retried(dat: Datorium, world: World) -> None:
+def test_non_retryable_failure_is_not_retried(dat: Rhizodat, world: World) -> None:
     world.faults.add("pg.prepare", Permanent("constraint"))
     runs = 0
 
@@ -256,7 +256,7 @@ def test_non_retryable_failure_is_not_retried(dat: Datorium, world: World) -> No
     assert err.value.retryable is False
 
 
-def test_domain_error_in_the_function_propagates_unwrapped(dat: Datorium) -> None:
+def test_domain_error_in_the_function_propagates_unwrapped(dat: Rhizodat) -> None:
     @dat.transactional
     def work(uow: UnitOfWork) -> None:
         uow.store("pg").execute("a")
@@ -266,7 +266,7 @@ def test_domain_error_in_the_function_propagates_unwrapped(dat: Datorium) -> Non
         work()
 
 
-def test_attempts_are_bounded(dat: Datorium, world: World) -> None:
+def test_attempts_are_bounded(dat: Rhizodat, world: World) -> None:
     world.faults.add("pg.prepare", Transient("x"), times=100)
     runs = 0
 
@@ -285,7 +285,7 @@ def test_attempts_are_bounded(dat: Datorium, world: World) -> None:
 
 def test_deadline_bounds_retries(world: World, clock: Clock) -> None:
     world.faults.add("pg.prepare", Transient("x"), times=100)
-    dat = Datorium(
+    dat = Rhizodat(
         stores={n: FakeStoreHandle(s) for n, s in world.stores.items()},
         journal=MemoryJournal(),
         retry=Retry(attempts=100, deadline_s=1.0, base_delay_s=0.4, max_delay_s=0.4),
@@ -304,7 +304,7 @@ def test_deadline_bounds_retries(world: World, clock: Clock) -> None:
     assert clock.t <= 1.0
 
 
-def test_per_function_retry_policy(dat: Datorium, world: World) -> None:
+def test_per_function_retry_policy(dat: Rhizodat, world: World) -> None:
     world.faults.add("pg.prepare", Transient("x"), times=1)
 
     @dat.transactional(retry=Retry(attempts=1))
@@ -316,7 +316,7 @@ def test_per_function_retry_policy(dat: Datorium, world: World) -> None:
         work()
 
 
-def test_committed_pending_is_returned_not_retried(dat: Datorium, world: World) -> None:
+def test_committed_pending_is_returned_not_retried(dat: Rhizodat, world: World) -> None:
     world.faults.add("clickhouse.finish", Transient("down"), times=100)
     runs = 0
 
@@ -346,7 +346,7 @@ def test_in_doubt_is_never_retried(world: World, clock: Clock) -> None:
         def get(self, dat_txn: uuid.UUID) -> JournalRecord | None:
             raise ConnectionError("unreachable")
 
-    dat = Datorium(
+    dat = Rhizodat(
         stores={n: FakeStoreHandle(s) for n, s in world.stores.items()},
         journal=Dark(),
         sleep=clock.sleep,
@@ -366,7 +366,7 @@ def test_in_doubt_is_never_retried(world: World, clock: Clock) -> None:
     assert runs == 1
 
 
-def test_crash_propagates_through_transactional(dat: Datorium, world: World) -> None:
+def test_crash_propagates_through_transactional(dat: Rhizodat, world: World) -> None:
     world.faults.add("pg.prepare", Crash())
 
     @dat.transactional
@@ -381,14 +381,14 @@ def test_crash_propagates_through_transactional(dat: Datorium, world: World) -> 
 # --- facade ---------------------------------------------------------------------
 
 
-def test_native_store_access_outside_a_uow(dat: Datorium, world: World) -> None:
+def test_native_store_access_outside_a_uow(dat: Rhizodat, world: World) -> None:
     with dat.unit_of_work() as uow:
         uow.store("pg").execute("row")
     assert dat.store("pg").execute("SELECT").all() == [{"row": "row"}]
 
 
 def test_multi_store_without_a_journal_fails_clearly(world: World) -> None:
-    dat = Datorium(stores={n: FakeStoreHandle(s) for n, s in world.stores.items()})
+    dat = Rhizodat(stores={n: FakeStoreHandle(s) for n, s in world.stores.items()})
     uow = dat.unit_of_work()
     uow.store("pg").execute("a")
     uow.store("graph").execute("b")
@@ -397,7 +397,7 @@ def test_multi_store_without_a_journal_fails_clearly(world: World) -> None:
     assert world.applied(uow.dat_txn) == dict.fromkeys(world.stores, False)
 
 
-def test_recovery_uses_every_store(dat: Datorium, world: World) -> None:
+def test_recovery_uses_every_store(dat: Rhizodat, world: World) -> None:
     world.faults.add("graph.finish", Crash())
     uow = dat.unit_of_work()
     uow.store("pg").execute("a")
@@ -410,19 +410,19 @@ def test_recovery_uses_every_store(dat: Datorium, world: World) -> None:
 
 
 def test_recovery_needs_a_journal(world: World) -> None:
-    dat = Datorium(stores={n: FakeStoreHandle(s) for n, s in world.stores.items()})
+    dat = Rhizodat(stores={n: FakeStoreHandle(s) for n, s in world.stores.items()})
     with pytest.raises(ValueError, match="journal"):
         dat.recovery()
 
 
-def test_close_closes_every_store(dat: Datorium) -> None:
+def test_close_closes_every_store(dat: Rhizodat) -> None:
     handles = [dat.store(n) for n in ("pg", "graph", "clickhouse")]
     dat.close()
     assert all(h.closed for h in handles)  # type: ignore[attr-defined]
 
 
 def test_stores_from_connection_strings(tmp_path: object) -> None:
-    dat = Datorium(stores={"graph": "drevo+mem://"}, journal=None) if _drevo() else None
+    dat = Rhizodat(stores={"graph": "drevo+mem://"}, journal=None) if _drevo() else None
     if dat is None:
         pytest.skip("drevo-py not installed")
     assert dat.store("graph").name == "graph"
@@ -431,13 +431,13 @@ def test_stores_from_connection_strings(tmp_path: object) -> None:
 
 def test_unsupported_store_kind_is_reported() -> None:
     with pytest.raises(NotImplementedError, match="glue"):
-        Datorium(stores={"lake": "iceberg+glue://eu-west-1/warehouse"})
+        Rhizodat(stores={"lake": "iceberg+glue://eu-west-1/warehouse"})
 
 
 def test_a_drevo_journal_cannot_share_a_graph_with_a_drevo_store() -> None:
     """The store's prepared fence would block the coordinator's own journal writes."""
     with pytest.raises(ValueError, match="separate drevo graph"):
-        Datorium(
+        Rhizodat(
             stores={"graph": "drevo+bolt://graph.local:7687"}, journal="drevo+bolt://graph.local"
         )
 
@@ -453,7 +453,7 @@ def test_two_postgres_stores_cannot_share_dat_applied(first: str, second: str) -
     """Both branches of one meta-transaction would insert the same dat_txn into one
     dat_applied table, and the second would wait for the first forever."""
     with pytest.raises(ValueError, match="share one dat_applied") as caught:
-        Datorium(stores={"orders": first, "ledger": second})
+        Rhizodat(stores={"orders": first, "ledger": second})
     message = str(caught.value)
     assert "'orders'" in message
     assert "'ledger'" in message
@@ -465,42 +465,42 @@ def test_two_postgres_stores_cannot_share_dat_applied(first: str, second: str) -
     ["postgresql://db.local/other", "postgresql://db.local:6432/app", "postgresql://db2.local/app"],
 )
 def test_postgres_stores_in_other_databases_or_servers_are_fine(second: str) -> None:
-    dat = Datorium(stores={"orders": "postgresql://db.local/app", "ledger": second})
+    dat = Rhizodat(stores={"orders": "postgresql://db.local/app", "ledger": second})
     dat.close()
 
 
 def test_postgres_stores_in_other_schemas_of_one_database_are_fine(faker: Faker) -> None:
-    from datorium.adapters.postgres import PostgresStore
+    from rhizodat.adapters.postgres import PostgresStore
 
     dsn = f"postgresql://db.local/{faker.word()}"
     orders = PostgresStore(dsn, name="orders", schema="orders")
     ledger = PostgresStore(dsn, name="ledger", schema="ledger")
-    dat = Datorium(stores={"orders": orders, "ledger": ledger})
+    dat = Rhizodat(stores={"orders": orders, "ledger": ledger})
     dat.close()
     shared = PostgresStore(dsn, name="ledger", schema="orders")
     with pytest.raises(ValueError, match="share one dat_applied"):
-        Datorium(stores={"orders": orders, "ledger": shared})
+        Rhizodat(stores={"orders": orders, "ledger": shared})
     default = PostgresStore(dsn, name="a")
     public = PostgresStore(dsn, name="b", schema="public")
     with pytest.raises(ValueError, match="share one dat_applied"):
-        Datorium(stores={"a": default, "b": public})
+        Rhizodat(stores={"a": default, "b": public})
 
 
 def test_postgres_dsns_pick_their_schema(faker: Faker) -> None:
-    """Stores configured only by DSN (datorium-MCP, config files) name their schema in it."""
+    """Stores configured only by DSN (rhizodat-MCP, config files) name their schema in it."""
     db = f"postgresql://u:p@db.local/{faker.word()}"
-    dat = Datorium(stores={"orders": f"{db}?schema=orders", "ledger": f"{db}?schema=ledger"})
+    dat = Rhizodat(stores={"orders": f"{db}?schema=orders", "ledger": f"{db}?schema=ledger"})
     dat.close()
     with pytest.raises(ValueError, match="share one dat_applied"):
-        Datorium(stores={"orders": f"{db}?schema=orders", "ledger": f"{db}?schema=orders"})
+        Rhizodat(stores={"orders": f"{db}?schema=orders", "ledger": f"{db}?schema=orders"})
     with pytest.raises(ValueError, match="share one dat_applied"):
-        Datorium(stores={"a": db, "b": f"{db}?schema=public"})
+        Rhizodat(stores={"a": db, "b": f"{db}?schema=public"})
 
 
 def test_two_drevo_stores_cannot_share_a_graph() -> None:
     """The first branch's prepared fence would refuse the second's prepare on every retry."""
     with pytest.raises(ValueError, match="share one dat_applied"):
-        Datorium(stores={"a": "drevo+bolt://g.local", "b": "drevo+bolt://G.local:7687"})
+        Rhizodat(stores={"a": "drevo+bolt://g.local", "b": "drevo+bolt://G.local:7687"})
 
 
 def test_any_store_reporting_the_same_applied_location_is_refused() -> None:
@@ -510,12 +510,12 @@ def test_any_store_reporting_the_same_applied_location_is_refused() -> None:
     two = FakeStoreHandle(world.store("events", two_phase=False))
     one.applied_location = two.applied_location = ("clickhouse", "ch", "8123", "analytics")  # type: ignore[attr-defined]
     with pytest.raises(ValueError, match="share one dat_applied"):
-        Datorium(stores={"feed": one, "events": two})
+        Rhizodat(stores={"feed": one, "events": two})
 
 
 def test_store_names_are_validated() -> None:
     with pytest.raises(ValueError, match="store name"):
-        Datorium(stores={"bad:name": "drevo+mem://"})
+        Rhizodat(stores={"bad:name": "drevo+mem://"})
 
 
 def _drevo() -> bool:
@@ -528,7 +528,7 @@ def _drevo() -> bool:
 
 
 def test_a_full_store_inside_the_work_is_store_full_not_retried(
-    dat: Datorium, world: World
+    dat: Rhizodat, world: World
 ) -> None:
     calls = []
 
@@ -546,7 +546,7 @@ def test_a_full_store_inside_the_work_is_store_full_not_retried(
 
 def test_min_free_checks_the_stores_that_report_capacity(world: World, clock: Clock) -> None:
     world.stores["clickhouse"].free = 5
-    dat = Datorium(
+    dat = Rhizodat(
         stores={name: FakeStoreHandle(s) for name, s in world.stores.items()},
         journal=MemoryJournal(),
         min_free=64,
@@ -564,4 +564,4 @@ def test_min_free_checks_the_stores_that_report_capacity(world: World, clock: Cl
 
 def test_min_free_is_validated_before_any_store_opens(tmp_path: object) -> None:
     with pytest.raises(ValueError, match="min_free"):
-        Datorium(stores={"g": "drevo+mem://"}, min_free=-1)
+        Rhizodat(stores={"g": "drevo+mem://"}, min_free=-1)

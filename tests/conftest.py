@@ -11,17 +11,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from no_skips import pytest_runtest_makereport  # noqa: F401 - DATORIUM_TEST_NO_SKIPS
+from no_skips import pytest_runtest_makereport  # noqa: F401 - RHIZODAT_TEST_NO_SKIPS
 from stores import ENV_FILE, StoreUnavailable, load_env_file, resolve_dsn
 
 if TYPE_CHECKING:
     from toxiproxy import Toxiproxy
 
-PG_ENV = "DATORIUM_TEST_PG_DSN"
-DREVO_BOLT_ENV = "DATORIUM_TEST_DREVO_BOLT"
-CLICKHOUSE_ENV = "DATORIUM_TEST_CLICKHOUSE_DSN"
-ICEBERG_REST_ENV = "DATORIUM_TEST_ICEBERG_REST_DSN"
-TOXIPROXY_ENV = "DATORIUM_TEST_TOXIPROXY"
+PG_ENV = "RHIZODAT_TEST_PG_DSN"
+DREVO_BOLT_ENV = "RHIZODAT_TEST_DREVO_BOLT"
+CLICKHOUSE_ENV = "RHIZODAT_TEST_CLICKHOUSE_DSN"
+ICEBERG_REST_ENV = "RHIZODAT_TEST_ICEBERG_REST_DSN"
+TOXIPROXY_ENV = "RHIZODAT_TEST_TOXIPROXY"
 
 
 @pytest.fixture(scope="session")
@@ -83,7 +83,7 @@ def clickhouse_dsn(clickhouse_server_dsn: str) -> Iterator[str]:
 
     import clickhouse_connect
 
-    from datorium.core.dsn import parse_dsn
+    from rhizodat.core.dsn import parse_dsn
 
     server = parse_dsn(clickhouse_server_dsn)
     name = f"dat_test_{uuid.uuid4().hex[:12]}"

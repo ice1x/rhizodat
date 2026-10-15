@@ -10,7 +10,7 @@ from faker import Faker
 from hypothesis import given
 from hypothesis import strategies as st
 
-from datorium.core.rows import Batch, decode_batches, encode_batches
+from rhizodat.core.rows import Batch, decode_batches, encode_batches
 
 
 def test_round_trip_keeps_types(faker: Faker) -> None:
@@ -92,7 +92,7 @@ def test_any_supported_batch_round_trips(rows: list[list[object]]) -> None:
 
 
 def test_single_values_round_trip_through_json(faker: Faker) -> None:
-    from datorium.core.rows import decode_value, encode_value
+    from rhizodat.core.rows import decode_value, encode_value
 
     value = {"ids": [uuid.uuid4(), uuid.uuid4()], "total": decimal.Decimal("1.50"), "n": None}
     encoded = encode_value(value)

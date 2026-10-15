@@ -10,9 +10,9 @@ from decimal import Decimal
 
 import pytest
 
-from datorium.adapters.postgres import PostgresStore
-from datorium.core.mapping import Ref, entity
-from datorium.core.parts import Part
+from rhizodat.adapters.postgres import PostgresStore
+from rhizodat.core.mapping import Ref, entity
+from rhizodat.core.parts import Part
 
 
 @entity(

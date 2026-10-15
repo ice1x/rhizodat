@@ -11,14 +11,14 @@ from decimal import Decimal
 import pytest
 from faker import Faker
 
-from datorium import Datorium, UnitOfWork
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.coordinator import Committed
-from datorium.core.journal import MemoryJournal
-from datorium.core.mapping import Ref, entity
-from datorium.core.parts import Part, hlc_bound, hlc_datetime
-from datorium.core.repository import EntityExists, EntityNotFound, NotRestorable
-from datorium.testing.memory import MemoryEntityStore
+from rhizodat import Rhizodat, UnitOfWork
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.coordinator import Committed
+from rhizodat.core.journal import MemoryJournal
+from rhizodat.core.mapping import Ref, entity
+from rhizodat.core.parts import Part, hlc_bound, hlc_datetime
+from rhizodat.core.repository import EntityExists, EntityNotFound, NotRestorable
+from rhizodat.testing.memory import MemoryEntityStore
 
 DAY_MS = 86_400_000
 
@@ -74,8 +74,8 @@ def stores() -> dict[str, MemoryEntityStore]:
 
 
 @pytest.fixture
-def dat(stores: dict[str, MemoryEntityStore], wall: Wall) -> Iterator[Datorium]:
-    d = Datorium(
+def dat(stores: dict[str, MemoryEntityStore], wall: Wall) -> Iterator[Rhizodat]:
+    d = Rhizodat(
         stores=dict(stores),
         journal=MemoryJournal(),
         clock=HybridLogicalClock(wall_ms=wall),
@@ -119,7 +119,7 @@ def test_a_naive_datetime_is_refused() -> None:
 
 
 def test_add_then_get_returns_the_entity_with_its_times(
-    dat: Datorium, faker: Faker, wall: Wall
+    dat: Rhizodat, faker: Faker, wall: Wall
 ) -> None:
     customers = dat.repository(Customer)
     c = customer(faker)
@@ -134,11 +134,11 @@ def test_add_then_get_returns_the_entity_with_its_times(
     assert outcome.value == got
 
 
-def test_get_of_an_unknown_id_is_none(dat: Datorium) -> None:
+def test_get_of_an_unknown_id_is_none(dat: Rhizodat) -> None:
     assert dat.repository(Customer).get(uuid.uuid4()) is None
 
 
-def test_adding_an_existing_entity_fails(dat: Datorium, faker: Faker) -> None:
+def test_adding_an_existing_entity_fails(dat: Rhizodat, faker: Faker) -> None:
     customers = dat.repository(Customer)
     c = customer(faker)
     customers.add(c)
@@ -147,7 +147,7 @@ def test_adding_an_existing_entity_fails(dat: Datorium, faker: Faker) -> None:
 
 
 def test_parts_go_to_their_stores_in_one_meta_transaction(
-    dat: Datorium, stores: dict[str, MemoryEntityStore], faker: Faker
+    dat: Rhizodat, stores: dict[str, MemoryEntityStore], faker: Faker
 ) -> None:
     o = order(faker)
     outcome = dat.repository(Order).add(o)
@@ -168,7 +168,7 @@ def test_parts_go_to_their_stores_in_one_meta_transaction(
 
 
 def test_update_writes_a_new_version_and_keeps_the_creation_time(
-    dat: Datorium, faker: Faker, wall: Wall
+    dat: Rhizodat, faker: Faker, wall: Wall
 ) -> None:
     customers = dat.repository(Customer)
     c = customer(faker)
@@ -188,12 +188,12 @@ def test_update_writes_a_new_version_and_keeps_the_creation_time(
     assert len(customers.history(c.dat_id)) == 2
 
 
-def test_update_of_a_missing_entity_fails(dat: Datorium, faker: Faker) -> None:
+def test_update_of_a_missing_entity_fails(dat: Rhizodat, faker: Faker) -> None:
     with pytest.raises(EntityNotFound):
         dat.repository(Customer).update(customer(faker))
 
 
-def test_save_creates_or_updates(dat: Datorium, faker: Faker) -> None:
+def test_save_creates_or_updates(dat: Rhizodat, faker: Faker) -> None:
     customers = dat.repository(Customer)
     c = customer(faker)
     customers.save(c)
@@ -203,7 +203,7 @@ def test_save_creates_or_updates(dat: Datorium, faker: Faker) -> None:
     assert len(customers.history(c.dat_id)) == 2
 
 
-def test_as_of_reads_the_version_known_then(dat: Datorium, faker: Faker, wall: Wall) -> None:
+def test_as_of_reads_the_version_known_then(dat: Rhizodat, faker: Faker, wall: Wall) -> None:
     customers = dat.repository(Customer)
     before = wall.now()
     wall.advance(1_000)
@@ -223,7 +223,7 @@ def test_as_of_reads_the_version_known_then(dat: Datorium, faker: Faker, wall: W
 
 
 def test_history_is_oldest_first_with_the_times_of_each_version(
-    dat: Datorium, faker: Faker, wall: Wall
+    dat: Rhizodat, faker: Faker, wall: Wall
 ) -> None:
     customers = dat.repository(Customer)
     c = customer(faker)
@@ -245,7 +245,7 @@ def test_history_is_oldest_first_with_the_times_of_each_version(
 
 
 def test_delete_erases_every_version_in_every_store(
-    dat: Datorium, stores: dict[str, MemoryEntityStore], faker: Faker
+    dat: Rhizodat, stores: dict[str, MemoryEntityStore], faker: Faker
 ) -> None:
     orders = dat.repository(Order)
     o = order(faker)
@@ -264,12 +264,12 @@ def test_delete_erases_every_version_in_every_store(
     assert orders.get(o.dat_id) == o
 
 
-def test_delete_of_a_missing_entity_fails(dat: Datorium) -> None:
+def test_delete_of_a_missing_entity_fails(dat: Rhizodat) -> None:
     with pytest.raises(EntityNotFound):
         dat.repository(Customer).delete(uuid.uuid4())
 
 
-def test_a_hard_deleted_entity_cannot_be_restored(dat: Datorium, faker: Faker) -> None:
+def test_a_hard_deleted_entity_cannot_be_restored(dat: Rhizodat, faker: Faker) -> None:
     customers = dat.repository(Customer)
     c = customer(faker)
     customers.add(c)
@@ -281,7 +281,7 @@ def test_a_hard_deleted_entity_cannot_be_restored(dat: Datorium, faker: Faker) -
 # --- soft delete ------------------------------------------------------------------------
 
 
-def test_soft_delete_hides_the_entity_but_keeps_it(dat: Datorium, faker: Faker, wall: Wall) -> None:
+def test_soft_delete_hides_the_entity_but_keeps_it(dat: Rhizodat, faker: Faker, wall: Wall) -> None:
     notes = dat.repository(Note)
     n = Note(title=faker.sentence())
     notes.add(n)
@@ -302,7 +302,7 @@ def test_soft_delete_hides_the_entity_but_keeps_it(dat: Datorium, faker: Faker, 
 
 
 def test_restore_within_the_window_brings_the_entity_back(
-    dat: Datorium, faker: Faker, wall: Wall
+    dat: Rhizodat, faker: Faker, wall: Wall
 ) -> None:
     notes = dat.repository(Note)
     n = Note(title=faker.sentence())
@@ -317,7 +317,7 @@ def test_restore_within_the_window_brings_the_entity_back(
     assert restored.dat_deleted_at is None
 
 
-def test_restore_after_the_window_fails(dat: Datorium, faker: Faker, wall: Wall) -> None:
+def test_restore_after_the_window_fails(dat: Rhizodat, faker: Faker, wall: Wall) -> None:
     notes = dat.repository(Note)
     n = Note(title=faker.sentence())
     notes.add(n)
@@ -327,7 +327,7 @@ def test_restore_after_the_window_fails(dat: Datorium, faker: Faker, wall: Wall)
         notes.restore(n.dat_id)
 
 
-def test_restore_of_a_live_entity_fails(dat: Datorium, faker: Faker) -> None:
+def test_restore_of_a_live_entity_fails(dat: Rhizodat, faker: Faker) -> None:
     notes = dat.repository(Note)
     n = Note(title=faker.sentence())
     notes.add(n)
@@ -336,7 +336,7 @@ def test_restore_of_a_live_entity_fails(dat: Datorium, faker: Faker) -> None:
 
 
 def test_purge_erases_only_what_left_the_window(
-    dat: Datorium, stores: dict[str, MemoryEntityStore], faker: Faker, wall: Wall
+    dat: Rhizodat, stores: dict[str, MemoryEntityStore], faker: Faker, wall: Wall
 ) -> None:
     notes = dat.repository(Note)
     old, recent, live = (Note(title=faker.sentence()) for _ in range(3))
@@ -356,7 +356,7 @@ def test_purge_erases_only_what_left_the_window(
 
 
 def test_an_explicit_window_wins_over_the_configured_default(
-    dat: Datorium, faker: Faker, wall: Wall
+    dat: Rhizodat, faker: Faker, wall: Wall
 ) -> None:
     drafts = dat.repository(Draft)  # 2 days, the configured default is 7
     d = Draft(title=faker.sentence())
@@ -369,7 +369,7 @@ def test_an_explicit_window_wins_over_the_configured_default(
 
 
 def test_the_default_window_is_thirty_days(stores: dict[str, MemoryEntityStore]) -> None:
-    with Datorium(stores=dict(stores), journal=MemoryJournal()) as d:
+    with Rhizodat(stores=dict(stores), journal=MemoryJournal()) as d:
         assert d.soft_delete_window == timedelta(days=30)
 
 
@@ -378,17 +378,17 @@ def test_the_configured_window_must_be_positive(
     stores: dict[str, MemoryEntityStore], window: timedelta
 ) -> None:
     with pytest.raises(ValueError, match="soft_delete_window"):
-        Datorium(stores=dict(stores), soft_delete_window=window)
+        Rhizodat(stores=dict(stores), soft_delete_window=window)
 
 
-def test_purge_is_a_no_op_without_soft_delete(dat: Datorium) -> None:
+def test_purge_is_a_no_op_without_soft_delete(dat: Rhizodat) -> None:
     assert dat.repository(Customer).purge_expired() == 0
 
 
 # --- inside a Unit of Work --------------------------------------------------------------
 
 
-def test_repository_writes_join_a_bigger_unit_of_work(dat: Datorium, faker: Faker) -> None:
+def test_repository_writes_join_a_bigger_unit_of_work(dat: Rhizodat, faker: Faker) -> None:
     c = customer(faker)
 
     @dat.transactional
@@ -406,7 +406,7 @@ def test_repository_writes_join_a_bigger_unit_of_work(dat: Datorium, faker: Fake
     assert outcome.dat_txn is not None
 
 
-def test_a_failed_unit_of_work_leaves_no_entity(dat: Datorium, faker: Faker) -> None:
+def test_a_failed_unit_of_work_leaves_no_entity(dat: Rhizodat, faker: Faker) -> None:
     c = customer(faker)
 
     def fail() -> None:
@@ -423,7 +423,7 @@ def test_a_failed_unit_of_work_leaves_no_entity(dat: Datorium, faker: Faker) -> 
 
 
 def test_a_read_never_mixes_versions_of_different_transactions(
-    dat: Datorium, stores: dict[str, MemoryEntityStore], faker: Faker, wall: Wall
+    dat: Rhizodat, stores: dict[str, MemoryEntityStore], faker: Faker, wall: Wall
 ) -> None:
     orders = dat.repository(Order)
     o = order(faker)
@@ -443,7 +443,7 @@ def test_a_read_never_mixes_versions_of_different_transactions(
 
 
 def test_a_store_without_entity_parts_is_refused(faker: Faker) -> None:
-    from datorium.testing.contract import MemoryStore
+    from rhizodat.testing.contract import MemoryStore
 
-    with Datorium(stores={"pg": MemoryStore("pg")}) as d, pytest.raises(TypeError, match="pg"):
+    with Rhizodat(stores={"pg": MemoryStore("pg")}) as d, pytest.raises(TypeError, match="pg"):
         d.repository(Customer)

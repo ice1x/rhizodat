@@ -16,12 +16,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from faker import Faker
 
-from datorium import CommittedPending, Datorium, Retry, entity
-from datorium.adapters.clickhouse import ClickHouseStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.repository import NotRestorable
 from fakes import Crash
+from rhizodat import CommittedPending, Retry, Rhizodat, entity
+from rhizodat.adapters.clickhouse import ClickHouseStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.repository import NotRestorable
 
 DAY_MS = 86_400_000
 
@@ -62,7 +62,7 @@ class Wall:
 
 @dataclass
 class Desk:
-    dat: Datorium
+    dat: Rhizodat
     pg: PostgresStore
     ch: ClickHouseStore
     wall: Wall
@@ -85,7 +85,7 @@ def desk(pg_dsn: str, pg_schema: str, clickhouse_dsn: str) -> Iterator[Desk]:
     ch = ClickHouseStore(clickhouse_dsn, name="activity")
     ch.install()
     no_wait = Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0)
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"work": pg, "activity": ch},
         journal=PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall),
         clock=HybridLogicalClock(wall_ms=wall),

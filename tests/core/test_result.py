@@ -5,7 +5,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from datorium.core.result import Result, ResultConsumedError
+from rhizodat.core.result import Result, ResultConsumedError
 
 ROWS = [{"id": 1, "status": "new"}, {"id": 2, "status": "paid"}, {"id": 3, "status": "new"}]
 

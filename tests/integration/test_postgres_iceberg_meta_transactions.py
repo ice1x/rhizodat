@@ -27,11 +27,11 @@ from pyiceberg.types import (
     UUIDType,
 )
 
-from datorium import Aborted, Committed, Datorium, Retry, UnitOfWork
-from datorium.adapters.iceberg import IcebergStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.journal import State
 from fakes import Crash
+from rhizodat import Aborted, Committed, Retry, Rhizodat, UnitOfWork
+from rhizodat.adapters.iceberg import IcebergStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.journal import State
 
 LEDGER = Schema(
     NestedField(1, "invoice_id", UUIDType(), required=True),
@@ -53,7 +53,7 @@ class Wall:
 
 @dataclass
 class Ledger:
-    dat: Datorium
+    dat: Rhizodat
     pg: PostgresStore
     lake: IcebergStore
     lake_dsn: str
@@ -75,7 +75,7 @@ class Ledger:
         """Recovery with its own connections, as a worker on another host would run it."""
         self.wall.ms += 60_000
         other_lake = IcebergStore(self.lake_dsn, name="lake")
-        other = Datorium(stores={"pg": self.pg, "lake": other_lake}, journal=self.journal)
+        other = Rhizodat(stores={"pg": self.pg, "lake": other_lake}, journal=self.journal)
         try:
             return other.recovery(wall_ms=self.wall).run_once()
         finally:
@@ -99,7 +99,7 @@ def ledger(pg_dsn: str, pg_schema: str, tmp_path: Path) -> Iterator[Ledger]:
     wall = Wall()
     journal = PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall)
     no_wait = Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0)
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"pg": pg, "lake": lake}, journal=journal, finish=no_wait, sleep=lambda s: None
     )
     table = f"{namespace}.ledger"

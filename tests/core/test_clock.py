@@ -7,7 +7,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from datorium.core.clock import (
+from rhizodat.core.clock import (
     ClockSkewError,
     HLCTimestamp,
     HybridLogicalClock,

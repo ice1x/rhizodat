@@ -1,4 +1,4 @@
-"""datorium's drevo adapter keeps the adapter contract: embedded (memory, file) and
+"""rhizodat's drevo adapter keeps the adapter contract: embedded (memory, file) and
 remote over Bolt, with two-phase commit."""
 
 import contextlib
@@ -10,9 +10,9 @@ from typing import Any
 import pytest
 
 from conftest import drevo_embedded_available
-from datorium.adapters.drevo import DrevoBranch, DrevoStore
-from datorium.core.journal import BranchRecord
-from datorium.testing.contract import AdapterContract
+from rhizodat.adapters.drevo import DrevoBranch, DrevoStore
+from rhizodat.core.journal import BranchRecord
+from rhizodat.testing.contract import AdapterContract
 
 
 class DrevoHarness:

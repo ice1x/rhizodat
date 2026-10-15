@@ -6,18 +6,18 @@ from collections.abc import Iterator
 import pytest
 from faker import Faker
 
-from datorium import Committed, Datorium, Retry, UnitOfWork
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat import Committed, Retry, Rhizodat, UnitOfWork
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
 
 
 @pytest.fixture
-def dat(pg_dsn: str, pg_schema: str, faker: Faker) -> Iterator[Datorium]:
+def dat(pg_dsn: str, pg_schema: str, faker: Faker) -> Iterator[Rhizodat]:
     tasks = PostgresStore(pg_dsn, name="tasks", schema=pg_schema, isolation="serializable")
     tasks.install()
     tasks.execute("CREATE TABLE task (id int PRIMARY KEY, title text NOT NULL, claimed_by text)")
     for i in range(20):
         tasks.execute("INSERT INTO task (id, title) VALUES (%s, %s)", (i, faker.catch_phrase()))
-    d = Datorium(
+    d = Rhizodat(
         stores={"tasks": tasks},
         journal=PostgresJournal(pg_dsn, schema=pg_schema),
         retry=Retry(attempts=30, deadline_s=30.0, base_delay_s=0.005, max_delay_s=0.05),
@@ -26,7 +26,7 @@ def dat(pg_dsn: str, pg_schema: str, faker: Faker) -> Iterator[Datorium]:
     d.close()
 
 
-def test_concurrent_claims_never_double_book_a_task(dat: Datorium) -> None:
+def test_concurrent_claims_never_double_book_a_task(dat: Rhizodat) -> None:
     attempts: dict[str, int] = {}
     lock = threading.Lock()
 

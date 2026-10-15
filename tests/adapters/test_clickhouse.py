@@ -13,12 +13,12 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium.adapters.clickhouse import ClickHouseBranch, ClickHouseStore
-from datorium.core.coordinator import gid_for
-from datorium.core.errors import Capacity, ErrorKind
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord
-from datorium.core.rows import decode_batches
+from rhizodat.adapters.clickhouse import ClickHouseBranch, ClickHouseStore
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.errors import Capacity, ErrorKind
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord
+from rhizodat.core.rows import decode_batches
 
 TS = 1_760_000_000_000 << 16
 
@@ -158,7 +158,7 @@ def test_rows_must_have_the_same_columns(store: ClickHouseStore, faker: Faker) -
         branch.insert("events", rows)
 
 
-def test_reserved_columns_are_set_by_datorium(store: ClickHouseStore, faker: Faker) -> None:
+def test_reserved_columns_are_set_by_rhizodat(store: ClickHouseStore, faker: Faker) -> None:
     rows = events(faker, 1)
     rows[0]["dat_txn"] = uuid.uuid4()
     with pytest.raises(ValueError, match="dat_txn"):

@@ -1,4 +1,4 @@
-"""datorium-MCP entity tools: CRUD over the Repository, one Unit of Work per call.
+"""rhizodat-MCP entity tools: CRUD over the Repository, one Unit of Work per call.
 
 An agent manages a bug tracker: bugs split between two stores, people in one.
 The tools take and return JSON; values are converted to and from each field's
@@ -14,14 +14,14 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium import Datorium
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.journal import MemoryJournal
-from datorium.mcp.config import ConfigError, config_from_env
-from datorium.mcp.entities import load_entity_types
-from datorium.mcp.tools import Tools
-from datorium.testing.memory import MemoryEntityStore
 from mcp_tracker import Bug, Person
+from rhizodat import Rhizodat
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.journal import MemoryJournal
+from rhizodat.mcp.config import ConfigError, config_from_env
+from rhizodat.mcp.entities import load_entity_types
+from rhizodat.mcp.tools import Tools
+from rhizodat.testing.memory import MemoryEntityStore
 
 
 class Ticking:
@@ -38,7 +38,7 @@ class Ticking:
 
 def open_tools(*, writes: bool = True) -> Tools:
     wall = Ticking()
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"pg": MemoryEntityStore("pg"), "graph": MemoryEntityStore("graph")},
         journal=MemoryJournal(wall_ms=wall),
         clock=HybridLogicalClock(wall_ms=wall),
@@ -201,7 +201,7 @@ def test_without_writes_enabled_only_reads_work(faker: Faker) -> None:
     t = open_tools(writes=False)
     try:
         assert t.writes is False
-        with pytest.raises(PermissionError, match="DATORIUM_MCP_WRITES"):
+        with pytest.raises(PermissionError, match="RHIZODAT_MCP_WRITES"):
             t.create_entity("tracker.Person", {"name": faker.name(), "email": faker.email()})
         assert t.get_entity("tracker.Person", str(uuid.uuid4())) is None
     finally:
@@ -221,16 +221,16 @@ def test_entity_types_load_from_module_paths() -> None:
 
 def test_the_environment_names_entities_and_enables_writes() -> None:
     env = {
-        "DATORIUM_STORE_PG": "postgresql://db/app",
-        "DATORIUM_MCP_ENTITIES": "mcp_tracker:Person,mcp_tracker:Bug",
-        "DATORIUM_MCP_WRITES": "1",
+        "RHIZODAT_STORE_PG": "postgresql://db/app",
+        "RHIZODAT_MCP_ENTITIES": "mcp_tracker:Person,mcp_tracker:Bug",
+        "RHIZODAT_MCP_WRITES": "1",
     }
     config = config_from_env(env)
     assert config.entities == ("mcp_tracker:Person", "mcp_tracker:Bug")
     assert config.writes is True
-    assert config_from_env({"DATORIUM_STORE_PG": "postgresql://db/app"}).writes is False
-    with pytest.raises(ConfigError, match="DATORIUM_MCP_WRITES"):
-        config_from_env({**env, "DATORIUM_MCP_WRITES": "maybe"})
+    assert config_from_env({"RHIZODAT_STORE_PG": "postgresql://db/app"}).writes is False
+    with pytest.raises(ConfigError, match="RHIZODAT_MCP_WRITES"):
+        config_from_env({**env, "RHIZODAT_MCP_WRITES": "maybe"})
 
 
 # --- valid time -------------------------------------------------------------------------
@@ -240,7 +240,7 @@ def test_an_agent_reads_and_writes_validity_periods(faker: Faker) -> None:
     from mcp_tracker import Sla
 
     wall = Ticking()
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"pg": MemoryEntityStore("pg"), "graph": MemoryEntityStore("graph")},
         journal=MemoryJournal(wall_ms=wall),
         clock=HybridLogicalClock(wall_ms=wall),

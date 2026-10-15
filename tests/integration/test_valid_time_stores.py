@@ -19,10 +19,10 @@ import pytest
 from faker import Faker
 
 from conftest import drevo_embedded_available
-from datorium import Datorium, entity
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.unit_of_work import Store
+from rhizodat import Rhizodat, entity
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.unit_of_work import Store
 
 
 @entity(
@@ -51,19 +51,19 @@ class Wall:
 
 def other_store(kind: str, request: pytest.FixtureRequest, tmp_path: Path) -> Store:
     if kind == "clickhouse":
-        from datorium.adapters.clickhouse import ClickHouseStore
+        from rhizodat.adapters.clickhouse import ClickHouseStore
 
         ch = ClickHouseStore(request.getfixturevalue("clickhouse_dsn"), name="other")
         ch.install()
         return ch
     if kind == "iceberg":
-        from datorium.adapters.iceberg import IcebergStore
+        from rhizodat.adapters.iceberg import IcebergStore
 
         lake = f"iceberg+sql://{tmp_path / 'c.db'}?warehouse=file://{tmp_path / 'wh'}"
         return IcebergStore(lake, name="other")
     if not drevo_embedded_available():
         pytest.skip("drevo-py with 2PC is not installed: uv sync --group drevo")
-    from datorium.adapters.drevo import DrevoStore
+    from rhizodat.adapters.drevo import DrevoStore
 
     return DrevoStore(f"drevo://{tmp_path / 'g.drevo'}", name="other")
 
@@ -71,9 +71,9 @@ def other_store(kind: str, request: pytest.FixtureRequest, tmp_path: Path) -> St
 @pytest.fixture(params=["clickhouse", "iceberg", "drevo"])
 def dat(
     request: pytest.FixtureRequest, pg_dsn: str, pg_schema: str, tmp_path: Path
-) -> Iterator[tuple[Datorium, Wall]]:
+) -> Iterator[tuple[Rhizodat, Wall]]:
     wall = Wall()
-    d = Datorium(
+    d = Rhizodat(
         stores={
             "books": PostgresStore(pg_dsn, name="books", schema=pg_schema),
             "other": other_store(request.param, request, tmp_path),
@@ -86,7 +86,7 @@ def dat(
 
 
 def test_a_rebate_wins_for_its_days_and_the_past_stays_known(
-    dat: tuple[Datorium, Wall], faker: Faker
+    dat: tuple[Rhizodat, Wall], faker: Faker
 ) -> None:
     d, wall = dat
     prices = d.repository(Price)

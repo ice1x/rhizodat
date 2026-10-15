@@ -12,9 +12,9 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from datorium.core.errors import ErrorKind
-from datorium.core.journal import BranchRecord, JournalRecord, MemoryJournal, State
-from datorium.core.result import Result
+from rhizodat.core.errors import ErrorKind
+from rhizodat.core.journal import BranchRecord, JournalRecord, MemoryJournal, State
+from rhizodat.core.result import Result
 
 
 class Transient(Exception):

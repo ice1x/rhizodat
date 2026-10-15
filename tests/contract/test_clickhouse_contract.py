@@ -1,12 +1,12 @@
-"""datorium's ClickHouse adapter keeps the adapter contract (one phase: the rows are
+"""rhizodat's ClickHouse adapter keeps the adapter contract (one phase: the rows are
 applied from the journal payload after the decision, idempotently)."""
 
 from collections.abc import Iterator
 
 import pytest
 
-from datorium.adapters.clickhouse import ClickHouseBranch, ClickHouseStore
-from datorium.testing.contract import AdapterContract
+from rhizodat.adapters.clickhouse import ClickHouseBranch, ClickHouseStore
+from rhizodat.testing.contract import AdapterContract
 
 TABLE = (
     "CREATE TABLE IF NOT EXISTS contract (key String, dat_txn UUID, dat_tx_time Int64)"

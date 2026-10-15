@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from datorium.adapters.clickhouse import ClickHouseStore
-from datorium.adapters.drevo import DrevoStore
-from datorium.adapters.iceberg import IcebergStore
-from datorium.adapters.postgres import PostgresStore
-from datorium.testing.memory import MemoryEntityStore
-from datorium.testing.parts import STORE, PartStoreContract
 from drevo_parts import clear_parts, drevo_parts_dsn
 from iceberg_parts import iceberg_parts_dsn, iceberg_parts_store
+from rhizodat.adapters.clickhouse import ClickHouseStore
+from rhizodat.adapters.drevo import DrevoStore
+from rhizodat.adapters.iceberg import IcebergStore
+from rhizodat.adapters.postgres import PostgresStore
+from rhizodat.testing.memory import MemoryEntityStore
+from rhizodat.testing.parts import STORE, PartStoreContract
 
 
 class TestMemoryParts(PartStoreContract):

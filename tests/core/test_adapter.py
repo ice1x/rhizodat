@@ -1,8 +1,8 @@
 """The adapter registry: stores are plugged in, not built in.
 
 An adapter declares its DSN schemes and how to open a store (and, if it can hold
-one, the journal). datorium's own adapters register the same way a third-party
-package does through the ``datorium.adapters`` entry point group.
+one, the journal). rhizodat's own adapters register the same way a third-party
+package does through the ``rhizodat.adapters`` entry point group.
 """
 
 import importlib.metadata
@@ -14,9 +14,10 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium import Adapter, Datorium, Scheme, register_adapter
-from datorium.core import adapter as registry
-from datorium.core.adapter import (
+from fakes import FakeStoreHandle, World
+from rhizodat import Adapter, Rhizodat, Scheme, register_adapter
+from rhizodat.core import adapter as registry
+from rhizodat.core.adapter import (
     ENTRY_POINT_GROUP,
     AppliedLocation,
     Fenced,
@@ -24,9 +25,8 @@ from datorium.core.adapter import (
     adapter_for,
     adapters,
 )
-from datorium.core.dsn import DSNError, parse_dsn
-from datorium.core.journal import MemoryJournal, State, open_journal
-from fakes import FakeStoreHandle, World
+from rhizodat.core.dsn import DSNError, parse_dsn
+from rhizodat.core.journal import MemoryJournal, State, open_journal
 
 BUILTIN = {"file", "postgres", "clickhouse", "drevo", "iceberg"}
 
@@ -72,7 +72,7 @@ def kv() -> KvWorld:
 # --- built-in adapters ------------------------------------------------------------------
 
 
-def test_datoriums_own_stores_are_registered_adapters() -> None:
+def test_rhizodats_own_stores_are_registered_adapters() -> None:
     assert {a.kind for a in adapters()} >= BUILTIN
     assert adapter_for("postgres").open_journal is not None
     assert adapter_for("drevo").open_journal is not None
@@ -121,9 +121,9 @@ def test_scheme_rules_are_declared_by_the_adapter(kv: KvWorld) -> None:
 def test_a_meta_transaction_over_a_third_party_store_and_journal(kv: KvWorld, faker: Faker) -> None:
     """An IT task manager on a key-value store plugged in by its own package: two
     stores and the journal all come from the adapter, and the commit protocol is
-    datorium's."""
+    rhizodat's."""
     register_adapter(kv.adapter())
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"tasks": "kv://kv1/tasks", "audit": "kv://kv2/audit"},
         journal="kv://kv3/journal",
     )
@@ -150,7 +150,7 @@ def test_an_adapter_without_a_journal_cannot_hold_one(kv: KvWorld) -> None:
 
 def test_a_journal_only_adapter_cannot_be_a_store() -> None:
     with pytest.raises(ValueError, match="file cannot be a store"):
-        Datorium(stores={"x": "file:///tmp/x.db"})
+        Rhizodat(stores={"x": "file:///tmp/x.db"})
 
 
 @pytest.mark.parametrize(
@@ -188,10 +188,10 @@ def fake_entry_points(monkeypatch: pytest.MonkeyPatch, *points: tuple[str, str])
 def test_installed_packages_register_through_entry_points(
     kv: KvWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = types.ModuleType("datorium_kv_plugin")
+    module = types.ModuleType("rhizodat_kv_plugin")
     module.ADAPTER = kv.adapter()  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "datorium_kv_plugin", module)
-    fake_entry_points(monkeypatch, ("kv", "datorium_kv_plugin:ADAPTER"))
+    monkeypatch.setitem(sys.modules, "rhizodat_kv_plugin", module)
+    fake_entry_points(monkeypatch, ("kv", "rhizodat_kv_plugin:ADAPTER"))
     assert {a.kind for a in adapters()} == BUILTIN | {"kv"}
     assert parse_dsn("kv://h/x").store == "kv"
 
@@ -199,13 +199,13 @@ def test_installed_packages_register_through_entry_points(
 def test_a_broken_plugin_does_not_break_the_others_and_is_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = types.ModuleType("datorium_bad_plugin")
+    module = types.ModuleType("rhizodat_bad_plugin")
     module.ADAPTER = "not an adapter"  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "datorium_bad_plugin", module)
+    monkeypatch.setitem(sys.modules, "rhizodat_bad_plugin", module)
     fake_entry_points(
         monkeypatch,
-        ("missing", "datorium_no_such_module:ADAPTER"),
-        ("bad", "datorium_bad_plugin:ADAPTER"),
+        ("missing", "rhizodat_no_such_module:ADAPTER"),
+        ("bad", "rhizodat_bad_plugin:ADAPTER"),
     )
     assert {a.kind for a in adapters()} == BUILTIN
     with pytest.raises(DSNError) as caught:
@@ -219,7 +219,7 @@ def test_a_broken_plugin_does_not_break_the_others_and_is_reported(
 
 
 def test_capabilities_are_protocols(world_store: FakeStoreHandle) -> None:
-    from datorium.adapters.postgres import PostgresStore
+    from rhizodat.adapters.postgres import PostgresStore
 
     pg = PostgresStore("postgresql://db.local/app", schema="orders")
     assert isinstance(pg, ReadOnlyQueries)
@@ -247,10 +247,10 @@ def test_a_journal_inside_a_stores_fence_is_refused(kv: KvWorld) -> None:
     register_adapter(kv.adapter(journal_location=lambda dsn: ("kv", parse_dsn(dsn).host or "")))
     fenced = FencedHandle(("kv", "kv1"))
     with pytest.raises(ValueError, match="fence") as caught:
-        Datorium(stores={"tasks": fenced}, journal="kv://kv1/journal")
+        Rhizodat(stores={"tasks": fenced}, journal="kv://kv1/journal")
     assert "'tasks'" in str(caught.value)
     assert fenced.closed
-    Datorium(stores={"tasks": FencedHandle(("kv", "kv1"))}, journal="kv://kv2/journal").close()
+    Rhizodat(stores={"tasks": FencedHandle(("kv", "kv1"))}, journal="kv://kv2/journal").close()
 
 
 def test_parsing_a_dsn_needs_no_driver() -> None:
@@ -258,7 +258,7 @@ def test_parsing_a_dsn_needs_no_driver() -> None:
 
     code = (
         "import sys\n"
-        "from datorium.core.dsn import parse_dsn\n"
+        "from rhizodat.core.dsn import parse_dsn\n"
         "for d in ['postgresql://h/d', 'clickhouse://h/d', 'drevo+bolt://h', 'iceberg+rest://h/w']:\n"
         "    parse_dsn(d)\n"
         "print(sorted(m for m in ['psycopg', 'clickhouse_connect', 'drevo', 'neo4j', 'pyiceberg']"

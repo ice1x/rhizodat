@@ -1,4 +1,4 @@
-"""Valid time: when a fact holds in the real world, next to when datorium learnt it.
+"""Valid time: when a fact holds in the real world, next to when rhizodat learnt it.
 
 An ERP keeps negotiated prices: each version of a price agreement holds for a
 period (``valid_from`` inclusive, ``valid_to`` exclusive, ``None`` unbounded).
@@ -17,12 +17,12 @@ from decimal import Decimal
 import pytest
 from faker import Faker
 
-from datorium import Datorium
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.journal import MemoryJournal
-from datorium.core.mapping import entity
-from datorium.core.parts import Part
-from datorium.testing.memory import MemoryEntityStore
+from rhizodat import Rhizodat
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.journal import MemoryJournal
+from rhizodat.core.mapping import entity
+from rhizodat.core.parts import Part
+from rhizodat.testing.memory import MemoryEntityStore
 
 
 @entity(
@@ -66,8 +66,8 @@ def wall() -> Wall:
 
 
 @pytest.fixture
-def dat(wall: Wall) -> Iterator[Datorium]:
-    d = Datorium(
+def dat(wall: Wall) -> Iterator[Rhizodat]:
+    d = Rhizodat(
         stores={"pg": MemoryEntityStore("pg"), "lake": MemoryEntityStore("lake")},
         journal=MemoryJournal(wall_ms=wall),
         clock=HybridLogicalClock(wall_ms=wall),
@@ -88,7 +88,7 @@ def agreement(
     )
 
 
-def test_the_validity_period_is_stored_with_every_part(dat: Datorium, faker: Faker) -> None:
+def test_the_validity_period_is_stored_with_every_part(dat: Rhizodat, faker: Faker) -> None:
     prices = dat.repository(PriceAgreement)
     a = agreement(faker, "10.00", day(0), day(30))
     prices.add(a)
@@ -102,7 +102,7 @@ def test_the_validity_period_is_stored_with_every_part(dat: Datorium, faker: Fak
         assert {"valid_from", "valid_to"} <= set(part.fields)
 
 
-def test_as_of_picks_the_version_that_holds_then(dat: Datorium, faker: Faker) -> None:
+def test_as_of_picks_the_version_that_holds_then(dat: Rhizodat, faker: Faker) -> None:
     prices = dat.repository(PriceAgreement)
     a = agreement(faker, "10.00", day(0), day(30))
     prices.add(a)
@@ -120,7 +120,7 @@ def test_as_of_picks_the_version_that_holds_then(dat: Datorium, faker: Faker) ->
     assert prices.get(a.dat_id, as_of=day(60)) is None
 
 
-def test_a_correction_wins_for_its_period_only(dat: Datorium, faker: Faker, wall: Wall) -> None:
+def test_a_correction_wins_for_its_period_only(dat: Rhizodat, faker: Faker, wall: Wall) -> None:
     prices = dat.repository(PriceAgreement)
     a = agreement(faker, "10.00", day(0), None)  # open-ended
     prices.add(a)
@@ -145,7 +145,7 @@ def test_a_correction_wins_for_its_period_only(dat: Datorium, faker: Faker, wall
     assert price(day(15), known_at=before_correction) == Decimal("10.00")
 
 
-def test_without_as_of_the_fact_valid_now_is_read(dat: Datorium, faker: Faker) -> None:
+def test_without_as_of_the_fact_valid_now_is_read(dat: Rhizodat, faker: Faker) -> None:
     prices = dat.repository(PriceAgreement)
     now = datetime.now(UTC)
     current = agreement(faker, "9.00", now - timedelta(days=1), now + timedelta(days=1))
@@ -157,7 +157,7 @@ def test_without_as_of_the_fact_valid_now_is_read(dat: Datorium, faker: Faker) -
     assert prices.get(expired.dat_id, as_of=now - timedelta(days=5)) == expired
 
 
-def test_history_keeps_every_period(dat: Datorium, faker: Faker) -> None:
+def test_history_keeps_every_period(dat: Rhizodat, faker: Faker) -> None:
     prices = dat.repository(PriceAgreement)
     a = agreement(faker, "10.00", day(0), day(30))
     prices.add(a)
@@ -169,7 +169,7 @@ def test_history_keeps_every_period(dat: Datorium, faker: Faker) -> None:
     ]
 
 
-def test_a_soft_deleted_agreement_holds_nowhere(dat: Datorium, faker: Faker) -> None:
+def test_a_soft_deleted_agreement_holds_nowhere(dat: Rhizodat, faker: Faker) -> None:
     prices = dat.repository(PriceAgreement)
     a = agreement(faker, "10.00", day(0), None)
     prices.add(a)
@@ -190,7 +190,7 @@ def test_a_soft_deleted_agreement_holds_nowhere(dat: Datorium, faker: Faker) -> 
     ],
 )
 def test_a_period_must_make_sense(
-    dat: Datorium,
+    dat: Rhizodat,
     faker: Faker,
     valid_from: datetime | None,
     valid_to: datetime | None,
@@ -200,7 +200,7 @@ def test_a_period_must_make_sense(
         dat.repository(PriceAgreement).add(agreement(faker, "1.00", valid_from, valid_to))
 
 
-def test_without_valid_time_known_at_is_as_of(dat: Datorium, faker: Faker, wall: Wall) -> None:
+def test_without_valid_time_known_at_is_as_of(dat: Rhizodat, faker: Faker, wall: Wall) -> None:
     customers = dat.repository(Customer)
     c = Customer(name=faker.company())
     customers.add(c)

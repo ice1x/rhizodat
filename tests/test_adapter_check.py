@@ -1,4 +1,4 @@
-"""``datorium adapter check``: a dry run of an adapter that reports what it implements."""
+"""``rhizodat adapter check``: a dry run of an adapter that reports what it implements."""
 
 import json
 import uuid
@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium.check import Report, check_adapter, load_adapter, main
-from datorium.core import adapter as registry
-from datorium.core.adapter import Adapter, Scheme
-from datorium.testing.contract import MemoryStore
+from rhizodat.check import Report, check_adapter, load_adapter, main
+from rhizodat.core import adapter as registry
+from rhizodat.core.adapter import Adapter, Scheme
+from rhizodat.testing.contract import MemoryStore
 
 
 @pytest.fixture(autouse=True)
@@ -132,12 +132,12 @@ def test_a_dsn_of_another_store_kind_is_refused(faker: Faker) -> None:
 
 
 def test_adapters_load_by_kind_or_module_path() -> None:
-    from datorium.adapters.postgres import ADAPTER
+    from rhizodat.adapters.postgres import ADAPTER
 
     assert load_adapter("postgres") is ADAPTER
-    assert load_adapter("datorium.adapters.postgres:ADAPTER") is ADAPTER
-    with pytest.raises(ValueError, match="not a datorium Adapter"):
-        load_adapter("datorium.adapters.postgres:Isolation")
+    assert load_adapter("rhizodat.adapters.postgres:ADAPTER") is ADAPTER
+    with pytest.raises(ValueError, match="not a rhizodat Adapter"):
+        load_adapter("rhizodat.adapters.postgres:Isolation")
     with pytest.raises(ValueError, match="no adapter"):
         load_adapter("nosuchkind")
 
@@ -171,7 +171,7 @@ def test_the_cli_prints_json_and_exits_by_the_result(
     pg_dsn: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = main(
-        ["adapter", "check", "datorium.adapters.postgres:ADAPTER", "--dsn", pg_dsn, "--json"]
+        ["adapter", "check", "rhizodat.adapters.postgres:ADAPTER", "--dsn", pg_dsn, "--json"]
     )
     out = json.loads(capsys.readouterr().out)
     assert code == 0

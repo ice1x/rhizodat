@@ -15,26 +15,26 @@ from typing import Any
 
 import pytest
 
-from datorium.adapters.postgres import postgres_schema
-from datorium.core.clock import (
+from rhizodat.adapters.postgres import postgres_schema
+from rhizodat.core.clock import (
     ClockSkewError,
     HLCTimestamp,
     HybridLogicalClock,
     LogicalOverflowError,
 )
-from datorium.core.coordinator import gid_for, parse_gid
-from datorium.core.dsn import DSNError, parse_dsn
-from datorium.core.identity import IdGenerator
-from datorium.core.journal import (
+from rhizodat.core.coordinator import gid_for, parse_gid
+from rhizodat.core.dsn import DSNError, parse_dsn
+from rhizodat.core.identity import IdGenerator
+from rhizodat.core.journal import (
     BranchRecord,
     State,
     check_transition,
     decode_branches,
     encode_branches,
 )
-from datorium.core.rows import Batch, decode_batches, encode_batches
-from datorium.core.staged import StagedTable, decode_staged, encode_staged
-from datorium.migrations import MigrationFormatError, canonical, parse_migration
+from rhizodat.core.rows import Batch, decode_batches, encode_batches
+from rhizodat.core.staged import StagedTable, decode_staged, encode_staged
+from rhizodat.migrations import MigrationFormatError, canonical, parse_migration
 
 VECTORS = Path(__file__).resolve().parents[2] / "conformance"
 
@@ -378,10 +378,10 @@ def steps(seen: list[str]) -> list[str]:
 
 @pytest.mark.parametrize("case", CRASH["cases"], ids=[str(c["crash_at"]) for c in CRASH["cases"]])
 def test_crash_matrix(case: dict[str, Any]) -> None:
-    from datorium.core.coordinator import Committed, Coordinator, Recovery
-    from datorium.core.identity import new_id
-    from datorium.core.retry import Retry
     from fakes import Crash, FaultyJournal, World
+    from rhizodat.core.coordinator import Committed, Coordinator, Recovery
+    from rhizodat.core.identity import new_id
+    from rhizodat.core.retry import Retry
 
     world = World()
     for store in CRASH["stores"]:

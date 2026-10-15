@@ -22,15 +22,15 @@ def run(*args: str | Path) -> str:
 def wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     out = tmp_path_factory.mktemp("dist")
     run("uv", "build", "--wheel", "--out-dir", out, ROOT)
-    (path,) = out.glob("datorium-*.whl")
+    (path,) = out.glob("rhizodat-*.whl")
     return path
 
 
 def test_wheel_contains_the_package_tree(wheel: Path) -> None:
     names = set(zipfile.ZipFile(wheel).namelist())
-    assert "datorium/py.typed" in names
-    assert "datorium/core/coordinator.py" in names
-    assert "datorium/adapters/iceberg.py" in names
+    assert "rhizodat/py.typed" in names
+    assert "rhizodat/core/coordinator.py" in names
+    assert "rhizodat/adapters/iceberg.py" in names
     assert not any(n.startswith("tests/") for n in names)
 
 
@@ -41,7 +41,7 @@ def test_wheel_installs_and_imports_in_a_clean_venv(wheel: Path, tmp_path: Path)
     run("uv", "pip", "install", "--python", python, wheel)
 
     installed = json.loads(run("uv", "pip", "list", "--python", python, "--format", "json"))
-    assert [p["name"] for p in installed] == ["datorium"]
+    assert [p["name"] for p in installed] == ["rhizodat"]
 
-    code = "import datorium, datorium.core, datorium.adapters; print(datorium.__version__)"
+    code = "import rhizodat, rhizodat.core, rhizodat.adapters; print(rhizodat.__version__)"
     assert run(python, "-c", code).strip() == "0.1.0.dev0"

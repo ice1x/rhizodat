@@ -6,7 +6,7 @@ from urllib.parse import quote
 import pytest
 from faker import Faker
 
-from datorium.core.dsn import DSNError, parse_dsn
+from rhizodat.core.dsn import DSNError, parse_dsn
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def erp_settings(faker: Faker) -> dict[str, str]:
         "drevo": f"drevo+bolt://graph:{pw}@{faker.hostname()}",
         "clickhouse": f"clickhouse://reporter:{pw}@{faker.hostname()}/analytics?secure=true",
         "iceberg": f"iceberg+rest://{faker.hostname()}:8181/warehouse?token={faker.sha256()}",
-        "journal": f"postgresql://coordinator:{pw}@{faker.hostname()}/datorium",
+        "journal": f"postgresql://coordinator:{pw}@{faker.hostname()}/rhizodat",
     }
 
 
@@ -48,7 +48,7 @@ def test_logging_the_configuration_leaks_no_secret(
     secrets.add(parsed["iceberg"].params["token"])
 
     with caplog.at_level(logging.INFO):
-        log = logging.getLogger("datorium.test")
+        log = logging.getLogger("rhizodat.test")
         log.info("stores: %s", parsed)
         for name, dsn in parsed.items():
             log.info("%s -> %s", name, dsn)

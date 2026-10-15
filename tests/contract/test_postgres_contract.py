@@ -1,13 +1,13 @@
-"""datorium's PostgreSQL adapter keeps the adapter contract (real server, 2PC)."""
+"""rhizodat's PostgreSQL adapter keeps the adapter contract (real server, 2PC)."""
 
 import contextlib
 from collections.abc import Iterator
 
 import pytest
 
-from datorium.adapters.postgres import PostgresBranch, PostgresStore
-from datorium.core.journal import BranchRecord
-from datorium.testing.contract import AdapterContract
+from rhizodat.adapters.postgres import PostgresBranch, PostgresStore
+from rhizodat.core.journal import BranchRecord
+from rhizodat.testing.contract import AdapterContract
 
 
 class PostgresHarness:

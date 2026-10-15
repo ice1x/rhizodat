@@ -14,9 +14,9 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium.core.adapter import Migrates
 from drevo_parts import drevo_parts_dsn
 from iceberg_parts import drop_parts, iceberg_parts_dsn
+from rhizodat.core.adapter import Migrates
 
 
 def migrates(store: object) -> bool:
@@ -28,7 +28,7 @@ def migrates(store: object) -> bool:
 
 @pytest.fixture
 def pg(pg_dsn: str, pg_schema: str) -> Iterator[Any]:
-    from datorium.adapters.postgres import PostgresStore
+    from rhizodat.adapters.postgres import PostgresStore
 
     store = PostgresStore(pg_dsn, schema=pg_schema)
     yield store
@@ -73,7 +73,7 @@ def test_a_sql_body_is_text_or_a_list_of_text(pg: Any, body: object) -> None:
 
 
 def test_clickhouse_runs_sql_steps_one_statement_at_a_time(clickhouse_dsn: str) -> None:
-    from datorium.adapters.clickhouse import ClickHouseStore
+    from rhizodat.adapters.clickhouse import ClickHouseStore
 
     store = ClickHouseStore(clickhouse_dsn)
     try:
@@ -97,7 +97,7 @@ def test_clickhouse_runs_sql_steps_one_statement_at_a_time(clickhouse_dsn: str) 
 
 @pytest.fixture(params=["memory", "bolt"])
 def graph(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Any]:
-    from datorium.adapters.drevo import DrevoStore
+    from rhizodat.adapters.drevo import DrevoStore
 
     store = DrevoStore(drevo_parts_dsn(request, tmp_path), name="graph")
     yield store
@@ -130,7 +130,7 @@ def test_a_cypher_body_is_text_or_a_list_of_text(graph: Any) -> None:
 
 @pytest.fixture(params=["sql", "rest"])
 def lake(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Any]:
-    from datorium.adapters.iceberg import IcebergStore
+    from rhizodat.adapters.iceberg import IcebergStore
 
     store = IcebergStore(
         iceberg_parts_dsn(request, tmp_path),

@@ -6,8 +6,8 @@ from uuid import UUID
 import pytest
 from faker import Faker
 
-from datorium.core.clock import ClockSkewError, HLCTimestamp, HybridLogicalClock
-from datorium.core.identity import IdGenerator, is_uuid7, timestamp_ms
+from rhizodat.core.clock import ClockSkewError, HLCTimestamp, HybridLogicalClock
+from rhizodat.core.identity import IdGenerator, is_uuid7, timestamp_ms
 
 
 class Wall:

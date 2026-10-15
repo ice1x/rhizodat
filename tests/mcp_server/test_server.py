@@ -1,5 +1,5 @@
-"""datorium-MCP as an MCP server: in process through the SDK's client, and as the
-``datorium-mcp`` command over stdio against the compose PostgreSQL."""
+"""rhizodat-MCP as an MCP server: in process through the SDK's client, and as the
+``rhizodat-mcp`` command over stdio against the compose PostgreSQL."""
 
 import importlib.metadata
 import json
@@ -14,13 +14,13 @@ from faker import Faker
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
-from datorium import Datorium
-from datorium.adapters.postgres import PostgresStore
-from datorium.core.journal import MemoryJournal
-from datorium.core.result import Result
-from datorium.mcp.server import build_server
-from datorium.mcp.tools import Tools
 from fakes import FakeStoreHandle, World
+from rhizodat import Rhizodat
+from rhizodat.adapters.postgres import PostgresStore
+from rhizodat.core.journal import MemoryJournal
+from rhizodat.core.result import Result
+from rhizodat.mcp.server import build_server
+from rhizodat.mcp.tools import Tools
 
 TOOLS = {"stores", "query"}
 
@@ -35,7 +35,7 @@ class Readable(FakeStoreHandle):
 @pytest.fixture
 def tools() -> Iterator[Tools]:
     store = Readable(World().store("orders", two_phase=True))
-    t = Tools(Datorium(stores={"orders": store}, journal=MemoryJournal()))
+    t = Tools(Rhizodat(stores={"orders": store}, journal=MemoryJournal()))
     yield t
     t.close()
 
@@ -74,7 +74,7 @@ def test_the_server_never_exposes_transactions_or_recovery(tools: Tools) -> None
 def test_the_query_tool_describes_the_configured_kinds() -> None:
     """Each adapter tells clients its native query language; only configured kinds show."""
     store = Readable(World().store("erp", two_phase=True))
-    t = Tools(Datorium(stores={"erp": store}), dsns={"erp": "postgresql://db/erp"})
+    t = Tools(Rhizodat(stores={"erp": store}), dsns={"erp": "postgresql://db/erp"})
 
     async def go() -> Any:
         async with Client(build_server(t)) as client:
@@ -106,21 +106,21 @@ def test_store_errors_reach_the_client_as_tool_errors(tools: Tools) -> None:
 
 def test_the_command_is_installed() -> None:
     scripts = importlib.metadata.entry_points(group="console_scripts")
-    assert any(s.name == "datorium-mcp" and s.value == "datorium.mcp.server:main" for s in scripts)
+    assert any(s.name == "rhizodat-mcp" and s.value == "rhizodat.mcp.server:main" for s in scripts)
 
 
 def test_the_command_refuses_to_start_without_stores() -> None:
     import subprocess
 
     out = subprocess.run(
-        [sys.executable, "-m", "datorium.mcp"],
+        [sys.executable, "-m", "rhizodat.mcp"],
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin"},
         check=False,
     )
     assert out.returncode == 2
-    assert "DATORIUM_STORE_" in out.stderr
+    assert "RHIZODAT_STORE_" in out.stderr
 
 
 # --- over stdio, against PostgreSQL --------------------------------------------------
@@ -137,10 +137,10 @@ def test_stdio_server_reads_postgres_and_refuses_writes(
     dsn = f"{pg_dsn}?schema={pg_schema}"
     env = {
         "PATH": "/usr/bin:/bin",
-        "DATORIUM_STORE_CRM": dsn,
-        "DATORIUM_JOURNAL": f"file://{tmp_path / 'journal.db'}",
+        "RHIZODAT_STORE_CRM": dsn,
+        "RHIZODAT_JOURNAL": f"file://{tmp_path / 'journal.db'}",
     }
-    server = StdioServerParameters(command=sys.executable, args=["-m", "datorium.mcp"], env=env)
+    server = StdioServerParameters(command=sys.executable, args=["-m", "rhizodat.mcp"], env=env)
 
     async def go() -> tuple[Any, Any, Any]:
         async with Client(server) as client:
@@ -156,7 +156,7 @@ def test_stdio_server_reads_postgres_and_refuses_writes(
     stores, read, write = anyio.run(go)
     [entry] = stores.structured_content["result"]
     assert entry["kind"] == "postgres"
-    assert "datorium@" not in json.dumps(entry)  # the password is masked
+    assert "rhizodat@" not in json.dumps(entry)  # the password is masked
     assert read.structured_content["rows"] == [{"name": customer}]
     assert write.is_error
     assert "read-only transaction" in write.content[0].text
@@ -169,10 +169,10 @@ def test_stdio_server_reads_postgres_and_refuses_writes(
 
 
 def entity_tools(*, writes: bool) -> Tools:
-    from datorium.testing.memory import MemoryEntityStore
     from mcp_tracker import Bug, Person
+    from rhizodat.testing.memory import MemoryEntityStore
 
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"pg": MemoryEntityStore("pg"), "graph": MemoryEntityStore("graph")},
         journal=MemoryJournal(),
     )
@@ -245,12 +245,12 @@ def test_stdio_server_offers_entity_crud_from_the_environment(
     env = {
         "PATH": "/usr/bin:/bin",
         "PYTHONPATH": tests_dir,
-        "DATORIUM_STORE_PG": dsn,
-        "DATORIUM_JOURNAL": f"file://{tmp_path / 'journal.db'}",
-        "DATORIUM_MCP_ENTITIES": "mcp_tracker:Person",
-        "DATORIUM_MCP_WRITES": "1",
+        "RHIZODAT_STORE_PG": dsn,
+        "RHIZODAT_JOURNAL": f"file://{tmp_path / 'journal.db'}",
+        "RHIZODAT_MCP_ENTITIES": "mcp_tracker:Person",
+        "RHIZODAT_MCP_WRITES": "1",
     }
-    server = StdioServerParameters(command=sys.executable, args=["-m", "datorium.mcp"], env=env)
+    server = StdioServerParameters(command=sys.executable, args=["-m", "rhizodat.mcp"], env=env)
     name = faker.name()
 
     async def go() -> tuple[Any, Any, Any]:

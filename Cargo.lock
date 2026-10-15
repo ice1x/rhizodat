@@ -955,103 +955,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "datorium-clickhouse"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "bytes",
- "clickhouse",
- "datorium-core",
- "datorium-postgres",
- "serde_json",
- "tokio",
- "tokio-postgres",
- "uuid",
-]
-
-[[package]]
-name = "datorium-conformance"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "datorium-clickhouse",
- "datorium-core",
- "datorium-drevo",
- "datorium-iceberg",
- "datorium-postgres",
- "futures",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "datorium-core"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "futures",
- "getrandom 0.3.4",
- "proptest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "datorium-drevo"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "datorium-core",
- "datorium-postgres",
- "drevo",
- "neo4rs",
- "serde",
- "tokio",
- "tokio-postgres",
- "uuid",
-]
-
-[[package]]
-name = "datorium-iceberg"
-version = "0.0.0"
-dependencies = [
- "arrow-array",
- "arrow-cast",
- "arrow-schema",
- "async-trait",
- "datorium-core",
- "datorium-postgres",
- "futures",
- "iceberg",
- "iceberg-catalog-rest",
- "iceberg-storage-opendal",
- "opendal",
- "parquet",
- "reqwest 0.12.28",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-postgres",
- "uuid",
-]
-
-[[package]]
-name = "datorium-postgres"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "datorium-core",
- "tokio",
- "tokio-postgres",
- "uuid",
-]
-
-[[package]]
 name = "deadpool"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3295,6 +3198,103 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "rhizodat-clickhouse"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "clickhouse",
+ "rhizodat-core",
+ "rhizodat-postgres",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "uuid",
+]
+
+[[package]]
+name = "rhizodat-conformance"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "rhizodat-clickhouse",
+ "rhizodat-core",
+ "rhizodat-drevo",
+ "rhizodat-iceberg",
+ "rhizodat-postgres",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "rhizodat-core"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "futures",
+ "getrandom 0.3.4",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "rhizodat-drevo"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "drevo",
+ "neo4rs",
+ "rhizodat-core",
+ "rhizodat-postgres",
+ "serde",
+ "tokio",
+ "tokio-postgres",
+ "uuid",
+]
+
+[[package]]
+name = "rhizodat-iceberg"
+version = "0.0.0"
+dependencies = [
+ "arrow-array",
+ "arrow-cast",
+ "arrow-schema",
+ "async-trait",
+ "futures",
+ "iceberg",
+ "iceberg-catalog-rest",
+ "iceberg-storage-opendal",
+ "opendal",
+ "parquet",
+ "reqwest 0.12.28",
+ "rhizodat-core",
+ "rhizodat-postgres",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "uuid",
+]
+
+[[package]]
+name = "rhizodat-postgres"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "rhizodat-core",
+ "tokio",
+ "tokio-postgres",
+ "uuid",
 ]
 
 [[package]]

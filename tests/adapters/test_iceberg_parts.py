@@ -12,13 +12,13 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium.adapters.iceberg import IcebergStore
-from datorium.core.coordinator import gid_for
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord
-from datorium.core.staged import decode_staged
-from datorium.testing.parts import CONTRACT_PART, commit, part_values
 from iceberg_parts import iceberg_parts_dsn, iceberg_parts_store
+from rhizodat.adapters.iceberg import IcebergStore
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord
+from rhizodat.core.staged import decode_staged
+from rhizodat.testing.parts import CONTRACT_PART, commit, part_values
 
 
 @pytest.fixture(params=["sql", "rest"])

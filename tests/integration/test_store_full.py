@@ -3,7 +3,7 @@ nothing is written anywhere.
 
 ClickHouse applies its rows after the commit decision, so once the decision is
 taken a full disk there can only leave the meta-transaction pending. With
-``min_free`` set, datorium asks the store first (``system.disks``) and refuses
+``min_free`` set, rhizodat asks the store first (``system.disks``) and refuses
 the meta-transaction before anything is written. PostgreSQL cannot report its
 free space; its own disk-full error (53100) aborts before the decision anyway.
 """
@@ -17,9 +17,9 @@ import psycopg
 import pytest
 from faker import Faker
 
-from datorium import Datorium, StoreFull, UnitOfWork, entity
-from datorium.adapters.clickhouse import ClickHouseStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat import Rhizodat, StoreFull, UnitOfWork, entity
+from rhizodat.adapters.clickhouse import ClickHouseStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
 
 
 @entity(stores={"work": ["summary", "status"], "activity": ["views"]}, name="full.Task")
@@ -29,10 +29,10 @@ class Task:
     views: int
 
 
-def open_dat(pg_dsn: str, pg_schema: str, clickhouse_dsn: str, min_free: int) -> Datorium:
+def open_dat(pg_dsn: str, pg_schema: str, clickhouse_dsn: str, min_free: int) -> Rhizodat:
     ch = ClickHouseStore(clickhouse_dsn, name="activity")
     ch.install()
-    return Datorium(
+    return Rhizodat(
         stores={"work": PostgresStore(pg_dsn, name="work", schema=pg_schema), "activity": ch},
         journal=PostgresJournal(pg_dsn, schema=pg_schema),
         min_free=min_free,
@@ -40,7 +40,7 @@ def open_dat(pg_dsn: str, pg_schema: str, clickhouse_dsn: str, min_free: int) ->
 
 
 @pytest.fixture
-def full(pg_dsn: str, pg_schema: str, clickhouse_dsn: str) -> Iterator[Datorium]:
+def full(pg_dsn: str, pg_schema: str, clickhouse_dsn: str) -> Iterator[Rhizodat]:
     """ClickHouse with less room than ``min_free`` asks for (more than any disk has)."""
     dat = open_dat(pg_dsn, pg_schema, clickhouse_dsn, min_free=1 << 62)
     yield dat
@@ -48,7 +48,7 @@ def full(pg_dsn: str, pg_schema: str, clickhouse_dsn: str) -> Iterator[Datorium]
 
 
 def test_a_task_is_refused_when_the_activity_store_is_full(
-    full: Datorium, faker: Faker, pg_dsn: str, pg_schema: str
+    full: Rhizodat, faker: Faker, pg_dsn: str, pg_schema: str
 ) -> None:
     tasks = full.repository(Task)
     task = Task(summary=faker.bs(), status="new", views=0)

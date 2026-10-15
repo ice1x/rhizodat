@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from datorium.adapters.iceberg import IcebergStore
+from rhizodat.adapters.iceberg import IcebergStore
 
 
 def iceberg_parts_dsn(request: pytest.FixtureRequest, tmp_path: Path) -> str:

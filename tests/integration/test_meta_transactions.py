@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 from faker import Faker
 
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.coordinator import Aborted, Committed, Coordinator, Recovery
-from datorium.core.identity import new_id
-from datorium.core.journal import SqliteJournal, State
-from datorium.core.retry import Retry
 from fakes import Crash, Transient, World
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.coordinator import Aborted, Committed, Coordinator, Recovery
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import SqliteJournal, State
+from rhizodat.core.retry import Retry
 
 
 class Wall:

@@ -9,7 +9,7 @@ from faker import Faker
 
 from stores import StoreUnavailable, load_env_file, reachable, resolve_dsn
 
-PG = "DATORIUM_TEST_PG_DSN"
+PG = "RHIZODAT_TEST_PG_DSN"
 
 
 @pytest.fixture
@@ -30,8 +30,8 @@ def closed_port() -> int:
 def test_env_file_reads_assignments_and_skips_comments(tmp_path: Path, faker: Faker) -> None:
     dsn = f"postgresql://{faker.user_name()}:{faker.password()}@127.0.0.1:55440/{faker.word()}"
     path = tmp_path / ".env.test"
-    path.write_text(f"# test stores\n\n{PG}={dsn}\n  DATORIUM_X = a=b  \n")
-    assert load_env_file(path) == {PG: dsn, "DATORIUM_X": "a=b"}
+    path.write_text(f"# test stores\n\n{PG}={dsn}\n  RHIZODAT_X = a=b  \n")
+    assert load_env_file(path) == {PG: dsn, "RHIZODAT_X": "a=b"}
 
 
 def test_env_file_missing_is_empty(tmp_path: Path) -> None:
@@ -40,7 +40,7 @@ def test_env_file_missing_is_empty(tmp_path: Path) -> None:
 
 def test_env_file_rejects_a_line_without_assignment(tmp_path: Path) -> None:
     path = tmp_path / ".env.test"
-    path.write_text("DATORIUM_X\n")
+    path.write_text("RHIZODAT_X\n")
     with pytest.raises(ValueError, match="line 1"):
         load_env_file(path)
 

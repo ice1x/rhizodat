@@ -19,13 +19,13 @@ from pathlib import Path
 import pytest
 from faker import Faker
 
-from datorium import CommittedPending, Datorium, Retry, entity
-from datorium.adapters.iceberg import IcebergStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.repository import NotRestorable
 from fakes import Crash
 from iceberg_parts import iceberg_parts_store
+from rhizodat import CommittedPending, Retry, Rhizodat, entity
+from rhizodat.adapters.iceberg import IcebergStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.repository import NotRestorable
 
 DAY_MS = 86_400_000
 
@@ -67,7 +67,7 @@ class Wall:
 
 @dataclass
 class Office:
-    dat: Datorium
+    dat: Rhizodat
     lake: IcebergStore
     wall: Wall
 
@@ -89,7 +89,7 @@ def office(pg_dsn: str, pg_schema: str, tmp_path: Path) -> Iterator[Office]:
     lake_dsn = f"iceberg+sql://{tmp_path / 'catalog.db'}?warehouse=file://{tmp_path / 'wh'}"
     no_wait = Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0)
     with iceberg_parts_store(lake_dsn, name="lake") as lake:
-        dat = Datorium(
+        dat = Rhizodat(
             stores={"books": pg, "lake": lake},
             journal=PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall),
             clock=HybridLogicalClock(wall_ms=wall),

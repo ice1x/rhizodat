@@ -1,8 +1,8 @@
 # Conformance vectors
 
-Language-neutral test data that every datorium implementation must pass bit for
+Language-neutral test data that every rhizodat implementation must pass bit for
 bit: the Python reference (`tests/conformance/test_vectors.py`) and the Rust
-crates (`crates/datorium-conformance/tests/conformance.rs`). A vector describes inputs (injected clocks, random values, strings)
+crates (`crates/rhizodat-conformance/tests/conformance.rs`). A vector describes inputs (injected clocks, random values, strings)
 and the exact expected output or a named error.
 
 | File | What it pins down |

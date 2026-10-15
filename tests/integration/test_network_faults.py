@@ -16,11 +16,11 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium import Committed, CommittedPending, Datorium, InDoubt, Retry, UnitOfWork
-from datorium.adapters.clickhouse import ClickHouseStore
-from datorium.adapters.drevo import DrevoStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.journal import BranchRecord, State
+from rhizodat import Committed, CommittedPending, InDoubt, Retry, Rhizodat, UnitOfWork
+from rhizodat.adapters.clickhouse import ClickHouseStore
+from rhizodat.adapters.drevo import DrevoStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.journal import BranchRecord, State
 from toxiproxy import Proxy, Toxiproxy, through
 
 
@@ -34,7 +34,7 @@ class Wall:
 
 @dataclass
 class Tracker:
-    dat: Datorium
+    dat: Rhizodat
     pg: PostgresStore
     feed: ClickHouseStore
     graph: DrevoStore
@@ -115,7 +115,7 @@ def tracker(
         wall = Wall()
         journal = PostgresJournal(through(pg_dsn, 58401), schema=pg_schema, wall_ms=wall)
         fast = Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0)
-        dat = Datorium(
+        dat = Rhizodat(
             stores={"pg": pg, "feed": feed, "graph": graph},
             journal=journal,
             finish=fast,

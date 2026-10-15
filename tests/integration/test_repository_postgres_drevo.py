@@ -17,14 +17,14 @@ from pathlib import Path
 import pytest
 from faker import Faker
 
-from datorium import Datorium, Ref, entity
-from datorium.adapters.drevo import ANCHOR, DrevoStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.parts import Part
-from datorium.core.repository import NotRestorable
 from drevo_parts import drevo_parts_dsn
 from fakes import Crash
+from rhizodat import Ref, Rhizodat, entity
+from rhizodat.adapters.drevo import ANCHOR, DrevoStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.parts import Part
+from rhizodat.core.repository import NotRestorable
 
 DAY_MS = 86_400_000
 
@@ -64,7 +64,7 @@ class Wall:
 
 @dataclass
 class Book:
-    dat: Datorium
+    dat: Rhizodat
     graph: DrevoStore
     wall: Wall
 
@@ -92,7 +92,7 @@ def book(
 ) -> Iterator[Book]:
     wall = Wall()
     graph = DrevoStore(drevo_parts_dsn(request, tmp_path), name="graph")
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"text": PostgresStore(pg_dsn, name="text", schema=pg_schema), "graph": graph},
         journal=PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall),
         clock=HybridLogicalClock(wall_ms=wall),

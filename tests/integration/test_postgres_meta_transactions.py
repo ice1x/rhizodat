@@ -8,13 +8,13 @@ import psycopg
 import pytest
 from faker import Faker
 
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.coordinator import Aborted, Committed, Coordinator, Recovery, gid_for
-from datorium.core.identity import new_id
-from datorium.core.journal import State
-from datorium.core.retry import Retry
 from fakes import Crash, FakeBranch, Faults, World
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.coordinator import Aborted, Committed, Coordinator, Recovery, gid_for
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import State
+from rhizodat.core.retry import Retry
 
 
 class Wall:

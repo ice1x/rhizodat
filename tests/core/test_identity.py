@@ -8,7 +8,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from datorium.core.identity import IdGenerator, is_uuid7, new_id, timestamp_ms
+from rhizodat.core.identity import IdGenerator, is_uuid7, new_id, timestamp_ms
 
 MAX_MS = 2**48 - 1
 

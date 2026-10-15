@@ -6,7 +6,7 @@ from typing import ClassVar
 
 import pytest
 
-from datorium.core.mapping import MappingError, Ref, entity, mapping_of
+from rhizodat.core.mapping import MappingError, Ref, entity, mapping_of
 
 
 @entity(stores={"pg": ["title", "assignee", "parent", "watchers"]})
