@@ -41,6 +41,7 @@ from typing import Any, Protocol
 from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import DSN, parse_dsn
 from datorium.core.journal import (
+    AppliedMigration,
     BranchRecord,
     JournalConflict,
     JournalRecord,
@@ -49,6 +50,7 @@ from datorium.core.journal import (
     conflict_error,
     decode_branches,
     encode_branches,
+    migration_recorded,
 )
 from datorium.core.mapping import Ref
 from datorium.core.parts import Part, Version
@@ -440,6 +442,16 @@ class DrevoStore:
         """Native Cypher in autocommit mode, outside any meta-transaction."""
         return self._backend.execute(query, params)
 
+    migration_kinds = frozenset({"cypher"})
+
+    def run_migration_step(self, kind: str, body: Any) -> None:  # noqa: ANN401 - TOML data
+        """A ``cypher`` step: each statement in autocommit mode (index and procedure calls
+        do not run inside an explicit drevo transaction)."""
+        from datorium.migrations.format import statements
+
+        for query in statements(kind, body):
+            self._backend.execute(query, None)
+
     def read_only(self, query: str, params: Params = None) -> Result:
         """A native read that never keeps a write: it runs in a transaction that is
         always rolled back (drevo has no read-only mode)."""
@@ -759,6 +771,39 @@ class DrevoJournal:
             " DETACH DELETE j",
             {"t": str(dat_txn)},
         )
+
+    def applied_migrations(self) -> list[AppliedMigration]:
+        rows = self._backend.execute(
+            f"MATCH (m:{self._label}Migration) RETURN m.id AS id, m.name AS name,"
+            " m.checksum AS checksum, m.dat_tx_time AS dat_tx_time ORDER BY id",
+            {},
+        ).all()
+        return [AppliedMigration(r["id"], r["name"], r["checksum"], r["dat_tx_time"]) for r in rows]
+
+    def record_migration(self, applied: AppliedMigration) -> None:
+        """One node per migration; its title ``<label>Migration:<id>`` is unique in drevo."""
+        label = f"{self._label}Migration"
+        if any(m.id == applied.id for m in self.applied_migrations()):
+            raise migration_recorded(applied.id)
+        tx = self._backend.begin()
+        try:
+            tx.execute(
+                f"CREATE (m:{label} {{title: $title, id: $id, name: $name,"
+                " checksum: $checksum, dat_tx_time: $ts})",
+                {
+                    "title": f"{label}:{applied.id}",
+                    "id": applied.id,
+                    "name": applied.name,
+                    "checksum": applied.checksum,
+                    "ts": applied.dat_tx_time,
+                },
+            )
+            tx.commit()
+        except Exception:
+            tx.rollback()
+            if any(m.id == applied.id for m in self.applied_migrations()):
+                raise migration_recorded(applied.id) from None  # lost a race on the title
+            raise
 
     def close(self) -> None:
         self._backend.close()

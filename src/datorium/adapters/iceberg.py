@@ -293,6 +293,14 @@ class IcebergStore:
             arrow=lambda: arrow,
         )
 
+    migration_kinds = frozenset({"iceberg"})
+
+    def run_migration_step(self, kind: str, body: Any) -> None:  # noqa: ANN401 - TOML data
+        """An ``iceberg`` step: declarative schema operations (``iceberg_schema``)."""
+        from datorium.adapters.iceberg_schema import run_operations
+
+        run_operations(self.catalog, body)
+
     def read_only(self, table: str, params: Mapping[str, Any] | None = None) -> Result:
         """The same scan as ``execute``: a scan cannot write."""
         return self.execute(table, params)

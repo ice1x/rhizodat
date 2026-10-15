@@ -34,6 +34,7 @@ from datorium.core.journal import (
 )
 from datorium.core.rows import Batch, decode_batches, encode_batches
 from datorium.core.staged import StagedTable, decode_staged, encode_staged
+from datorium.migrations import MigrationFormatError, canonical, parse_migration
 
 VECTORS = Path(__file__).resolve().parents[2] / "conformance"
 
@@ -237,6 +238,7 @@ def test_every_vector_file_is_exercised() -> None:
         "rows.json",
         "staged_files.json",
         "crash_matrix.json",
+        "migrations.json",
     }
     assert {p.name for p in VECTORS.glob("*.json")} == used
 
@@ -436,3 +438,27 @@ def test_crash_matrix(case: dict[str, Any]) -> None:
         "applied": "all" if after["applied"] else "none",
         "prepared": after["prepared"],
     } == case["after_recovery"]
+
+
+# --- migrations ---------------------------------------------------------------------------
+
+MIGRATIONS = load("migrations.json")
+
+
+@pytest.mark.parametrize("case", MIGRATIONS["cases"], ids=lambda c: c["name"])
+def test_migration_files(case: dict[str, Any]) -> None:
+    m = parse_migration(case["filename"], case["text"])
+    assert (m.id, m.name, m.description) == (
+        case["id"],
+        case["migration_name"],
+        case["description"],
+    )
+    assert [{"store": s.store, "kind": s.kind, "body": s.body} for s in m.steps] == case["steps"]
+    assert canonical(m) == case["canonical"]
+    assert m.checksum == case["checksum"]
+
+
+@pytest.mark.parametrize("case", MIGRATIONS["errors"], ids=lambda c: c["name"])
+def test_migration_files_rejected(case: dict[str, Any]) -> None:
+    with pytest.raises(MigrationFormatError):
+        parse_migration(case["filename"], case["text"])

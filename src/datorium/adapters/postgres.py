@@ -34,6 +34,7 @@ from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import DSNError, parse_dsn
 from datorium.core.errors import ErrorKind
 from datorium.core.journal import (
+    AppliedMigration,
     BranchRecord,
     JournalConflict,
     JournalRecord,
@@ -42,6 +43,7 @@ from datorium.core.journal import (
     conflict_error,
     decode_branches,
     encode_branches,
+    migration_recorded,
 )
 from datorium.core.parts import Part, Version
 from datorium.core.result import Result
@@ -333,6 +335,18 @@ class PostgresStore:
         """Native access in autocommit mode, outside any meta-transaction."""
         with self.connect(autocommit=True) as conn:
             return _result(conn.execute(sql, params))
+
+    migration_kinds = frozenset({"sql"})
+
+    def run_migration_step(self, kind: str, body: Any) -> None:  # noqa: ANN401 - TOML data
+        """A ``sql`` step: its statements in one transaction (PostgreSQL DDL is
+        transactional, so a step applies whole or not at all)."""
+        from datorium.migrations.format import statements
+
+        sqls = statements(kind, body)
+        with self.connect() as conn, conn.transaction():
+            for sql in sqls:
+                conn.execute(sql.encode())
 
     def read_only(
         self, sql: str, params: Mapping[str, Any] | Sequence[Any] | None = None
@@ -633,6 +647,13 @@ class PostgresJournal:
         self._conn.execute(
             f"CREATE INDEX IF NOT EXISTS {table}_pending ON {table} (state, updated_ms)"
         )
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {table}_migrations ("
+            " id bigint PRIMARY KEY,"
+            " name text NOT NULL,"
+            " checksum text NOT NULL,"
+            " dat_tx_time bigint NOT NULL)"
+        )
 
     def begin(self, dat_txn: uuid.UUID, branches: Sequence[BranchRecord]) -> JournalRecord:
         now = self._wall_ms()
@@ -689,6 +710,22 @@ class PostgresJournal:
             f"DELETE FROM {self._table} WHERE dat_txn = %s AND state IN ('ABORTED', 'DONE')",
             (dat_txn,),
         )
+
+    def applied_migrations(self) -> list[AppliedMigration]:
+        rows = self._run(
+            f"SELECT id, name, checksum, dat_tx_time FROM {self._table}_migrations ORDER BY id",
+            (),
+        )
+        return [AppliedMigration(r["id"], r["name"], r["checksum"], r["dat_tx_time"]) for r in rows]
+
+    def record_migration(self, applied: AppliedMigration) -> None:
+        rows = self._run(
+            f"INSERT INTO {self._table}_migrations (id, name, checksum, dat_tx_time)"
+            " VALUES (%s, %s, %s, %s) ON CONFLICT (id) DO NOTHING RETURNING id",
+            (applied.id, applied.name, applied.checksum, applied.dat_tx_time),
+        )
+        if not rows:
+            raise migration_recorded(applied.id)
 
     def close(self) -> None:
         with self._lock:

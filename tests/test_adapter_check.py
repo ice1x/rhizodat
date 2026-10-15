@@ -153,8 +153,10 @@ def test_postgres_reports_parts_and_classification(pg_dsn: str) -> None:
         "Classifies on the participant",
         "ReadOnlyQueries",
         "AppliedLocation",
+        "Migrates (schema migration steps)",
     ):
         assert checks[name].passed, name
+    assert checks["Migrates (schema migration steps)"].detail == "runs sql steps"
     assert not checks["Capacity (free space)"].passed
 
 

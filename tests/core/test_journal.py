@@ -36,7 +36,7 @@ class Wall:
         return self.ms
 
 
-JournalFactory = Callable[[Wall], Journal]
+JournalFactory = Callable[..., Journal]  # (wall, index=None): index reopens a journal
 
 
 @pytest.fixture(params=["memory", "sqlite", "postgres", "drevo", "drevo-bolt"])
@@ -60,17 +60,16 @@ def make_journal(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Jou
         # A label per journal keeps tests apart on a shared drevo server.
         label = f"DatJournal{uuid.uuid4().hex[:10]}"
 
-    def factory(wall: Wall) -> Journal:
+    def factory(wall: Wall, index: int | None = None) -> Journal:
+        n = len(opened) if index is None else index
         if request.param == "memory":
             journal: Journal = MemoryJournal(wall_ms=wall)
         elif request.param == "postgres":
-            journal = PostgresJournal(
-                pg_dsn, schema=pg_schema, table=f"journal_{len(opened)}", wall_ms=wall
-            )
+            journal = PostgresJournal(pg_dsn, schema=pg_schema, table=f"journal_{n}", wall_ms=wall)
         elif request.param.startswith("drevo"):
-            journal = DrevoJournal(drevo_dsn, label=f"{label}_{len(opened)}", wall_ms=wall)
+            journal = DrevoJournal(drevo_dsn, label=f"{label}_{n}", wall_ms=wall)
         else:
-            journal = SqliteJournal(tmp_path / f"journal-{len(opened)}.db", wall_ms=wall)
+            journal = SqliteJournal(tmp_path / f"journal-{n}.db", wall_ms=wall)
         opened.append(journal)
         return journal
 
@@ -403,3 +402,38 @@ class JournalMachine(RuleBasedStateMachine):
 
 TestJournalMachine = JournalMachine.TestCase
 TestJournalMachine.settings = settings(max_examples=50, stateful_step_count=30)
+
+
+# --- the migration history ----------------------------------------------------------------
+
+
+def test_every_journal_keeps_the_migration_history(journal: Journal) -> None:
+    from datorium.core.journal import AppliedMigration, MigrationHistory
+
+    assert isinstance(journal, MigrationHistory)
+    assert journal.applied_migrations() == []
+    second = AppliedMigration(2, "graph_index", "b" * 64, (2_000 << 16) | 3)
+    first = AppliedMigration(1, "bugs", "a" * 64, 1_000 << 16)
+    journal.record_migration(second)
+    journal.record_migration(first)
+    assert journal.applied_migrations() == [first, second]
+
+    with pytest.raises(JournalConflict, match="migration 1 is already recorded"):
+        journal.record_migration(AppliedMigration(1, "bugs", "c" * 64, 3_000 << 16))
+    assert journal.applied_migrations() == [first, second]
+
+
+def test_the_migration_history_survives_reopening(make_journal: JournalFactory) -> None:
+    from datorium.core.journal import AppliedMigration, MemoryJournal, MigrationHistory
+
+    wall = Wall()
+    journal = make_journal(wall)
+    if isinstance(journal, MemoryJournal):
+        return  # not durable: nothing to reopen
+    assert isinstance(journal, MigrationHistory)
+    applied = AppliedMigration(1, "bugs", "a" * 64, 1_000 << 16)
+    journal.record_migration(applied)
+    journal.close()
+    reopened = make_journal(wall, index=0)
+    assert isinstance(reopened, MigrationHistory)
+    assert reopened.applied_migrations() == [applied]

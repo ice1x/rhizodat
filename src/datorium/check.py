@@ -7,7 +7,7 @@ opens). With one, the store is opened and its interface checked: the methods
 datorium calls (``Store``, ``Branch``, ``Participant``), a branch opened and
 rolled back, prepared gids listed, error classification, and every optional
 capability (read-only queries, applied location, fence, ``Classifies``,
-``Capacity``, entity parts). Nothing is written. Behaviour (atomicity,
+``Capacity``, entity parts, migration steps). Nothing is written. Behaviour (atomicity,
 idempotence, recovery after a crash) is the adapter contract's job:
 ``datorium.testing.contract.AdapterContract`` and, for entity parts,
 ``datorium.testing.parts.PartStoreContract``.
@@ -166,6 +166,7 @@ _STORE_CHECKS: tuple[tuple[str, Level], ...] = (
     ("Capacity (free space)", "optional"),
     ("PartStore (entity parts)", "optional"),
     ("PartBranch (entity parts in a Unit of Work)", "optional"),
+    ("Migrates (schema migration steps)", "optional"),
     ("store closes", "required"),
 )
 
@@ -245,7 +246,7 @@ def _parses(adapter: Adapter, dsn: str) -> str:
 
 
 def _store_checks(run: _Run, store: Any) -> None:  # noqa: ANN401 - any adapter's store
-    from datorium.core.adapter import AppliedLocation, Fenced, ReadOnlyQueries
+    from datorium.core.adapter import AppliedLocation, Fenced, Migrates, ReadOnlyQueries
     from datorium.core.errors import Capacity, Classifies, ErrorKind, classify
     from datorium.core.identity import new_id
     from datorium.core.parts import PartBranch, PartStore
@@ -337,6 +338,17 @@ def _store_checks(run: _Run, store: Any) -> None:  # noqa: ANN401 - any adapter'
         "optional",
         has_branch and isinstance(branch, PartBranch),
     )
+    if isinstance(store, Migrates):
+
+        def kinds() -> str:
+            found = store.migration_kinds
+            if not found or not all(isinstance(k, str) for k in found):
+                raise _Fail(f"migration_kinds must name step kinds, got {found!r}")
+            return "runs " + ", ".join(sorted(found)) + " steps"
+
+        run.probe("Migrates (schema migration steps)", "optional", kinds)
+    else:
+        run.add("Migrates (schema migration steps)", "optional", False)
 
 
 def _redacted(dsn: str | None) -> str | None:
@@ -354,7 +366,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("adapter", help="module:ATTR (e.g. datorium_mysql:ADAPTER) or a kind")
     check.add_argument("--dsn", help="open a store at this DSN and check it (nothing is written)")
     check.add_argument("--json", action="store_true", help="print the report as JSON")
+    from datorium.migrations import cli as migrate_cli
+
+    migrate_cli.add_parser(commands)
     args = parser.parse_args(argv)
+    if args.command == "migrate":
+        return migrate_cli.run(args)
 
     try:
         adapter = load_adapter(args.adapter)
