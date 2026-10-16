@@ -146,6 +146,7 @@ Checked with `isinstance`. Implement the ones that apply.
 | `classify(error) -> ErrorKind` (`Classifies`) | branch, participant | Error kinds beyond retryable / not (section 5). |
 | `free_space() -> int \| None` (`Capacity`) | store | Bytes left, for the `min_free` check before the decision. `None` when the store cannot tell. |
 | `PartStore`, `PartBranch` | store, branch | Entity parts: the store can hold a share of an entity's fields (section 6). |
+| `table_columns`, `create_table_steps`, `add_column_steps`, `load` (`Loads`, with `Migrates`) | store | File imports (`rhizodat import`): tables from portable column types (`boolean`, `int64`, `float64`, `date`, `timestamp`, `timestamptz`, `string`) through migration steps, and `load(table, batches, replace=)` of pyarrow record batches as one unit: a failure halfway leaves the table as it was. |
 | `migration_kinds`, `run_migration_step(kind, body)` (`Migrates`) | store | Schema migration steps of the kinds it names (`sql`, `cypher`, `iceberg`, or the adapter's own). A step must be safe to run again: a migration over several stores is not atomic, and after a failure the whole migration runs again. |
 
 ## 5. Errors

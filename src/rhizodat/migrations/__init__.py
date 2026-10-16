@@ -11,6 +11,7 @@ from rhizodat.migrations.format import (
     canonical,
     load_migrations,
     parse_migration,
+    to_toml,
 )
 from rhizodat.migrations.runner import MigrationError, MigrationFailed, MigrationReport
 
@@ -24,4 +25,5 @@ __all__ = [
     "canonical",
     "load_migrations",
     "parse_migration",
+    "to_toml",
 ]

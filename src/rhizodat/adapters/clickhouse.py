@@ -35,8 +35,8 @@ clickhouse-connect is imported on first use, so the driver stays an optional ext
 import json
 import re
 import uuid
-from collections.abc import Iterable, Mapping
-from typing import Any
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from rhizodat.core.adapter import Adapter, Scheme
 from rhizodat.core.dsn import parse_dsn
@@ -45,6 +45,10 @@ from rhizodat.core.journal import BranchRecord
 from rhizodat.core.parts import Part, Version
 from rhizodat.core.result import Result
 from rhizodat.core.rows import Batch, decode_batches, decode_value, encode_batches, encode_value
+
+if TYPE_CHECKING:
+    from rhizodat.ingest.schema import Column
+    from rhizodat.migrations.format import Step
 
 __all__ = ["ADAPTER", "ClickHouseBranch", "ClickHouseParticipant", "ClickHouseStore"]
 
@@ -72,6 +76,35 @@ def _quote(table: str) -> str:
 
 
 _SERVICE = ("dat_id", "dat_created", "dat_deleted")
+
+# Imports: portable column types as ClickHouse types.
+_IMPORT_TYPES = {
+    "boolean": "Bool",
+    "int64": "Int64",
+    "float64": "Float64",
+    "date": "Date32",
+    "timestamp": "DateTime64(6)",
+    "timestamptz": "DateTime64(6, 'UTC')",
+    "string": "String",
+}
+
+
+def _name(name: str) -> str:
+    """Any column or table name, quoted."""
+    return "`" + name.replace("\\", "\\\\").replace("`", "\\`") + "`"
+
+
+def _import_table(table: str) -> str:
+    return ".".join(_name(part) for part in table.split(".", 1))
+
+
+def _import_column(c: "Column", *, nullable: bool | None = None) -> str:
+    t = _IMPORT_TYPES[c.type]
+    if c.nullable if nullable is None else nullable:
+        t = f"Nullable({t})"
+    if c.low_cardinality and c.type == "string":
+        t = f"LowCardinality({t})"
+    return f"{_name(c.name)} {t}"
 
 
 def _column_type(annotation: object) -> str | None:
@@ -268,6 +301,96 @@ class ClickHouseStore:
 
     def participant(self) -> "ClickHouseParticipant":
         return self._participant
+
+    # --- Loads -------------------------------------------------------------------------------
+
+    def _where(self, table: str) -> tuple[str, dict[str, str]]:
+        """A ``system.*`` filter for ``table`` (``db.table`` or one in the current database)."""
+        db, dot, name = table.rpartition(".")
+        if dot:
+            return "database = {db:String} AND table = {t:String}", {"db": db, "t": name}
+        return "database = currentDatabase() AND table = {t:String}", {"t": name}
+
+    def table_columns(self, table: str) -> list[str] | None:
+        where, params = self._where(table)
+        r = self._client.query(
+            f"SELECT name FROM system.columns WHERE {where} ORDER BY position", parameters=params
+        )
+        names = [row[0] for row in r.result_rows]
+        return names or None
+
+    def create_table_steps(
+        self, table: str, columns: Sequence["Column"], *, order_by: Sequence[str] = ()
+    ) -> list["Step"]:
+        """``CREATE TABLE IF NOT EXISTS`` a MergeTree sorted by ``order_by`` (none: ``tuple()``).
+        A sort key column must not be nullable."""
+        from rhizodat.migrations.format import Step
+
+        by_name = {c.name: c for c in columns}
+        for key in order_by:
+            if key not in by_name:
+                raise ValueError(f"sort key: no column {key} (columns: {', '.join(by_name)})")
+            if by_name[key].nullable:
+                raise ValueError(
+                    f"sort key column {key} is nullable (the file has missing values):"
+                    " ClickHouse refuses a nullable sort key; pick another column"
+                )
+        key = f"({', '.join(_name(k) for k in order_by)})" if order_by else "tuple()"
+        body = (
+            f"CREATE TABLE IF NOT EXISTS {_import_table(table)}"
+            f" ({', '.join(_import_column(c) for c in columns)})"
+            f" ENGINE = MergeTree ORDER BY {key}"
+        )
+        return [Step(self.name, "sql", body)]
+
+    def add_column_steps(self, table: str, columns: Sequence["Column"]) -> list["Step"]:
+        from rhizodat.migrations.format import Step
+
+        body = [
+            f"ALTER TABLE {_import_table(table)} ADD COLUMN IF NOT EXISTS"
+            f" {_import_column(c, nullable=True)}"
+            for c in columns
+        ]
+        return [Step(self.name, "sql", body)]
+
+    def load(self, table: str, batches: Iterable[Any], *, replace: bool = False) -> int:
+        """Load into a staging table of the same structure, then attach its partitions to
+        ``table`` (``replace``: exchange the two tables). Attaching a partition is atomic, so
+        a table without ``PARTITION BY`` (one partition) gets all rows or none; with
+        several partitions each one is. The staging table is always dropped."""
+        import pyarrow as pa
+
+        db, dot, name = table.rpartition(".")
+        stage_name = f"{name}__rhizodat_import_{uuid.uuid4().hex[:12]}"
+        stage = f"{db}.{stage_name}" if dot else stage_name
+        self._client.command(f"CREATE TABLE {_import_table(stage)} AS {_import_table(table)}")
+        try:
+            rows = 0
+            for batch in batches:
+                if batch.num_rows:
+                    self._client.insert_arrow(
+                        stage_name, pa.Table.from_batches([batch]), database=db or None
+                    )
+                    rows += batch.num_rows
+            if replace:
+                self._client.command(
+                    f"EXCHANGE TABLES {_import_table(table)} AND {_import_table(stage)}"
+                )
+            else:
+                where, params = self._where(stage)
+                parts = self._client.query(
+                    f"SELECT DISTINCT partition_id FROM system.parts WHERE {where} AND active",
+                    parameters=params,
+                ).result_rows
+                for (partition,) in parts:
+                    self._client.command(
+                        f"ALTER TABLE {_import_table(table)} ATTACH PARTITION ID"
+                        f" {{p:String}} FROM {_import_table(stage)}",
+                        parameters={"p": partition},
+                    )
+            return rows
+        finally:
+            self._client.command(f"DROP TABLE IF EXISTS {_import_table(stage)} SYNC")
 
     def free_space(self) -> int | None:
         """The least free space of the server's disks (``system.disks``), in bytes."""

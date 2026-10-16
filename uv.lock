@@ -516,78 +516,6 @@ wheels = [
 ]
 
 [[package]]
-name = "rhizodat"
-version = "0.1.0.dev0"
-source = { editable = "." }
-
-[package.optional-dependencies]
-clickhouse = [
-    { name = "clickhouse-connect" },
-]
-drevo = [
-    { name = "neo4j" },
-]
-iceberg = [
-    { name = "pyiceberg", extra = ["pyarrow", "sql-sqlite"] },
-]
-mcp = [
-    { name = "mcp" },
-]
-postgres = [
-    { name = "psycopg", extra = ["binary"] },
-]
-testing = [
-    { name = "faker" },
-    { name = "pytest" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "clickhouse-connect" },
-    { name = "faker" },
-    { name = "hypothesis" },
-    { name = "mcp" },
-    { name = "mypy" },
-    { name = "neo4j" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pyarrow" },
-    { name = "pyiceberg", extra = ["pyarrow", "sql-sqlite"] },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-drevo = [
-    { name = "drevo-py" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.8" },
-    { name = "faker", marker = "extra == 'testing'", specifier = ">=30" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3" },
-    { name = "neo4j", marker = "extra == 'drevo'", specifier = ">=5.20" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
-    { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], marker = "extra == 'iceberg'", specifier = ">=0.12" },
-    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8" },
-]
-provides-extras = ["postgres", "clickhouse", "drevo", "iceberg", "mcp", "testing"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "clickhouse-connect", specifier = ">=0.8" },
-    { name = "faker", specifier = ">=30" },
-    { name = "hypothesis", specifier = ">=6.120" },
-    { name = "mcp", specifier = ">=2.3" },
-    { name = "mypy", specifier = ">=1.13" },
-    { name = "neo4j", specifier = ">=5.20" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
-    { name = "pyarrow", specifier = ">=17" },
-    { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], specifier = ">=0.12" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "ruff", specifier = ">=0.8" },
-]
-drevo = [{ name = "drevo-py", git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe" }]
-
-[[package]]
 name = "drevo-py"
 version = "0.1.0"
 source = { git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe#cf9c7664e573906f2f7e86bd15639b7c3be559fe" }
@@ -1732,6 +1660,82 @@ sdist = { url = "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0", size = 73075, upload-time = "2026-05-14T19:25:26.443Z" },
 ]
+
+[[package]]
+name = "rhizodat"
+version = "0.1.0.dev0"
+source = { editable = "." }
+
+[package.optional-dependencies]
+clickhouse = [
+    { name = "clickhouse-connect" },
+]
+drevo = [
+    { name = "neo4j" },
+]
+iceberg = [
+    { name = "pyiceberg", extra = ["pyarrow", "sql-sqlite"] },
+]
+ingest = [
+    { name = "pyarrow" },
+]
+mcp = [
+    { name = "mcp" },
+]
+postgres = [
+    { name = "psycopg", extra = ["binary"] },
+]
+testing = [
+    { name = "faker" },
+    { name = "pytest" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "clickhouse-connect" },
+    { name = "faker" },
+    { name = "hypothesis" },
+    { name = "mcp" },
+    { name = "mypy" },
+    { name = "neo4j" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pyarrow" },
+    { name = "pyiceberg", extra = ["pyarrow", "sql-sqlite"] },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+drevo = [
+    { name = "drevo-py" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.8" },
+    { name = "faker", marker = "extra == 'testing'", specifier = ">=30" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3" },
+    { name = "neo4j", marker = "extra == 'drevo'", specifier = ">=5.20" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
+    { name = "pyarrow", marker = "extra == 'ingest'", specifier = ">=17" },
+    { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], marker = "extra == 'iceberg'", specifier = ">=0.12" },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8" },
+]
+provides-extras = ["postgres", "clickhouse", "drevo", "iceberg", "ingest", "mcp", "testing"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "clickhouse-connect", specifier = ">=0.8" },
+    { name = "faker", specifier = ">=30" },
+    { name = "hypothesis", specifier = ">=6.120" },
+    { name = "mcp", specifier = ">=2.3" },
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "neo4j", specifier = ">=5.20" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "pyarrow", specifier = ">=17" },
+    { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], specifier = ">=0.12" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "ruff", specifier = ">=0.8" },
+]
+drevo = [{ name = "drevo-py", git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe" }]
 
 [[package]]
 name = "rich"

@@ -43,7 +43,7 @@ pyiceberg is imported on first use, so the driver stays an optional extra.
 import json
 import uuid
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -58,6 +58,9 @@ from rhizodat.core.staged import StagedTable, decode_staged, encode_staged
 if TYPE_CHECKING:
     import pyarrow as pa
 
+    from rhizodat.ingest.schema import Column
+    from rhizodat.migrations.format import Step
+
 __all__ = [
     "ADAPTER",
     "IcebergBranch",
@@ -69,6 +72,18 @@ __all__ = [
 _RESERVED = ("dat_txn", "dat_tx_time")
 _TXN_PROPERTY = "dat.txn"
 _TIME_PROPERTY = "dat.tx_time"
+
+
+# Imports: portable column types as Iceberg types.
+_IMPORT_TYPES = {
+    "boolean": "boolean",
+    "int64": "long",
+    "float64": "double",
+    "date": "date",
+    "timestamp": "timestamp",
+    "timestamptz": "timestamptz",
+    "string": "string",
+}
 
 
 def _pyiceberg() -> Any:  # noqa: ANN401 - the driver module, imported lazily
@@ -292,6 +307,80 @@ class IcebergStore:
             raw=scan,
             arrow=lambda: arrow,
         )
+
+    # --- Loads -------------------------------------------------------------------------------
+
+    def table_columns(self, table: str) -> list[str] | None:
+        from pyiceberg.exceptions import NoSuchNamespaceError, NoSuchTableError
+
+        try:
+            return [f.name for f in self.catalog.load_table(table).schema().fields]
+        except (NoSuchTableError, NoSuchNamespaceError):
+            return None
+
+    def create_table_steps(
+        self, table: str, columns: Sequence["Column"], *, order_by: Sequence[str] = ()
+    ) -> list["Step"]:
+        """The namespace and the table (``namespace.table``); a column with no missing
+        value is required. ``order_by`` is ignored."""
+        from rhizodat.migrations.format import Step
+
+        namespace, dot, _ = table.rpartition(".")
+        if not dot:
+            raise ValueError(f"an Iceberg table is named namespace.table, not {table!r}")
+        cols = [
+            {"name": c.name, "type": _IMPORT_TYPES[c.type], "required": not c.nullable}
+            for c in columns
+        ]
+        return [
+            Step(
+                self.name,
+                "iceberg",
+                [
+                    {"op": "create_namespace", "namespace": namespace},
+                    {"op": "create_table", "table": table, "columns": cols},
+                ],
+            )
+        ]
+
+    def add_column_steps(self, table: str, columns: Sequence["Column"]) -> list["Step"]:
+        from rhizodat.migrations.format import Step
+
+        ops = [
+            {"op": "add_column", "table": table, "name": c.name, "type": _IMPORT_TYPES[c.type]}
+            for c in columns
+        ]
+        return [Step(self.name, "iceberg", ops)]
+
+    def load(self, table: str, batches: Iterable[Any], *, replace: bool = False) -> int:
+        """Every batch in one table transaction: one commit makes all of them visible
+        (``replace``: an overwrite, then appends). A failure commits nothing; data files
+        already written stay unreferenced until the table's orphan-file cleanup."""
+        import pyarrow as pa
+
+        t = self.catalog.load_table(table)
+        target = t.schema().as_arrow()
+        rows = 0
+        tx = t.transaction()
+        first = True
+        for batch in batches:
+            columns = [
+                batch.column(f.name)
+                if f.name in batch.schema.names
+                else pa.nulls(batch.num_rows, f.type)
+                for f in target
+            ]
+            data = pa.Table.from_arrays(columns, names=target.names).cast(target)
+            if replace and first:
+                tx.overwrite(data)
+            else:
+                tx.append(data)
+            first = False
+            rows += batch.num_rows
+        if replace and first:
+            tx.overwrite(target.empty_table())
+        tx.commit_transaction()
+        return rows
 
     migration_kinds = frozenset({"iceberg"})
 

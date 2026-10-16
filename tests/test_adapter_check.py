@@ -154,6 +154,7 @@ def test_postgres_reports_parts_and_classification(pg_dsn: str) -> None:
         "ReadOnlyQueries",
         "AppliedLocation",
         "Migrates (schema migration steps)",
+        "Loads (file imports)",
     ):
         assert checks[name].passed, name
     assert checks["Migrates (schema migration steps)"].detail == "runs sql steps"

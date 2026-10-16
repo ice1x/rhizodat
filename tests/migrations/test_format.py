@@ -120,3 +120,42 @@ def test_a_directory_with_a_duplicate_id_or_a_stray_toml_is_refused(tmp_path: Pa
         load_migrations(tmp_path)
     with pytest.raises(MigrationFormatError, match="no such directory"):
         load_migrations(tmp_path / "missing")
+
+
+# --- writing ------------------------------------------------------------------------------
+
+from hypothesis import given, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
+
+from rhizodat.migrations import to_toml  # noqa: E402
+
+_text = st.text(st.characters(codec="utf-8"), max_size=40)
+_key = st.text(st.characters(codec="utf-8"), min_size=1, max_size=12)
+_body = st.recursive(
+    st.one_of(_text, st.integers(-(2**63), 2**63 - 1), st.booleans()),
+    lambda inner: st.one_of(st.lists(inner, max_size=4), st.dictionaries(_key, inner, max_size=4)),
+    max_leaves=12,
+)
+
+
+@given(
+    body=_body,
+    kind=st.from_regex(r"[a-z][a-z0-9_]{0,10}", fullmatch=True),
+    description=st.none() | _text,
+)
+@settings(max_examples=300, deadline=None)
+def test_a_written_migration_reads_back_the_same(
+    body: object, kind: str, description: str | None
+) -> None:
+    m = Migration.of(
+        12, "import_sales", [Step("lake", kind, body), Step("pg", "sql", "SELECT 1")], description
+    )
+    assert parse_migration("0012_import_sales.toml", to_toml(m)) == m
+
+
+def test_a_written_migration_is_readable() -> None:
+    m = parse_migration("0001_bugs.toml", BUGS)
+    text = to_toml(m)
+    assert text.startswith('description = "the bug table and its graph index"\n')
+    assert '\n[[steps]]\nstore = "pg"\nsql = """\nCREATE TABLE IF NOT EXISTS bug (' in text
+    assert parse_migration("0001_bugs.toml", text) == m

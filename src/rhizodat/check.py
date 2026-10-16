@@ -7,7 +7,8 @@ opens). With one, the store is opened and its interface checked: the methods
 rhizodat calls (``Store``, ``Branch``, ``Participant``), a branch opened and
 rolled back, prepared gids listed, error classification, and every optional
 capability (read-only queries, applied location, fence, ``Classifies``,
-``Capacity``, entity parts, migration steps). Nothing is written. Behaviour (atomicity,
+``Capacity``, entity parts, migration steps, file imports). Nothing is written.
+Behaviour (atomicity,
 idempotence, recovery after a crash) is the adapter contract's job:
 ``rhizodat.testing.contract.AdapterContract`` and, for entity parts,
 ``rhizodat.testing.parts.PartStoreContract``.
@@ -167,6 +168,7 @@ _STORE_CHECKS: tuple[tuple[str, Level], ...] = (
     ("PartStore (entity parts)", "optional"),
     ("PartBranch (entity parts in a Unit of Work)", "optional"),
     ("Migrates (schema migration steps)", "optional"),
+    ("Loads (file imports)", "optional"),
     ("store closes", "required"),
 )
 
@@ -246,7 +248,7 @@ def _parses(adapter: Adapter, dsn: str) -> str:
 
 
 def _store_checks(run: _Run, store: Any) -> None:  # noqa: ANN401 - any adapter's store
-    from rhizodat.core.adapter import AppliedLocation, Fenced, Migrates, ReadOnlyQueries
+    from rhizodat.core.adapter import AppliedLocation, Fenced, Loads, Migrates, ReadOnlyQueries
     from rhizodat.core.errors import Capacity, Classifies, ErrorKind, classify
     from rhizodat.core.identity import new_id
     from rhizodat.core.parts import PartBranch, PartStore
@@ -349,6 +351,12 @@ def _store_checks(run: _Run, store: Any) -> None:  # noqa: ANN401 - any adapter'
         run.probe("Migrates (schema migration steps)", "optional", kinds)
     else:
         run.add("Migrates (schema migration steps)", "optional", False)
+    run.add(
+        "Loads (file imports)",
+        "optional",
+        isinstance(store, Loads) and isinstance(store, Migrates),
+        "" if isinstance(store, Migrates) or not isinstance(store, Loads) else "needs Migrates too",
+    )
 
 
 def _redacted(dsn: str | None) -> str | None:
@@ -366,12 +374,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("adapter", help="module:ATTR (e.g. rhizodat_mysql:ADAPTER) or a kind")
     check.add_argument("--dsn", help="open a store at this DSN and check it (nothing is written)")
     check.add_argument("--json", action="store_true", help="print the report as JSON")
+    from rhizodat.ingest import cli as import_cli
     from rhizodat.migrations import cli as migrate_cli
 
     migrate_cli.add_parser(commands)
+    import_cli.add_parser(commands)
     args = parser.parse_args(argv)
     if args.command == "migrate":
         return migrate_cli.run(args)
+    if args.command == "import":
+        return import_cli.run(args)
 
     try:
         adapter = load_adapter(args.adapter)

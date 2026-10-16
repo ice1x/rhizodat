@@ -44,6 +44,7 @@ __all__ = [
     "load_migrations",
     "parse_migration",
     "statements",
+    "to_toml",
 ]
 
 _FILE = re.compile(r"([0-9]+)_([a-z0-9_]+)\.toml")
@@ -184,6 +185,72 @@ def _check_body(where: str, i: int, value: object) -> None:
                 _check_body(where, i, v)
             return
     raise MigrationFormatError(f"{where}: step {i}: unsupported value {value!r}")
+
+
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _toml_text(s: str) -> str:
+    # JSON string escapes are valid TOML basic-string escapes; TOML also refuses a raw DEL.
+    return json.dumps(s, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def _toml_key(k: str) -> str:
+    return k if _BARE_KEY.fullmatch(k) else _toml_text(k)
+
+
+def _toml_value(v: object) -> str:
+    match v:
+        case bool():
+            return "true" if v else "false"
+        case int():
+            return str(v)
+        case str():
+            return _toml_text(v)
+        case list():
+            return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+        case dict():
+            if not v:
+                return "{}"
+            return (
+                "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(x)}" for k, x in v.items()) + " }"
+            )
+    raise ValueError(f"cannot write {v!r} as a migration body")
+
+
+def _toml_body(v: object) -> str:
+    """Text with line breaks as a multi-line string when that needs no escapes."""
+    if (
+        isinstance(v, str)
+        and "\n" in v
+        and '"""' not in v
+        and "\\" not in v
+        and not v.endswith('"')
+        and all(c in "\n\t" or ord(c) >= 0x20 for c in v)
+        and "\x7f" not in v
+    ):
+        return f'"""\n{v}"""'
+    if (
+        isinstance(v, str)
+        and '"' in v
+        and "'" not in v
+        and all(c == "\t" or 0x20 <= ord(c) != 0x7F for c in v)
+    ):
+        return f"'{v}'"  # a literal string: SQL's quoted names stay readable
+    return _toml_value(v)
+
+
+def to_toml(migration: Migration) -> str:
+    """The file text of ``migration``; ``parse_migration`` reads it back unchanged."""
+    out = []
+    if migration.description is not None:
+        out.append(f"description = {_toml_text(migration.description)}\n")
+    for step in migration.steps:
+        out.append(
+            f"\n[[steps]]\nstore = {_toml_text(step.store)}\n"
+            f"{_toml_key(step.kind)} = {_toml_body(step.body)}\n"
+        )
+    return "".join(out).lstrip("\n")
 
 
 def statements(kind: str, body: object) -> list[str]:
