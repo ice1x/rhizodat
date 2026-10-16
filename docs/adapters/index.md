@@ -19,7 +19,7 @@ Contents:
 ## 1. Can the store join at all?
 
 rhizodat commits a meta-transaction over several stores with a journal and
-the decision recorded in it (README: *The commit protocol*). A store takes part
+the decision recorded in it ([the commit protocol](../concepts/transactions.md#commit-protocol-several-branches)). A store takes part
 in one of two ways, and needs **one** of them.
 
 **Two-phase (before the decision).** The store's own transactions can be
@@ -185,7 +185,7 @@ removes every version, and for a one-phase store only the versions older than
 its own `dat_tx_time`, so a late erase never removes a later write. A branch
 keeps one version per part per Unit of Work.
 
-The README's *How parts are stored* table shows the four layouts.
+The table of how parts are stored in the [Repository guide](../guide/repository.md) shows the four layouts.
 
 ## 7. Checking an adapter
 

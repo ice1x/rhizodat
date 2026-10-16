@@ -65,3 +65,19 @@ def test_concurrent_claims_never_double_book_a_task(dat: Rhizodat) -> None:
     )
     assert {r["claimed_by"]: r["id"] for r in rows} == results
     assert sum(attempts.values()) > 8  # conflicts happened and were retried
+
+
+def test_stores_opened_by_dsn_need_no_install_step(pg_dsn: str, pg_schema: str) -> None:
+    """The service tables (dat_applied) appear on first use in a Unit of Work."""
+    sep = "&" if "?" in pg_dsn else "?"
+    dsn = f"{pg_dsn}{sep}schema={pg_schema}"
+    with Rhizodat(stores={"a": dsn}, journal=PostgresJournal(pg_dsn, schema=pg_schema)) as d:
+        d.store("a").execute("CREATE TABLE note (id int PRIMARY KEY)")
+
+        @d.transactional
+        def write(uow: UnitOfWork, n: int) -> None:
+            uow.store("a").execute("INSERT INTO note VALUES (%s)", (n,))
+
+        assert isinstance(write(1), Committed)
+        assert isinstance(write(2), Committed)
+        assert d.store("a").execute("SELECT count(*) AS n FROM note").one()["n"] == 2

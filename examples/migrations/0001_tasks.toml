@@ -1,0 +1,13 @@
+description = "tasks in PostgreSQL, their activity log in ClickHouse"
+
+[[steps]]
+store = "pg"
+sql = """
+CREATE TABLE IF NOT EXISTS example_tracker_task (
+    id uuid PRIMARY KEY,
+    title text NOT NULL
+)"""
+
+[[steps]]
+store = "events"
+sql = "CREATE TABLE IF NOT EXISTS example_activity (task UUID, at DateTime64(3), what String) ENGINE = MergeTree ORDER BY (task, at)"
