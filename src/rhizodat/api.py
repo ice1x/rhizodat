@@ -111,6 +111,7 @@ class Rhizodat:
         self.soft_delete_window = soft_delete_window
         """How long a soft-deleted entity stays restorable, unless its type sets its own."""
         self._kinds: dict[type, _Kind] = {}
+        self._installed: set[str] = set()
         for name in stores:
             if not _STORE_NAME.match(name):
                 raise ValueError(f"invalid store name {name!r}: letters, digits, '_', '.', '-'")
@@ -164,8 +165,20 @@ class Rhizodat:
     def unit_of_work(self) -> UnitOfWork:
         """A Unit of Work that runs once; use ``transactional`` for retries."""
         return UnitOfWork(
-            new_id(), self.store, self._coordinator, repositories=self._uow_repository
+            new_id(), self._uow_store, self._coordinator, repositories=self._uow_repository
         )
+
+    def _uow_store(self, name: str) -> Store:
+        """A store about to get a branch, with its service tables (``dat_applied``) created
+        the first time: idempotent, and only on write paths, so a read-only user (such as
+        rhizodat-MCP's) never needs DDL rights."""
+        store = self.store(name)
+        if name not in self._installed:
+            install = getattr(store, "install", None)
+            if callable(install):
+                install()
+            self._installed.add(name)
+        return store
 
     def repository[T](self, entity_type: type[T]) -> "EntityRepository[T]":
         """CRUD for one entity type: committed reads, one Unit of Work per write."""
