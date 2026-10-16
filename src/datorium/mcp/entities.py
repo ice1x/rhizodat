@@ -19,10 +19,13 @@ from collections.abc import Mapping
 from typing import Any
 
 from datorium.core.mapping import EntityMapping, Ref, is_entity, mapping_of
+from datorium.core.parts import VALIDITY
 
 __all__ = [
     "describe",
     "entity_json",
+    "field_types",
+    "fields",
     "from_json",
     "load_entity_types",
     "replace",
@@ -201,22 +204,38 @@ def _bad(field: str, what: str, value: object) -> typing.NoReturn:
     raise ValueError(f"{field}: expected {what}, got {value!r}")
 
 
+def fields(mapping: EntityMapping) -> tuple[str, ...]:
+    """What an agent reads and writes: the mapped fields and, with valid time, the period."""
+    return (*mapping.fields, *(VALIDITY if mapping.valid_time else ()))
+
+
+def field_types(mapping: EntityMapping) -> dict[str, Any]:
+    types_ = mapping.field_types()
+    if mapping.valid_time:
+        types_ |= dict.fromkeys(VALIDITY, dt.datetime | None)
+    return types_
+
+
 def values_from_json(
     mapping: EntityMapping, raw: Mapping[str, object], *, partial: bool
 ) -> dict[str, Any]:
-    """Field values from JSON; every mapped field unless ``partial``."""
+    """Field values from JSON; every mapped field unless ``partial`` (a period may be left
+    out: unbounded)."""
     service = sorted(set(raw) & set(_SERVICE))
     if service:
         raise ValueError(f"{', '.join(service)}: service fields are set by datorium")
-    unknown = sorted(set(raw) - set(mapping.fields))
+    known = fields(mapping)
+    unknown = sorted(set(raw) - set(known))
     if unknown:
-        known = ", ".join(mapping.fields)
-        raise ValueError(f"{mapping.type_name} has no field {', '.join(unknown)} (fields: {known})")
+        listed = ", ".join(known)
+        raise ValueError(
+            f"{mapping.type_name} has no field {', '.join(unknown)} (fields: {listed})"
+        )
     if not partial:
         missing = [f for f in mapping.fields if f not in raw]
         if missing:
             raise ValueError(f"{mapping.type_name}: missing field(s) {', '.join(missing)}")
-    types_ = mapping.field_types()
+    types_ = field_types(mapping)
     return {f: from_json(mapping, f, types_[f], v) for f, v in raw.items()}
 
 
@@ -239,7 +258,7 @@ def entity_json(obj: object) -> dict[str, Any]:
 
     mapping = mapping_of(type(obj))
     out: dict[str, Any] = {name: jsonable(getattr(obj, name, None)) for name in _SERVICE}
-    for f in mapping.fields:
+    for f in fields(mapping):
         out[f] = jsonable(_plain(getattr(obj, f)))
     return out
 

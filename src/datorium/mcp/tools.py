@@ -163,17 +163,18 @@ class Tools:
 
     def entity_types(self) -> list[dict[str, Any]]:
         """Each offered entity type: its fields (how to write each), stores and delete mode."""
-        from datorium.mcp.entities import describe
+        from datorium.mcp.entities import describe, field_types, fields
 
         out = []
         for name, cls in self._types.items():
             mapping = mapping_of(cls)
-            types_ = mapping.field_types()
+            types_ = field_types(mapping)
             window = mapping.soft_delete_window or self._dat.soft_delete_window
             out.append(
                 {
                     "name": name,
-                    "fields": {f: describe(mapping, f, types_[f]) for f in mapping.fields},
+                    "fields": {f: describe(mapping, f, types_[f]) for f in fields(mapping)},
+                    "valid_time": mapping.valid_time,
                     "stores": {s: list(fs) for s, fs in mapping.stores.items()},
                     "delete": "soft" if mapping.soft_delete else "hard",
                     "restorable_for_s": window.total_seconds() if mapping.soft_delete else None,
@@ -187,15 +188,19 @@ class Tools:
         dat_id: str,
         *,
         as_of: str | None = None,
+        known_at: str | None = None,
         include_deleted: bool = False,
     ) -> dict[str, Any] | None:
-        """The entity now, or as it was known at ``as_of`` (ISO 8601 with a time zone)."""
+        """The entity known at ``known_at`` (now if ``None``); for a valid-time type the
+        version holding at ``as_of``. Times are ISO 8601 with a time zone."""
         from datorium.mcp.entities import entity_json
 
-        at = None
-        if as_of is not None:
-            at = _moment(as_of)
-        found = self._repo(type_name).get(_id(dat_id), as_of=at, include_deleted=include_deleted)
+        found = self._repo(type_name).get(
+            _id(dat_id),
+            as_of=None if as_of is None else _moment(as_of),
+            known_at=None if known_at is None else _moment(known_at),
+            include_deleted=include_deleted,
+        )
         return None if found is None else entity_json(found)
 
     def entity_history(self, type_name: str, dat_id: str) -> list[dict[str, Any]]:
@@ -224,7 +229,7 @@ class Tools:
         cls = self._type(type_name)
         changes = values_from_json(mapping_of(cls), values, partial=True)
         repo = self._repo(type_name)
-        current = repo.get(_id(dat_id))
+        current = _latest(repo, mapping_of(cls), _id(dat_id))
         if current is None:
             raise LookupError(f"no {type_name} {dat_id}")
         outcome = repo.update(replace(current, changes))
@@ -269,6 +274,17 @@ class Tools:
             raise PermissionError(
                 "entity writes are off: the server was started without DATORIUM_MCP_WRITES=1"
             )
+
+
+def _latest(repo: Any, mapping: Any, dat_id: uuid.UUID) -> object | None:  # noqa: ANN401
+    """The version an update starts from: the latest, whatever period it holds for."""
+    if not mapping.valid_time:
+        current: object | None = repo.get(dat_id)
+        return current
+    versions: list[object] = repo.history(dat_id)
+    if not versions or getattr(versions[-1], "dat_deleted_at", None) is not None:
+        return None
+    return versions[-1]
 
 
 def _id(raw: str) -> uuid.UUID:

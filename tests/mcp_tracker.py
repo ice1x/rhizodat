@@ -32,3 +32,10 @@ class Bug:
     tags: list[str]
     attachment: bytes | None
     meta: dict[str, object]
+
+
+@entity(stores={"pg": ["hours"]}, name="tracker.Sla", valid_time=True)
+class Sla:
+    """A service level that holds for a period: answer within ``hours``."""
+
+    hours: int

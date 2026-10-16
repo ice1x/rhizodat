@@ -231,3 +231,37 @@ def test_the_environment_names_entities_and_enables_writes() -> None:
     assert config_from_env({"DATORIUM_STORE_PG": "postgresql://db/app"}).writes is False
     with pytest.raises(ConfigError, match="DATORIUM_MCP_WRITES"):
         config_from_env({**env, "DATORIUM_MCP_WRITES": "maybe"})
+
+
+# --- valid time -------------------------------------------------------------------------
+
+
+def test_an_agent_reads_and_writes_validity_periods(faker: Faker) -> None:
+    from mcp_tracker import Sla
+
+    wall = Ticking()
+    dat = Datorium(
+        stores={"pg": MemoryEntityStore("pg"), "graph": MemoryEntityStore("graph")},
+        journal=MemoryJournal(wall_ms=wall),
+        clock=HybridLogicalClock(wall_ms=wall),
+    )
+    t = Tools(dat, entities=[Sla], writes=True)
+    try:
+        [described] = t.entity_types()
+        assert described["valid_time"] is True
+        assert (
+            described["fields"]["valid_from"] == "date-time (ISO 8601, with a time zone), or null"
+        )
+        start, end = "2026-01-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"
+        created = t.create_entity(
+            "tracker.Sla",
+            {"hours": 24, "valid_from": start, "valid_to": end},
+        )["entity"]
+        assert (created["valid_from"], created["valid_to"]) == (start, end)
+        dat_id = created["dat_id"]
+        assert t.get_entity("tracker.Sla", dat_id, as_of="2026-03-01T00:00:00+00:00") is not None
+        assert t.get_entity("tracker.Sla", dat_id, as_of="2026-08-01T00:00:00+00:00") is None
+        with pytest.raises(ValueError, match="valid_from must be before valid_to"):
+            t.update_entity("tracker.Sla", dat_id, {"valid_from": end, "valid_to": start})
+    finally:
+        t.close()

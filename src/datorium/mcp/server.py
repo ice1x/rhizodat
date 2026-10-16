@@ -106,12 +106,17 @@ def _entity_tools(server: "MCPServer", tools: Tools, read_only: Any) -> None:  #
         type: str,
         dat_id: str,
         as_of: str | None = None,
+        known_at: str | None = None,
         include_deleted: bool = False,
     ) -> dict[str, Any]:
-        """One entity by dat_id: now, or as it was known at `as_of` (ISO 8601 with a time
-        zone), as {"entity": ...}; the entity is null when there is none. Soft-deleted ones
-        only with include_deleted."""
-        found = tools.get_entity(type, dat_id, as_of=as_of, include_deleted=include_deleted)
+        """One entity by dat_id as {"entity": ...}; the entity is null when there is none.
+        known_at: as datorium knew it then (default now). as_of: for a type with valid time
+        (see entity_types), the version holding at that moment; otherwise the same as
+        known_at. Times are ISO 8601 with a time zone. Soft-deleted ones only with
+        include_deleted."""
+        found = tools.get_entity(
+            type, dat_id, as_of=as_of, known_at=known_at, include_deleted=include_deleted
+        )
         return {"entity": found}
 
     @server.tool(annotations=read_only)
