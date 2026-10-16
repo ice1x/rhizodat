@@ -1,4 +1,4 @@
-# rhizodat 🌱
+# rhizodat 🍄
 
 ## A bitemporal polyglot data layer
 
