@@ -44,7 +44,7 @@ rhizodat = "rhizodat.check:main"
 rhizodat-mcp = "rhizodat.mcp.server:main"
 
 [project.urls]
-Repository = "https://github.com/ice1x/datorium"
+Repository = "https://github.com/ice1x/rhizodat"
 
 [dependency-groups]
 dev = [
