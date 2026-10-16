@@ -5,7 +5,7 @@ members = ["crates/rhizodat-clickhouse", "crates/rhizodat-conformance", "crates/
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/ice1x/datorium"
+repository = "https://github.com/ice1x/rhizodat"
 rust-version = "1.94"
 
 [workspace.lints.rust]
