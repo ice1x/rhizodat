@@ -1,4 +1,4 @@
-"""Connection strings for stores and the journal (README "Connection strings")."""
+"""Connection strings for stores and the journal (docs/adapters/contracts.md)."""
 
 from urllib.parse import quote
 

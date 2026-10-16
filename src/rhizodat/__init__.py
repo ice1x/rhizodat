@@ -1,6 +1,6 @@
 """rhizodat: a bitemporal polyglot data layer.
 
-The specification v0.1 is built against lives in the repository README.
+The specification v0.1 is built against lives in the documentation (docs/).
 """
 
 from importlib.metadata import version

@@ -27,6 +27,18 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
 
+  docs:
+    # The documentation site builds with no broken link, anchor or API reference.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --group docs
+      - run: uv run --group docs mkdocs build --strict
+
   rust:
     # rhizodat-core: the same conformance vectors as the Python reference.
     runs-on: ubuntu-latest

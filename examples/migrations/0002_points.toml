@@ -1,0 +1,5 @@
+description = "story points"
+
+[[steps]]
+store = "pg"
+sql = "ALTER TABLE example_tracker_task ADD COLUMN IF NOT EXISTS points int"
