@@ -245,6 +245,16 @@ class ClickHouseStore:
         self._client.command(query, parameters=dict(params) if params else None)
         return Result(iter(()), columns=())
 
+    migration_kinds = frozenset({"sql"})
+
+    def run_migration_step(self, kind: str, body: Any) -> None:  # noqa: ANN401 - TOML data
+        """A ``sql`` step: one statement per request (ClickHouse runs one at a time and
+        has no transactional DDL; use ``IF NOT EXISTS`` / ``IF EXISTS``)."""
+        from datorium.migrations.format import statements
+
+        for sql in statements(kind, body):
+            self._client.command(sql)
+
     def read_only(self, query: str, params: Mapping[str, Any] | None = None) -> Result:
         """A native read the server guarantees cannot write (``readonly = 2``: no writes,
         no DDL; settings may still change for the query)."""

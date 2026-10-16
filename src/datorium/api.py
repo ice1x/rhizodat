@@ -26,7 +26,13 @@ from datorium.core.retry import Retry
 from datorium.core.unit_of_work import Store, UnitOfWork
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from datetime import datetime
+    from pathlib import Path
+
+    from datorium.core.journal import AppliedMigration
     from datorium.core.repository import EntityRepository, Repository, _Kind
+    from datorium.migrations import Migration, MigrationReport
 
 __all__ = ["Datorium"]
 
@@ -229,6 +235,31 @@ class Datorium:
             participants={name: s.participant() for name, s in self._stores.items()},
             **kwargs,
         )
+
+    def migrate(
+        self,
+        source: "str | Path | Sequence[Migration]",
+        *,
+        to: int | None = None,
+        dry_run: bool = False,
+    ) -> "MigrationReport":
+        """Run the migrations in ``source`` (a directory of ``NNNN_name.toml`` files, or
+        ``Migration`` objects) that the journal has not recorded, up to ``to``.
+
+        Raises ``MigrationError`` before anything runs if the history does not match
+        the source or a step cannot run on its store, ``MigrationFailed`` when a step
+        fails (earlier migrations stay applied; the next run repeats the failed one).
+        ``dry_run`` only checks and reports what would run.
+        """
+        from datorium.migrations.runner import migrate
+
+        return migrate(self, source, to=to, dry_run=dry_run)
+
+    def schema_versions(self, *, as_of: "datetime | None" = None) -> "list[AppliedMigration]":
+        """The migrations applied (as known at ``as_of``, if given), by id."""
+        from datorium.migrations.runner import schema_versions
+
+        return schema_versions(self, as_of=as_of)
 
     def __enter__(self) -> Self:
         return self

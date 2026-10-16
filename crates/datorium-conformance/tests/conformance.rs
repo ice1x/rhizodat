@@ -22,6 +22,7 @@ use datorium_core::journal::{
     BranchRecord, Journal, State, TransitionError, check_transition, decode_branches,
     encode_branches,
 };
+use datorium_core::migrations::{canonical, parse_migration};
 use datorium_core::recovery::Recovery;
 use datorium_core::retry::Retry;
 use datorium_core::rows::{Batch, RowValue, decode_batches, encode_batches};
@@ -76,6 +77,7 @@ fn every_vector_file_is_exercised() {
         "rows.json",
         "staged_files.json",
         "crash_matrix.json",
+        "migrations.json",
     ]
     .into();
     let present: BTreeSet<String> = std::fs::read_dir(vectors())
@@ -510,6 +512,40 @@ fn staged_files() {
         let err =
             decode_staged(Some(text(&case["payload"]).as_bytes())).expect_err(text(&case["name"]));
         assert!(err.to_string().contains("payload"), "{err}");
+    }
+}
+
+// --- migrations ------------------------------------------------------------------------
+
+#[test]
+fn migration_files() {
+    let doc = load("migrations.json");
+    for case in doc["cases"].as_array().unwrap() {
+        let name = text(&case["name"]);
+        let m = parse_migration(text(&case["filename"]), text(&case["text"]))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(m.id, uint(&case["id"]), "{name}");
+        assert_eq!(m.name, text(&case["migration_name"]), "{name}");
+        assert_eq!(
+            m.description.as_deref(),
+            case["description"].as_str(),
+            "{name}"
+        );
+        let steps: Vec<Value> = m
+            .steps
+            .iter()
+            .map(|s| json!({"store": s.store, "kind": s.kind, "body": s.body.to_json()}))
+            .collect();
+        assert_eq!(Value::from(steps), case["steps"], "{name}");
+        assert_eq!(canonical(&m), text(&case["canonical"]), "{name}");
+        assert_eq!(m.checksum, text(&case["checksum"]), "{name}");
+    }
+    for case in doc["errors"].as_array().unwrap() {
+        let name = text(&case["name"]);
+        let err = parse_migration(text(&case["filename"]), text(&case["text"]))
+            .expect_err(name)
+            .to_string();
+        assert!(err.starts_with(text(&case["filename"])), "{name}: {err}");
     }
 }
 

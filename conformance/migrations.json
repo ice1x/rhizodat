@@ -1,0 +1,213 @@
+{
+  "description": "Schema migration files (NNNN_name.toml): the id and name from the file name, the optional description, the steps ({store, kind, body}: exactly one body key besides store), and the checksum: sha256 (lower-case hex) of the canonical form, the JSON of {\"id\", \"name\", \"steps\": [{\"body\", \"kind\", \"store\"}]} with every object's keys sorted, no whitespace, text as UTF-8 with only \\\" \\\\ \\b \\f \\n \\r \\t and \\u00XX (lower-case hex) for other control characters escaped. The description is not part of it. cases: each implementation parses text read from filename to these fields and the exact canonical text and checksum. errors: files every implementation rejects (floats and dates are refused: they have no single text form across languages).",
+  "cases": [
+    {
+      "name": "bugs: three stores, multi-line SQL",
+      "filename": "0001_bugs.toml",
+      "text": "description = \"the bug table and its graph index\"\n\n[[steps]]\nstore = \"pg\"\nsql = \"\"\"\nCREATE TABLE IF NOT EXISTS bug (\n    id uuid PRIMARY KEY,\n    title text NOT NULL\n)\"\"\"\n\n[[steps]]\nstore = \"graph\"\ncypher = [\"CREATE INDEX bug_title IF NOT EXISTS FOR (b:Bug) ON (b.title)\"]\n\n[[steps]]\nstore = \"lake\"\niceberg = [{ op = \"add_column\", table = \"tracker.bugs\", name = \"severity\", type = \"int\" }]\n",
+      "id": 1,
+      "migration_name": "bugs",
+      "description": "the bug table and its graph index",
+      "steps": [
+        {
+          "store": "pg",
+          "kind": "sql",
+          "body": "CREATE TABLE IF NOT EXISTS bug (\n    id uuid PRIMARY KEY,\n    title text NOT NULL\n)"
+        },
+        {
+          "store": "graph",
+          "kind": "cypher",
+          "body": [
+            "CREATE INDEX bug_title IF NOT EXISTS FOR (b:Bug) ON (b.title)"
+          ]
+        },
+        {
+          "store": "lake",
+          "kind": "iceberg",
+          "body": [
+            {
+              "op": "add_column",
+              "table": "tracker.bugs",
+              "name": "severity",
+              "type": "int"
+            }
+          ]
+        }
+      ],
+      "canonical": "{\"id\":1,\"name\":\"bugs\",\"steps\":[{\"body\":\"CREATE TABLE IF NOT EXISTS bug (\\n    id uuid PRIMARY KEY,\\n    title text NOT NULL\\n)\",\"kind\":\"sql\",\"store\":\"pg\"},{\"body\":[\"CREATE INDEX bug_title IF NOT EXISTS FOR (b:Bug) ON (b.title)\"],\"kind\":\"cypher\",\"store\":\"graph\"},{\"body\":[{\"name\":\"severity\",\"op\":\"add_column\",\"table\":\"tracker.bugs\",\"type\":\"int\"}],\"kind\":\"iceberg\",\"store\":\"lake\"}]}",
+      "checksum": "3652c467441dba973b5ef8575d7b51ed6ce5551df31364cf5b6947774368b1c0"
+    },
+    {
+      "name": "leading zeros, no description, nested tables sorted by key",
+      "filename": "0042_points.toml",
+      "text": "[[steps]]\nstore = \"lake\"\niceberg = [\n  { table = \"erp.sales\", op = \"create_table\", columns = [{ type = \"string\", name = \"id\", required = true }, { name = \"n\", type = \"long\" }] },\n]\n",
+      "id": 42,
+      "migration_name": "points",
+      "description": null,
+      "steps": [
+        {
+          "store": "lake",
+          "kind": "iceberg",
+          "body": [
+            {
+              "table": "erp.sales",
+              "op": "create_table",
+              "columns": [
+                {
+                  "type": "string",
+                  "name": "id",
+                  "required": true
+                },
+                {
+                  "name": "n",
+                  "type": "long"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "canonical": "{\"id\":42,\"name\":\"points\",\"steps\":[{\"body\":[{\"columns\":[{\"name\":\"id\",\"required\":true,\"type\":\"string\"},{\"name\":\"n\",\"type\":\"long\"}],\"op\":\"create_table\",\"table\":\"erp.sales\"}],\"kind\":\"iceberg\",\"store\":\"lake\"}]}",
+      "checksum": "cfb72fa494a71d3bff43ca665d5cf74d04a2f19a26e4b01fcad1b803fd6b1095"
+    },
+    {
+      "name": "text escapes: quotes, backslash, tab, newline, a control character, non-ASCII",
+      "filename": "0003_escapes.toml",
+      "text": "[[steps]]\nstore = \"graph\"\ncypher = \"MERGE (t:Tag {title: \\\"Tag:été — \\\\ \\t end\\\"}) SET t.note = \\\"line\\nnext\\u0001\\\"\"\n",
+      "id": 3,
+      "migration_name": "escapes",
+      "description": null,
+      "steps": [
+        {
+          "store": "graph",
+          "kind": "cypher",
+          "body": "MERGE (t:Tag {title: \"Tag:été — \\ \t end\"}) SET t.note = \"line\nnext\u0001\""
+        }
+      ],
+      "canonical": "{\"id\":3,\"name\":\"escapes\",\"steps\":[{\"body\":\"MERGE (t:Tag {title: \\\"Tag:été — \\\\ \\t end\\\"}) SET t.note = \\\"line\\nnext\\u0001\\\"\",\"kind\":\"cypher\",\"store\":\"graph\"}]}",
+      "checksum": "a709c04ac5fdb3c15ab854c753623e00b77c9b4b79a506789f81e06dbadfb99c"
+    },
+    {
+      "name": "integers and booleans in a plug-in kind",
+      "filename": "0004_flags.toml",
+      "text": "[[steps]]\nstore = \"kv\"\nsettings = { ttl_s = 86400, compress = true, shards = [1, 2, -3] }\n",
+      "id": 4,
+      "migration_name": "flags",
+      "description": null,
+      "steps": [
+        {
+          "store": "kv",
+          "kind": "settings",
+          "body": {
+            "ttl_s": 86400,
+            "compress": true,
+            "shards": [
+              1,
+              2,
+              -3
+            ]
+          }
+        }
+      ],
+      "canonical": "{\"id\":4,\"name\":\"flags\",\"steps\":[{\"body\":{\"compress\":true,\"shards\":[1,2,-3],\"ttl_s\":86400},\"kind\":\"settings\",\"store\":\"kv\"}]}",
+      "checksum": "00a4497dd2d82ff33f4f0d8bdeb003f2a697256dbcf5b0755a09b274839ed028"
+    }
+  ],
+  "errors": [
+    {
+      "name": "no number",
+      "filename": "bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "id 0",
+      "filename": "0000_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "upper-case name",
+      "filename": "0001_Bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "not TOML",
+      "filename": "0001_bugs.toml",
+      "text": "steps = ["
+    },
+    {
+      "name": "no steps",
+      "filename": "0001_bugs.toml",
+      "text": ""
+    },
+    {
+      "name": "empty steps",
+      "filename": "0001_bugs.toml",
+      "text": "steps = []"
+    },
+    {
+      "name": "unknown top-level key",
+      "filename": "0001_bugs.toml",
+      "text": "author = \"me\"\n[[steps]]\nstore = \"pg\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "description not a string",
+      "filename": "0001_bugs.toml",
+      "text": "description = 1\n[[steps]]\nstore = \"pg\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "step without a store",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nsql = \"x\"\n"
+    },
+    {
+      "name": "step without a body",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\n"
+    },
+    {
+      "name": "step with two bodies",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = \"x\"\ncypher = \"y\"\n"
+    },
+    {
+      "name": "invalid store name",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nstore = \"p g\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "invalid kind",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nSQL = \"x\"\n"
+    },
+    {
+      "name": "a float in the body",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = 1.5\n"
+    },
+    {
+      "name": "a date in the body",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = 2026-01-01\n"
+    },
+    {
+      "name": "steps not tables",
+      "filename": "0001_bugs.toml",
+      "text": "steps = [\"x\"]\n"
+    },
+    {
+      "name": "a store name ending in a newline",
+      "filename": "0001_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\\n\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "non-ASCII digits in the file name",
+      "filename": "١_bugs.toml",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = \"x\"\n"
+    },
+    {
+      "name": "a file name ending in a newline",
+      "filename": "0001_bugs.toml\n",
+      "text": "[[steps]]\nstore = \"pg\"\nsql = \"x\"\n"
+    }
+  ]
+}

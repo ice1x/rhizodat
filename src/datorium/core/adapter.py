@@ -12,8 +12,8 @@ or calls ``register_adapter`` itself. Adapters are loaded on first use; a plug-i
 that fails to load is skipped and reported when a DSN needs a missing scheme.
 
 What a store can do beyond ``Store`` is a capability protocol here
-(``ReadOnlyQueries``, ``AppliedLocation``, ``Fenced``), checked with
-``isinstance``.
+(``ReadOnlyQueries``, ``AppliedLocation``, ``Fenced``, ``Migrates``), checked
+with ``isinstance``.
 """
 
 import importlib
@@ -34,6 +34,7 @@ __all__ = [
     "Adapter",
     "AppliedLocation",
     "Fenced",
+    "Migrates",
     "ReadOnlyQueries",
     "Scheme",
     "adapter_for",
@@ -117,6 +118,22 @@ class Fenced(Protocol):
 
     @property
     def fence_location(self) -> tuple[str, ...] | None: ...
+
+
+@runtime_checkable
+class Migrates(Protocol):
+    """Runs schema migration steps of the kinds it names (``sql``, ``cypher``, ...).
+
+    A step must be safe to run again (``IF NOT EXISTS``, a check before a change):
+    a migration over several stores is not atomic, and after a failure the whole
+    migration runs again.
+    """
+
+    @property
+    def migration_kinds(self) -> frozenset[str]: ...
+
+    def run_migration_step(self, kind: str, body: Any) -> None:  # noqa: ANN401 - TOML data
+        ...
 
 
 # --- the registry -----------------------------------------------------------------------

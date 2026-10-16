@@ -22,9 +22,18 @@ SQL journal::
     branches     TEXT      JSON list of {store, gid, two_phase, payload (base64)}
     created_ms   BIGINT    wall clock of the coordinator, for scans only
     updated_ms   BIGINT
+
+The journal store also keeps the schema migration history (``MigrationHistory``),
+one row per applied migration, in ``<journal table>_migrations``::
+
+    id           BIGINT    primary key, the migration's number
+    name         TEXT
+    checksum     TEXT      sha256 of the migration's canonical form, hex
+    dat_tx_time  BIGINT    HLC when it was recorded
 """
 
 import base64
+import datetime
 import enum
 import json
 import sqlite3
@@ -34,23 +43,26 @@ import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from datorium.core.adapter import Adapter, Scheme
 from datorium.core.dsn import parse_dsn
 
 __all__ = [
+    "AppliedMigration",
     "BranchRecord",
     "Journal",
     "JournalConflict",
     "JournalRecord",
     "MemoryJournal",
+    "MigrationHistory",
     "SqliteJournal",
     "State",
     "check_transition",
     "conflict_error",
     "decode_branches",
     "encode_branches",
+    "migration_recorded",
     "open_journal",
 ]
 
@@ -122,6 +134,40 @@ class Journal(Protocol):
     def close(self) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AppliedMigration:
+    """One applied schema migration as the journal recorded it."""
+
+    id: int
+    name: str
+    checksum: str
+    dat_tx_time: int
+    """The HLC timestamp when it was recorded: ``as_of`` reads compare against it."""
+
+    @property
+    def applied_at(self) -> "datetime.datetime":
+        from datorium.core.parts import hlc_datetime
+
+        return hlc_datetime(self.dat_tx_time)
+
+
+@runtime_checkable
+class MigrationHistory(Protocol):
+    """The schema migrations applied so far, kept in the journal store."""
+
+    def applied_migrations(self) -> list[AppliedMigration]:
+        """Every recorded migration, by id."""
+        ...
+
+    def record_migration(self, applied: AppliedMigration) -> None:
+        """Record ``applied``; ``JournalConflict`` if its id is already recorded."""
+        ...
+
+
+def migration_recorded(migration_id: int) -> JournalConflict:
+    return JournalConflict(f"migration {migration_id} is already recorded")
+
+
 def _system_ms() -> int:
     return time.time_ns() // 1_000_000
 
@@ -148,6 +194,7 @@ class MemoryJournal:
         self._wall_ms = wall_ms
         self._lock = threading.Lock()
         self._records: dict[uuid.UUID, JournalRecord] = {}
+        self._migrations: dict[int, AppliedMigration] = {}
 
     def begin(self, dat_txn: uuid.UUID, branches: Sequence[BranchRecord]) -> JournalRecord:
         with self._lock:
@@ -207,6 +254,16 @@ class MemoryJournal:
                 )
             del self._records[dat_txn]
 
+    def applied_migrations(self) -> list[AppliedMigration]:
+        with self._lock:
+            return sorted(self._migrations.values(), key=lambda m: m.id)
+
+    def record_migration(self, applied: AppliedMigration) -> None:
+        with self._lock:
+            if applied.id in self._migrations:
+                raise migration_recorded(applied.id)
+            self._migrations[applied.id] = applied
+
     def close(self) -> None:
         pass
 
@@ -221,6 +278,12 @@ CREATE TABLE IF NOT EXISTS dat_journal (
     updated_ms  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS dat_journal_pending ON dat_journal (state, updated_ms);
+CREATE TABLE IF NOT EXISTS dat_journal_migrations (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    checksum    TEXT NOT NULL,
+    dat_tx_time INTEGER NOT NULL
+);
 """
 
 
@@ -343,6 +406,24 @@ class SqliteJournal:
                 "DELETE FROM dat_journal WHERE dat_txn = ? AND state IN (?, ?)",
                 (str(dat_txn), *(s.value for s in _FINAL)),
             )
+
+    def applied_migrations(self) -> list[AppliedMigration]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, name, checksum, dat_tx_time FROM dat_journal_migrations ORDER BY id"
+            ).fetchall()
+        return [AppliedMigration(*r) for r in rows]
+
+    def record_migration(self, applied: AppliedMigration) -> None:
+        with self._lock:
+            try:
+                self._db.execute(
+                    "INSERT INTO dat_journal_migrations (id, name, checksum, dat_tx_time)"
+                    " VALUES (?, ?, ?, ?)",
+                    (applied.id, applied.name, applied.checksum, applied.dat_tx_time),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise migration_recorded(applied.id) from exc
 
     def close(self) -> None:
         with self._lock:
