@@ -6,8 +6,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.coordinator import (
+from fakes import Crash, Faults, FaultyJournal, Permanent, Transient, World
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.coordinator import (
     Aborted,
     Committed,
     CommittedPending,
@@ -16,10 +17,9 @@ from datorium.core.coordinator import (
     Recovery,
     gid_for,
 )
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord, MemoryJournal, State
-from datorium.core.retry import Retry
-from fakes import Crash, Faults, FaultyJournal, Permanent, Transient, World
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord, MemoryJournal, State
+from rhizodat.core.retry import Retry
 
 STALE_MS = 30_000
 

@@ -1,8 +1,11 @@
-# datorium
+# rhizodat 🍄
 
 ## A bitemporal polyglot data layer
 
-datorium is a data access layer over several databases that behaves like **one
+*A rhizome is the root network that joins separate plants into one organism:
+rhizodat joins separate stores into one transactional, versioned whole.*
+
+rhizodat is a data access layer over several databases that behaves like **one
 transactional store**:
 
 - **PostgreSQL**: OLTP, SQL
@@ -82,7 +85,7 @@ ClickHouse has no transactions, so its branch only buffers rows
 table schema and `max_rows_per_table` (default 100 000), adds `dat_txn` and
 `dat_tx_time` to each row and puts the batch into the journal; the rows are
 inserted after the decision, by the coordinator or by recovery. Tables written
-through datorium need `dat_txn UUID` and `dat_tx_time Int64` columns, ideally
+through rhizodat need `dat_txn UUID` and `dat_tx_time Int64` columns, ideally
 with a `bloom_filter` skip index on `dat_txn`; batches are JSON in the journal,
 with tagged UUID, Decimal, bytes, date and datetime values (a time zone becomes
 its UTC offset).
@@ -122,7 +125,7 @@ multi-table Iceberg commit.
 
 ## Identity
 
-Every record written by datorium carries service fields:
+Every record written by rhizodat carries service fields:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -150,7 +153,7 @@ Which part of an entity lives in which store is declared per entity type; there
 is no central registry to look up.
 
 ```python
-from datorium import entity, Ref
+from rhizodat import entity, Ref
 
 @entity(stores={
     "pg":         ["status", "amount", "customer"],
@@ -253,7 +256,7 @@ durable); it only shortens how long other writers are blocked.
   is one drevo transaction, and drevo rejects the second of two concurrent
   writers. It must be a **separate graph** from every drevo store of the
   deployment: a prepared branch raises its graph's fence, which would block the
-  coordinator's own `PREPARED` / `COMMITTED` writes. `Datorium` refuses such a
+  coordinator's own `PREPARED` / `COMMITTED` writes. `Rhizodat` refuses such a
   configuration.
 - The journal is a coordination role, not a data master: it holds transaction
   states, not entity data.
@@ -323,7 +326,7 @@ aborted and re-run; after the decision it may only be finished.**
 | drevo | `TransactionConflict` (commit conflict or prepared fence), Bolt `TransientError`, HTTP `503` | constraint violations, Cypher errors |
 | Iceberg | commit conflict found by the pre-check, catalog unavailable | schema mismatch, validation errors |
 | ClickHouse | network errors, timeouts, too many parts | type / schema errors |
-| datorium | journal unreachable before the decision (→ presumed abort) | invariant / reference validation failures |
+| rhizodat | journal unreachable before the decision (→ presumed abort) | invariant / reference validation failures |
 
 **Error kinds and a full store.** Adapters classify their errors:
 `classify(error) -> ErrorKind` on a branch and a participant, one of
@@ -343,7 +346,7 @@ A full store fails the meta-transaction with `StoreFull` (an `Aborted`,
 not retryable, naming the store): from a branch before the decision, or from
 the work itself inside a `transactional` function. A store written after the
 decision (ClickHouse, Iceberg) can only fail before it if asked first:
-`Datorium(min_free=<bytes>)` makes the coordinator ask every touched store with
+`Rhizodat(min_free=<bytes>)` makes the coordinator ask every touched store with
 `Capacity` before anything is written and refuse with `StoreFull` (and the
 reported `free`) when one is below. A store that cannot tell, or whose query
 fails, passes. `min_free` is off by default: it costs one query per store and
@@ -386,18 +389,18 @@ branches would insert the same `dat_txn` into one `dat_applied`, and the second
 would wait for the first forever), the same drevo graph (the first branch's
 prepared fence refuses the second's prepare on every retry), or the same
 ClickHouse database (one store's marker would make the other's branch look
-applied). `Datorium` refuses such a configuration up front; give each store its
+applied). `Rhizodat` refuses such a configuration up front; give each store its
 own schema, database or graph (for PostgreSQL also by DSN:
 `postgresql://…/erp?schema=orders`). Stores report the place as
 `applied_location`.
 
 ### Guarantees
 
-| | What datorium guarantees |
+| | What rhizodat guarantees |
 |---|---|
 | **A** | All branches commit or none do. PostgreSQL and drevo commit atomically via 2PC; Iceberg and ClickHouse are rolled forward after the decision, so the outcome is atomic but may become visible later. |
 | **C** | Invariants and cross-store references are validated in the Unit of Work before prepare; each store enforces its own constraints. |
-| **I** | Native isolation inside each store. Across stores, readers that go through datorium filter by committed `dat_txn` and `dat_tx_time`, so they do not see half-applied meta-transactions. Direct reads that bypass datorium can. |
+| **I** | Native isolation inside each store. Across stores, readers that go through rhizodat filter by committed `dat_txn` and `dat_tx_time`, so they do not see half-applied meta-transactions. Direct reads that bypass rhizodat can. |
 | **D** | Durability of each store plus the journal; a decided transaction survives crashes of the application, the coordinator host, or a store (recovery finishes it). |
 
 Known limit (once `overwrite`/`delete` are supported; appends never conflict):
@@ -410,7 +413,7 @@ outcome for that branch.
 
 ## Time
 
-datorium is **bitemporal**:
+rhizodat is **bitemporal**:
 
 - **Transaction time** (always on): when the layer recorded a version.
   `dat_tx_time` is a hybrid logical clock (HLC) timestamp, assigned at prepare.
@@ -485,7 +488,7 @@ orders.purge_expired()                # erase soft deletes whose window is over
   `dat_deleted_at` (UTC, from the HLC), set on reads and ignored by equality.
   The creation time is stored in every version.
 - **Soft delete** (opt-in per type): `@entity(..., soft_delete=True)` uses the
-  configured window, `Datorium(soft_delete_window=timedelta(days=30))` (the
+  configured window, `Rhizodat(soft_delete_window=timedelta(days=30))` (the
   default); `soft_delete=timedelta(days=7)` gives the type its own, which wins.
   A soft delete adds a version marked deleted; `restore` adds a live one;
   `purge_expired` erases, physically, what left the window.
@@ -505,11 +508,11 @@ How parts are stored, per store:
 
 A store joins by implementing the capabilities `PartStore` (committed reads)
 and, on its branches, `PartBranch` (writes and reads inside a Unit of Work;
-`dat_tx_time` is filled at stage). `datorium.testing.memory.MemoryEntityStore`
+`dat_tx_time` is filled at stage). `rhizodat.testing.memory.MemoryEntityStore`
 is an in-memory reference. A branch keeps one version per entity part: a second
 write in the same Unit of Work replaces the first, an erase drops it.
 
-**The parts contract** (`datorium.testing.parts`) checks a store's parts on the
+**The parts contract** (`rhizodat.testing.parts`) checks a store's parts on the
 real store: subclass `PartStoreContract` and provide a `parts_store` fixture.
 It covers exact round trips of every field type, own writes visible only to
 their branch, one version per Unit of Work, `known_at` reads and history, soft
@@ -579,7 +582,7 @@ dat.schema_versions(as_of=last_monday)      # the schema in force then
 ```
 
 ```
-DATORIUM_STORE_PG=postgresql://… DATORIUM_JOURNAL=postgresql://… datorium migrate migrations
+RHIZODAT_STORE_PG=postgresql://… RHIZODAT_JOURNAL=postgresql://… rhizodat migrate migrations
 ```
 
 - The history lives in the journal store (`dat_journal_migrations` in
@@ -597,7 +600,7 @@ DATORIUM_STORE_PG=postgresql://… DATORIUM_JOURNAL=postgresql://… datorium mi
 - One runner at a time. A second runner that records a migration first is
   not an error: the steps ran twice, which they allow.
 - The format is pinned by `conformance/migrations.json`; the Rust core
-  parses it (`datorium_core::migrations`) with the same checksums.
+  parses it (`rhizodat_core::migrations`) with the same checksums.
 
 ---|---|
 | PostgreSQL | SQL |
@@ -612,23 +615,23 @@ DATORIUM_STORE_PG=postgresql://… DATORIUM_JOURNAL=postgresql://… datorium mi
   know which schema applied then.
 
 Alembic may be used inside the Python prototype as a runner, but the step
-format is datorium's own so other language ports can execute it.
+format is rhizodat's own so other language ports can execute it.
 
 ---
 
 ## API sketch (v0.1)
 
 ```python
-from datorium import Datorium
+from rhizodat import Rhizodat
 
-dat = Datorium(
+dat = Rhizodat(
     stores={
         "pg":         "postgresql://user:pass@localhost/app",
         "drevo":      "drevo:///data/graph.drevo",
         "clickhouse": "clickhouse://localhost:8123/analytics",
         "iceberg":    "iceberg+rest://localhost:8181/warehouse",
     },
-    journal="postgresql://user:pass@localhost/datorium",
+    journal="postgresql://user:pass@localhost/rhizodat",
 )
 
 orders = dat.repository(Order)
@@ -674,8 +677,8 @@ dat.store("iceberg").execute("analytics.orders", {"row_filter": "amount > 100"})
 
 ### Adapter contracts
 
-The core knows no particular database: every store, datorium's own four
-included, is a plug-in adapter (`datorium.core.adapter`).
+The core knows no particular database: every store, rhizodat's own four
+included, is a plug-in adapter (`rhizodat.core.adapter`).
 
 ```python
 @dataclass(frozen=True)
@@ -746,12 +749,12 @@ raises `ResultConsumedError`.
 
 ### Plug-in adapters
 
-A package adds a database by declaring one entry point; datorium itself is not
+A package adds a database by declaring one entry point; rhizodat itself is not
 changed:
 
 ```toml
-[project.entry-points."datorium.adapters"]
-mysql = "datorium_mysql:ADAPTER"
+[project.entry-points."rhizodat.adapters"]
+mysql = "rhizodat_mysql:ADAPTER"
 ```
 
 ```python
@@ -764,20 +767,20 @@ ADAPTER = Adapter(
 )
 ```
 
-`register_adapter(ADAPTER)` does the same inside one process. datorium's own
+`register_adapter(ADAPTER)` does the same inside one process. rhizodat's own
 adapters are loaded the same way, first. A kind or scheme registered twice is
 refused; a plug-in that fails to load is skipped, and the error is named when a
 DSN needs a scheme nobody registered. Adapters are imported on first use, and
 drivers only when a store opens.
 
-An adapter keeps datorium's guarantees only if its store fits one of the two
+An adapter keeps rhizodat's guarantees only if its store fits one of the two
 branch models: real two-phase commit (prepare, then commit or roll back a
 prepared transaction by gid, listing the prepared ones), or one phase with an
 idempotent apply of the journal payload after the decision (`is_applied`
 answers whether it is visible). A store that can do neither cannot join a
 meta-transaction with others.
 
-**The adapter contract** (`datorium.testing.contract`, `datorium[testing]`) is
+**The adapter contract** (`rhizodat.testing.contract`, `rhizodat[testing]`) is
 how an adapter shows it keeps those promises on the real store. The author
 writes a harness (open an isolated store, write one record by key in a branch,
 count committed records by key) and subclasses `AdapterContract`:
@@ -803,24 +806,24 @@ It checks:
   transactions die with it, prepared ones and staged data stay), and one
   `Recovery` run must end all-or-nothing with nothing left prepared.
 
-datorium's own adapters pass it in `tests/contract/` (PostgreSQL, ClickHouse,
+rhizodat's own adapters pass it in `tests/contract/` (PostgreSQL, ClickHouse,
 drevo embedded and over Bolt, Iceberg on SQLite and REST).
 
 The guide for adapter authors, with the criteria a store must meet and a
 table of supported, candidate and non-viable databases, is
 [docs/adapters.md](docs/adapters.md).
 
-**A dry run first: `datorium adapter check`.** Before the contract, the CLI
+**A dry run first: `rhizodat adapter check`.** Before the contract, the CLI
 reports what an adapter implements, without writing anything:
 
 ```bash
-datorium adapter check datorium_mysql:ADAPTER --dsn mysql://localhost/test
-datorium adapter check postgres --dsn postgresql://localhost/app --json
+rhizodat adapter check rhizodat_mysql:ADAPTER --dsn mysql://localhost/test
+rhizodat adapter check postgres --dsn postgresql://localhost/app --json
 ```
 
 Without `--dsn` it checks the declaration only (kind, DSN schemes, what it
 opens). With one it opens the store and checks:
-- the methods datorium calls on the store, a branch (opened and rolled back)
+- the methods rhizodat calls on the store, a branch (opened and rolled back)
   and the participant (`prepared_gids()` listed);
 - that plain errors are not retryable and a device out of space is
   `STORE_FULL`;
@@ -833,13 +836,13 @@ summary counts them, with a completeness percentage. The DSN's password and
 secret parameters are masked. Exit status: 0 when every required check that
 ran passed, 1 otherwise, 2 when the adapter cannot be loaded.
 
-**In Rust** the core knows no store either (`datorium_core::adapter`): each
+**In Rust** the core knows no store either (`rhizodat_core::adapter`): each
 adapter crate exports `ADAPTER` (kind, `Scheme`s with the same host / path
 rules, whether it holds the journal, its query language) and parses its own
 DSNs with `ADAPTER.parse`; an application builds a `Registry` from the crates
-it links (`Registry::new().with(datorium_postgres::ADAPTER)?…`), which refuses
-the same conflicts as Python. `postgres_schema` lives in `datorium-postgres`.
-The conformance vectors run in `crates/datorium-conformance`, which links every
+it links (`Registry::new().with(rhizodat_postgres::ADAPTER)?…`), which refuses
+the same conflicts as Python. `postgres_schema` lives in `rhizodat-postgres`.
+The conformance vectors run in `crates/rhizodat-conformance`, which links every
 adapter. Opening stores by DSN from Rust comes with a Rust facade (the
 bindings).
 
@@ -856,7 +859,7 @@ bindings).
 
 - PostgreSQL: `schema=<name>` puts a store (its `dat_applied` and
   `search_path`) or the journal in that schema, so stores configured only by
-  DSN, such as datorium-MCP's, can share a database. It is removed before the
+  DSN, such as rhizodat-MCP's, can share a database. It is removed before the
   DSN reaches the driver; a `schema=` argument as well must name the same
   schema. A `search_path` set through `options=` is not seen by the
   `dat_applied` check: use `schema=`.
@@ -866,7 +869,7 @@ bindings).
   Other query parameters become pyiceberg catalog properties (`s3.endpoint`,
   `credential`, …).
 - The schemes and their rules come from the registered adapters (see
-  plug-in adapters above); these are datorium's own.
+  plug-in adapters above); these are rhizodat's own.
 - Parsing never imports a driver. Scheme matching ignores case; user,
   password and path are percent-decoded; a repeated query parameter is an error.
 - `drevo:///` and `file:///` take a local absolute path and no host;
@@ -880,7 +883,7 @@ bindings).
 ## Package structure
 
 ```
-datorium/
+rhizodat/
 ├── core/
 │   ├── identity.py      # dat_id, UUIDv7
 │   ├── clock.py         # hybrid logical clock
@@ -900,13 +903,13 @@ datorium/
 │   ├── drevo.py
 │   ├── clickhouse.py
 │   └── iceberg.py
-├── mcp/                 # datorium-MCP: tools, configuration, server
-├── testing/             # the adapter and parts contract suites (datorium[testing]), memory stores
+├── mcp/                 # rhizodat-MCP: tools, configuration, server
+├── testing/             # the adapter and parts contract suites (rhizodat[testing]), memory stores
 └── migrations/
 ```
 
-Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
-`datorium[drevo]`, `datorium[iceberg]`; `datorium[mcp]` adds the MCP server.
+Store drivers are optional extras: `rhizodat[postgres]`, `rhizodat[clickhouse]`,
+`rhizodat[drevo]`, `rhizodat[iceberg]`; `rhizodat[mcp]` adds the MCP server.
 `drevo-py` is not on PyPI yet and is installed from source.
 
 ---
@@ -933,7 +936,7 @@ Store drivers are optional extras: `datorium[postgres]`, `datorium[clickhouse]`,
    contract. ✔ Valid time: periods stored with every part, `as_of` /
    `known_at` reads.
 6. ✔ Migrations: one TOML format for every store, the history in the journal
-   with transaction time, `datorium migrate`.
+   with transaction time, `rhizodat migrate`.
 7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
    bug tracker.
 
@@ -998,13 +1001,13 @@ Steps:
    | Iceberg | `iceberg` 0.10.1 + REST catalog + `iceberg-storage-opendal` | ready with caveats | 0.x API; snapshot summary properties, staged Parquet writes, fast append, snapshot listing, `FileIO::delete` and uuid columns work; building a `DataFile` from a path is crate-private, so the Rust journal payload carries the `DataFile` JSON (`serialize_data_file_to_json`, column statistics kept); the commit already rejects files referenced by the table; tables written by Rust read back in pyiceberg |
 
    Embedded drevo will use `drevo-core` directly and is checked with step 4.
-3. **`datorium-core` crate** ([`crates/datorium-core`](crates/datorium-core)):
+3. **`rhizodat-core` crate** ([`crates/rhizodat-core`](crates/rhizodat-core)):
    protocol, journal, recovery, HLC, identity, tested on fake stores like the
    Python core.
    ✔ Identity (UUIDv7), HLC, gids, the journal state machine and DSN parsing,
    passing the same vectors as Python. Writing them found two gaps in the
    reference, now fixed and pinned by new vectors: another spelling of a
-   `dat_txn` (upper case, braces, no hyphens) was taken for a datorium gid, and
+   `dat_txn` (upper case, braces, no hyphens) was taken for a rhizodat gid, and
    an unbalanced IPv6 bracket in a DSN raised a bare `ValueError`.
    ✔ The journal interface with an in-memory journal, the coordinator and
    recovery, async and runtime-agnostic (the binding passes a `Timer`). Their
@@ -1018,7 +1021,7 @@ Steps:
    down; parallel prepare / finish comes with the Rust adapters.
 4. ✔ **Rust adapters**: PostgreSQL, drevo (embedded, and Bolt), the
    PostgreSQL journal.
-   ✔ [`crates/datorium-postgres`](crates/datorium-postgres) (tokio-postgres):
+   ✔ [`crates/rhizodat-postgres`](crates/rhizodat-postgres) (tokio-postgres):
    the two-phase store, its participant and the PostgreSQL journal, on the
    same tables as the Python adapter. The journal's `branches` text is pinned
    in `conformance/journal.json`, so either implementation recovers the
@@ -1028,13 +1031,13 @@ Steps:
    with its own connections. Stores must not share a schema (see "One marker
    table per store"); the Python facade refuses it, the Rust crates document it
    until a Rust facade exists.
-   ✔ [`crates/datorium-drevo`](crates/datorium-drevo) (neo4rs, Bolt): the
+   ✔ [`crates/rhizodat-drevo`](crates/rhizodat-drevo) (neo4rs, Bolt): the
    two-phase graph store, its participant and the drevo journal, on the same
    nodes as the Python adapter; tested against the compose drevo, including
    the prepared fence and a bug tracker over PostgreSQL and drevo with crashes
    after prepare and after the decision. neo4rs retries a failed auto-commit
    statement on transient errors for up to 60 seconds, which would hide the
-   fence from datorium's retry policy: writes therefore run in explicit
+   fence from rhizodat's retry policy: writes therefore run in explicit
    transactions (never retried), while reads and the `drevo.tx.*` procedures
    stay in auto-commit mode, since under the fence drevo rejects the commit of
    any explicit transaction and accepts the procedures only outside one
@@ -1046,24 +1049,24 @@ Steps:
    transaction across a restart. Step 4 is complete.
 
    Beyond step 4, so that no store stays on Python:
-   ✔ [`crates/datorium-clickhouse`](crates/datorium-clickhouse) (`clickhouse`
+   ✔ [`crates/rhizodat-clickhouse`](crates/rhizodat-clickhouse) (`clickhouse`
    crate): the one-phase branch applied after the decision, with the same
    count / delete / reinsert idempotency, deduplication tokens and
    `dat_applied` marker as the Python adapter. Its journal payload is the
-   shared row format, now in `datorium_core::rows` and pinned by
+   shared row format, now in `rhizodat_core::rows` and pinned by
    [`conformance/rows.json`](conformance/rows.json): a Python payload is
    applied by the Rust participant and the reverse (checked both ways). Rows
    travel as `JSONEachRow` (columns are known only at run time) with
    `date_time_input_format = best_effort`; since JSON strings are UTF-8, a
    bytes value must be valid UTF-8 there and anything else is refused at
    stage. The ClickHouse crate needs Rust 1.89.
-   ✔ [`crates/datorium-iceberg`](crates/datorium-iceberg) (iceberg-rust 0.10,
+   ✔ [`crates/rhizodat-iceberg`](crates/rhizodat-iceberg) (iceberg-rust 0.10,
    REST catalog, S3 through OpenDAL): the one-phase branch committed after the
    decision, with the same tagged snapshots and idempotency checks as the
    Python adapter. A branch buffers Arrow record batches; stage conforms them
    to the table's schema (by name, missing optional columns null, types cast)
    and writes Parquet files. The journal payload is the shared staged-files
-   format, now in `datorium_core::staged` and pinned by
+   format, now in `rhizodat_core::staged` and pinned by
    [`conformance/staged_files.json`](conformance/staged_files.json): paths,
    plus the `DataFile` JSON of each file that iceberg-rust needs to commit
    it. A payload with paths only (the Python adapter's) is committed from the
@@ -1074,7 +1077,7 @@ Steps:
    by recovery after a crash. Not yet in Rust: partitioned tables (refused at
    stage) and the SQL / Glue catalogs. iceberg-rust 0.10 needs Rust 1.94, now
    the workspace MSRV. Every store now has a Rust adapter.
-5. **Bindings**: the `datorium` Python package becomes a PyO3 wrapper over the
+5. **Bindings**: the `rhizodat` Python package becomes a PyO3 wrapper over the
    core without changing its public API; a C ABI (cbindgen) for Go. Open
    questions to settle first: Python callbacks (`transactional` functions) into
    an async core and the GIL, and results across the boundary (Arrow).
@@ -1119,7 +1122,7 @@ guarantees then depend on how each store fails over.
 
 ### Server mode (after v0.1)
 
-An optional `datorium-server` on top of the same core: clients in any language,
+An optional `rhizodat-server` on top of the same core: clients in any language,
 one place for coordination, recovery and connection pools, and no single-process
 limit of embedded drevo. It adds a network hop and must run as several
 instances (the journal's compare-and-set already makes concurrent coordinators
@@ -1132,27 +1135,27 @@ safe). The open design question is the transaction model over the network:
 
 The library stays the core; the server is built on it, not instead of it.
 
-### datorium-MCP (out of the box)
+### rhizodat-MCP (out of the box)
 
-datorium ships with an MCP server, `datorium-mcp`, so that AI agents and tools
-work with the stores through datorium rather than through four drivers. It is
+rhizodat ships with an MCP server, `rhizodat-mcp`, so that AI agents and tools
+work with the stores through rhizodat rather than through four drivers. It is
 part of the distribution, configured by the same DSNs, and built on the
 library like the server.
 
-**MCP is a client of datorium's API, isolated from its internals.** It calls
+**MCP is a client of rhizodat's API, isolated from its internals.** It calls
 the Repository's CRUD (create, read with `as_of`, history, update, delete);
-each call is one Unit of Work inside datorium, which alone deals with
+each call is one Unit of Work inside rhizodat, which alone deals with
 transactions, the journal and recovery. No tool begins, commits or inspects a
 meta-transaction, and none runs recovery: that is an operator process's job
-(`Datorium.recovery()`).
+(`Rhizodat.recovery()`).
 
-✔ First version (Python, `datorium.mcp`, read-only). Tools, marked read-only
+✔ First version (Python, `rhizodat.mcp`, read-only). Tools, marked read-only
 for clients:
 
 | Tool | What it does |
 |---|---|
 | `stores` | the configured stores: name, kind, two-phase or not, whether `query` can read it, DSN with secrets masked |
-| `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `DATORIUM_MCP_MAX_ROWS`) |
+| `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `RHIZODAT_MCP_MAX_ROWS`) |
 
 The store itself refuses writes in `query`, so a mistaken or injected query
 cannot change data:
@@ -1168,28 +1171,28 @@ cannot change data:
 As defence in depth, the DSNs can still use read-only accounts.
 
 Configuration is the environment, so secrets stay out of command lines:
-`DATORIUM_STORE_<NAME>=<dsn>` per store, `DATORIUM_JOURNAL=<dsn>`, and
-optionally `DATORIUM_MCP_MAX_ROWS` (default 1000), `DATORIUM_MCP_ENTITIES`
-and `DATORIUM_MCP_WRITES` (below). The former
-`DATORIUM_MCP_RECOVERY*` settings are refused with an error, so a stale
+`RHIZODAT_STORE_<NAME>=<dsn>` per store, `RHIZODAT_JOURNAL=<dsn>`, and
+optionally `RHIZODAT_MCP_MAX_ROWS` (default 1000), `RHIZODAT_MCP_ENTITIES`
+and `RHIZODAT_MCP_WRITES` (below). The former
+`RHIZODAT_MCP_RECOVERY*` settings are refused with an error, so a stale
 configuration does not pass silently. An MCP client starts it over stdio:
 
 ```json
 {
   "mcpServers": {
-    "datorium": {
-      "command": "datorium-mcp",
+    "rhizodat": {
+      "command": "rhizodat-mcp",
       "env": {
-        "DATORIUM_STORE_ERP": "postgresql://reader:…@db:5432/erp",
-        "DATORIUM_STORE_LAKE": "iceberg+rest://catalog:8181/warehouse",
-        "DATORIUM_JOURNAL": "postgresql://reader:…@db:5432/erp"
+        "RHIZODAT_STORE_ERP": "postgresql://reader:…@db:5432/erp",
+        "RHIZODAT_STORE_LAKE": "iceberg+rest://catalog:8181/warehouse",
+        "RHIZODAT_JOURNAL": "postgresql://reader:…@db:5432/erp"
       }
     }
   }
 }
 ```
 
-✔ Entity CRUD tools over the Repository. `DATORIUM_MCP_ENTITIES` names the
+✔ Entity CRUD tools over the Repository. `RHIZODAT_MCP_ENTITIES` names the
 application's `@entity` classes by module path (`tracker.models:Bug,…`; the
 package must be importable by the server). Each tool is one Repository call,
 so one Unit of Work over every store holding the entity's fields.
@@ -1204,8 +1207,8 @@ so one Unit of Work over every store holding the entity's fields.
 | `delete_entity` | soft delete (hidden, restorable) for a type that has it, else erased for good; marked destructive |
 | `restore_entity` | brings a soft-deleted entity back within its window |
 
-The read tools are always offered with `DATORIUM_MCP_ENTITIES`. The write
-tools only appear with `DATORIUM_MCP_WRITES=1`: off by default, since a
+The read tools are always offered with `RHIZODAT_MCP_ENTITIES`. The write
+tools only appear with `RHIZODAT_MCP_WRITES=1`: off by default, since a
 delete erases unless the type says otherwise. Values are checked against
 each field's type before anything is written: unknown or missing fields,
 service fields (`dat_id`, `dat_*_at`) and values that do not fit are refused,
@@ -1231,9 +1234,9 @@ The tests read store DSNs from the environment, else from `.env.test`. A DSN fro
 `.env.test` whose store is not running skips that store's tests with a hint; a
 DSN set in the environment is used as is, so a store that is down fails the run
 (CI exports `.env.test` for that reason). Point the tests at other stores with
-`DATORIUM_TEST_PG_DSN`, `DATORIUM_TEST_DREVO_BOLT`,
-`DATORIUM_TEST_CLICKHOUSE_DSN`, `DATORIUM_TEST_ICEBERG_REST_DSN` and
-`DATORIUM_TEST_TOXIPROXY`. The drevo server must be
+`RHIZODAT_TEST_PG_DSN`, `RHIZODAT_TEST_DREVO_BOLT`,
+`RHIZODAT_TEST_CLICKHOUSE_DSN`, `RHIZODAT_TEST_ICEBERG_REST_DSN` and
+`RHIZODAT_TEST_TOXIPROXY`. The drevo server must be
 **disposable**: 2PC raises the prepared fence and blocks other writers.
 
 ```bash
@@ -1247,7 +1250,7 @@ The Rust core is a Cargo workspace at the repository root (stable Rust, MSRV
 1.94); its tests include the vectors in `conformance/`, and the adapter crates'
 tests use the compose PostgreSQL, drevo, ClickHouse and Iceberg REST catalog
 (skipped with a hint when a store is not running, unless its
-`DATORIUM_TEST_*` variable is set):
+`RHIZODAT_TEST_*` variable is set):
 
 ```bash
 cargo test

@@ -10,7 +10,7 @@ import socket
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from datorium.core.dsn import parse_dsn
+from rhizodat.core.dsn import parse_dsn
 
 __all__ = ["ENV_FILE", "StoreUnavailable", "load_env_file", "reachable", "resolve_dsn"]
 

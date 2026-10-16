@@ -8,8 +8,8 @@ from uuid import UUID
 import pytest
 from faker import Faker
 
-from datorium.core.mapping import Ref, entity, mapping_of
-from datorium.core.result import Result
+from rhizodat.core.mapping import Ref, entity, mapping_of
+from rhizodat.core.result import Result
 
 
 class MemoryStores:

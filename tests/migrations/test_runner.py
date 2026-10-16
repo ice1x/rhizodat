@@ -14,17 +14,17 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium import Datorium
-from datorium.core.adapter import Migrates
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.journal import (
+from rhizodat import Rhizodat
+from rhizodat.core.adapter import Migrates
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.journal import (
     AppliedMigration,
     JournalConflict,
     MemoryJournal,
     MigrationHistory,
 )
-from datorium.migrations import Migration, MigrationError, MigrationFailed, Step
-from datorium.testing.memory import MemoryEntityStore
+from rhizodat.migrations import Migration, MigrationError, MigrationFailed, Step
+from rhizodat.testing.memory import MemoryEntityStore
 
 
 class SchemaStore(MemoryEntityStore):
@@ -67,8 +67,8 @@ def stores() -> dict[str, SchemaStore]:
 
 
 @pytest.fixture
-def dat(stores: dict[str, SchemaStore], wall: Wall) -> Iterator[Datorium]:
-    d = Datorium(
+def dat(stores: dict[str, SchemaStore], wall: Wall) -> Iterator[Rhizodat]:
+    d = Rhizodat(
         stores=dict(stores),
         journal=MemoryJournal(wall_ms=wall),
         clock=HybridLogicalClock(wall_ms=wall),
@@ -88,7 +88,7 @@ def test_the_test_store_and_journal_have_the_capabilities(stores: dict[str, Sche
 
 
 def test_pending_migrations_run_in_order_and_are_recorded(
-    dat: Datorium, stores: dict[str, SchemaStore], faker: Faker
+    dat: Rhizodat, stores: dict[str, SchemaStore], faker: Faker
 ) -> None:
     first = Migration.of(1, "entries", [Step("pg", "ddl", ["a", "b"]), Step("graph", "ddl", "c")])
     second = release(faker, 2, "graph")
@@ -106,7 +106,7 @@ def test_pending_migrations_run_in_order_and_are_recorded(
 
 
 def test_a_second_run_applies_only_what_is_new(
-    dat: Datorium, stores: dict[str, SchemaStore], faker: Faker
+    dat: Rhizodat, stores: dict[str, SchemaStore], faker: Faker
 ) -> None:
     one, two = release(faker, 1), release(faker, 2)
     dat.migrate([one])
@@ -117,7 +117,7 @@ def test_a_second_run_applies_only_what_is_new(
 
 
 def test_a_dry_run_says_what_would_run_and_runs_nothing(
-    dat: Datorium, stores: dict[str, SchemaStore], faker: Faker
+    dat: Rhizodat, stores: dict[str, SchemaStore], faker: Faker
 ) -> None:
     one = release(faker, 1)
     dat.migrate([one])
@@ -127,13 +127,13 @@ def test_a_dry_run_says_what_would_run_and_runs_nothing(
     assert [h.id for h in dat.schema_versions()] == [1]
 
 
-def test_to_stops_at_a_version(dat: Datorium, faker: Faker) -> None:
+def test_to_stops_at_a_version(dat: Rhizodat, faker: Faker) -> None:
     report = dat.migrate([release(faker, n) for n in (1, 2, 3)], to=2)
     assert (report.applied, report.pending) == ((1, 2), (3,))
 
 
 def test_a_failing_step_stops_the_run_and_the_next_run_resumes(
-    dat: Datorium, stores: dict[str, SchemaStore]
+    dat: Rhizodat, stores: dict[str, SchemaStore]
 ) -> None:
     ms = [
         Migration.of(1, "ok", [Step("pg", "ddl", "x")]),
@@ -154,7 +154,7 @@ def test_a_failing_step_stops_the_run_and_the_next_run_resumes(
     assert stores["pg"].ran == ["x", "z", "z", "w", "v"]
 
 
-def test_schema_versions_as_of_a_moment(dat: Datorium, wall: Wall, faker: Faker) -> None:
+def test_schema_versions_as_of_a_moment(dat: Rhizodat, wall: Wall, faker: Faker) -> None:
     one = release(faker, 1)
     dat.migrate([one])
     before_second = wall.at()
@@ -173,7 +173,7 @@ def test_schema_versions_as_of_a_moment(dat: Datorium, wall: Wall, faker: Faker)
 # --- what is refused before anything runs -------------------------------------------------
 
 
-def test_an_edited_applied_migration_is_refused(dat: Datorium, faker: Faker) -> None:
+def test_an_edited_applied_migration_is_refused(dat: Rhizodat, faker: Faker) -> None:
     dat.migrate([Migration.of(1, "a", [Step("pg", "ddl", "x")])])
     with pytest.raises(MigrationError, match=r"migration 1 .* changed since it was applied"):
         dat.migrate([Migration.of(1, "a", [Step("pg", "ddl", "x2")]), release(faker, 2)])
@@ -181,7 +181,7 @@ def test_an_edited_applied_migration_is_refused(dat: Datorium, faker: Faker) -> 
 
 
 def test_an_applied_migration_missing_from_the_source_is_refused(
-    dat: Datorium, faker: Faker
+    dat: Rhizodat, faker: Faker
 ) -> None:
     dat.migrate([release(faker, 1), release(faker, 2)])
     with pytest.raises(MigrationError, match=r"migration 1 .* is missing"):
@@ -189,7 +189,7 @@ def test_an_applied_migration_missing_from_the_source_is_refused(
 
 
 def test_a_new_migration_older_than_an_applied_one_is_refused(
-    dat: Datorium, stores: dict[str, SchemaStore], faker: Faker
+    dat: Rhizodat, stores: dict[str, SchemaStore], faker: Faker
 ) -> None:
     three = release(faker, 3)
     dat.migrate([three])
@@ -206,7 +206,7 @@ def test_a_new_migration_older_than_an_applied_one_is_refused(
     ],
 )
 def test_steps_a_store_cannot_run_are_refused_up_front(
-    dat: Datorium, stores: dict[str, SchemaStore], faker: Faker, step: Step, message: str
+    dat: Rhizodat, stores: dict[str, SchemaStore], faker: Faker, step: Step, message: str
 ) -> None:
     with pytest.raises(MigrationError, match=message):
         dat.migrate([release(faker, 1), Migration.of(2, "bad", [step])])
@@ -214,7 +214,7 @@ def test_steps_a_store_cannot_run_are_refused_up_front(
 
 
 def test_a_store_without_migrations_is_named(wall: Wall) -> None:
-    dat = Datorium(stores={"mem": MemoryEntityStore("mem")}, journal=MemoryJournal())
+    dat = Rhizodat(stores={"mem": MemoryEntityStore("mem")}, journal=MemoryJournal())
     try:
         with pytest.raises(MigrationError, match=r"store 'mem' .* runs no migration steps"):
             dat.migrate([Migration.of(1, "a", [Step("mem", "ddl", "x")])])
@@ -223,7 +223,7 @@ def test_a_store_without_migrations_is_named(wall: Wall) -> None:
 
 
 def test_migrations_need_a_journal_with_a_history(stores: dict[str, SchemaStore]) -> None:
-    dat = Datorium(stores={"pg": stores["pg"]})
+    dat = Rhizodat(stores={"pg": stores["pg"]})
     try:
         with pytest.raises(ValueError, match="journal"):
             dat.migrate([Migration.of(1, "a", [Step("pg", "ddl", "x")])])
@@ -231,7 +231,7 @@ def test_migrations_need_a_journal_with_a_history(stores: dict[str, SchemaStore]
         dat.close()
 
 
-def test_a_migration_is_recorded_once(dat: Datorium, faker: Faker) -> None:
+def test_a_migration_is_recorded_once(dat: Rhizodat, faker: Faker) -> None:
     one = release(faker, 1)
     assert isinstance(dat.journal, MigrationHistory)
     dat.migrate([one], dry_run=True)
@@ -252,7 +252,7 @@ def test_a_runner_that_loses_the_race_to_record_reports_nothing_applied(
             super().record_migration(applied)  # the other runner
             super().record_migration(applied)  # this one: JournalConflict
 
-    dat = Datorium(stores={"pg": stores["pg"]}, journal=Raced(wall_ms=wall))
+    dat = Rhizodat(stores={"pg": stores["pg"]}, journal=Raced(wall_ms=wall))
     try:
         one = release(faker, 1)
         report = dat.migrate([one])

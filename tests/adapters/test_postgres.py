@@ -8,11 +8,11 @@ from typing import Any
 import psycopg
 import pytest
 
-from datorium.adapters.postgres import PostgresBranch, PostgresJournal, PostgresStore
-from datorium.core.coordinator import gid_for
-from datorium.core.errors import Capacity, ErrorKind
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord, JournalConflict, State, open_journal
+from rhizodat.adapters.postgres import PostgresBranch, PostgresJournal, PostgresStore
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.errors import Capacity, ErrorKind
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord, JournalConflict, State, open_journal
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ def test_install_is_idempotent(store: PostgresStore) -> None:
 
 def test_dsn_password_is_not_in_repr(pg_dsn: str, pg_schema: str) -> None:
     s = PostgresStore(pg_dsn, schema=pg_schema)
-    assert "datorium@" not in repr(s) or ":***@" in repr(s)
+    assert "rhizodat@" not in repr(s) or ":***@" in repr(s)
     s.close()
 
 

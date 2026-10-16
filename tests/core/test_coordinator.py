@@ -4,9 +4,10 @@ import uuid
 
 import pytest
 
-from datorium import StoreFull
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.coordinator import (
+from fakes import Crash, FakeBranch, FakeCapacity, Faults, Full, Permanent, Transient, World
+from rhizodat import StoreFull
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.coordinator import (
     Aborted,
     Committed,
     CommittedPending,
@@ -15,10 +16,9 @@ from datorium.core.coordinator import (
     gid_for,
     parse_gid,
 )
-from datorium.core.identity import new_id
-from datorium.core.journal import JournalConflict, JournalRecord, MemoryJournal, State
-from datorium.core.retry import Retry
-from fakes import Crash, FakeBranch, FakeCapacity, Faults, Full, Permanent, Transient, World
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import JournalConflict, JournalRecord, MemoryJournal, State
+from rhizodat.core.retry import Retry
 
 
 class Clock:

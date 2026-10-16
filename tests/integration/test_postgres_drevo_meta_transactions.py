@@ -9,14 +9,14 @@ import pytest
 from faker import Faker
 
 from conftest import drevo_embedded_available
-from datorium.adapters.drevo import DrevoStore
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.coordinator import Committed, Coordinator, Participant, Recovery
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord, State
-from datorium.core.retry import Retry
 from fakes import Crash
+from rhizodat.adapters.drevo import DrevoStore
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.coordinator import Committed, Coordinator, Participant, Recovery
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord, State
+from rhizodat.core.retry import Retry
 
 
 def raised(call: Callable[[], object]) -> BaseException:

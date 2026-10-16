@@ -1,6 +1,6 @@
 """A third-party adapter over a real store: a multi-tenant ERP plugs in its own
-``tenant://<tenant>`` scheme, each tenant a PostgreSQL schema, and gets datorium's
-meta-transactions and recovery without any change to datorium."""
+``tenant://<tenant>`` scheme, each tenant a PostgreSQL schema, and gets rhizodat's
+meta-transactions and recovery without any change to rhizodat."""
 
 from collections.abc import Iterator
 
@@ -8,11 +8,11 @@ import psycopg
 import pytest
 from faker import Faker
 
-from datorium import Adapter, Datorium, Scheme, register_adapter
-from datorium.adapters.postgres import PostgresStore
-from datorium.core import adapter as registry
-from datorium.core.dsn import parse_dsn
-from datorium.core.journal import State
+from rhizodat import Adapter, Rhizodat, Scheme, register_adapter
+from rhizodat.adapters.postgres import PostgresStore
+from rhizodat.core import adapter as registry
+from rhizodat.core.dsn import parse_dsn
+from rhizodat.core.journal import State
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def test_an_invoice_across_two_tenants_commits_through_the_plugin(
     tenants: list[str], pg_dsn: str, pg_schema: str, faker: Faker
 ) -> None:
     acme, globex = tenants
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"acme": f"tenant://{acme}", "globex": f"tenant://{globex}"},
         journal=f"{pg_dsn}?schema={pg_schema}",
     )
@@ -71,4 +71,4 @@ def test_an_invoice_across_two_tenants_commits_through_the_plugin(
 def test_one_tenant_twice_is_refused_like_any_store(tenants: list[str]) -> None:
     acme, _ = tenants
     with pytest.raises(ValueError, match="share one dat_applied"):
-        Datorium(stores={"a": f"tenant://{acme}", "b": f"tenant://{acme}"})
+        Rhizodat(stores={"a": f"tenant://{acme}", "b": f"tenant://{acme}"})

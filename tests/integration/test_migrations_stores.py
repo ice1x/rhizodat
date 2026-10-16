@@ -16,11 +16,11 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium import Datorium
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.migrations import MigrationError, MigrationFailed
 from iceberg_parts import drop_parts
+from rhizodat import Rhizodat
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.migrations import MigrationError, MigrationFailed
 
 RELEASE_1 = '''
 description = "tasks, their activity log, the task graph and the lakehouse copy"
@@ -108,14 +108,14 @@ def dat(
     tmp_path: Path,
     wall: Wall,
     names: dict[str, str],
-) -> Iterator[Datorium]:
-    from datorium.adapters.clickhouse import ClickHouseStore
-    from datorium.adapters.drevo import DrevoStore
-    from datorium.adapters.iceberg import IcebergStore
+) -> Iterator[Rhizodat]:
+    from rhizodat.adapters.clickhouse import ClickHouseStore
+    from rhizodat.adapters.drevo import DrevoStore
+    from rhizodat.adapters.iceberg import IcebergStore
 
     graph = DrevoStore(request.getfixturevalue("drevo_bolt_dsn"), name="graph")
     lake = IcebergStore(iceberg_rest_dsn, name="lake", parts_namespace=names["ns"])
-    d = Datorium(
+    d = Rhizodat(
         stores={
             "pg": PostgresStore(pg_dsn, schema=pg_schema),
             "events": ClickHouseStore(clickhouse_dsn, name="events"),
@@ -140,11 +140,11 @@ def write(directory: Path, names: dict[str, str], *releases: tuple[str, str]) ->
     return directory
 
 
-def columns(dat: Datorium, store: str, query: str, key: str) -> list[str]:
+def columns(dat: Rhizodat, store: str, query: str, key: str) -> list[str]:
     return [r[key] for r in dat.store(store).execute(query).all()]
 
 
-def pg_columns(dat: Datorium) -> list[str]:
+def pg_columns(dat: Rhizodat) -> list[str]:
     return columns(
         dat,
         "pg",
@@ -154,13 +154,13 @@ def pg_columns(dat: Datorium) -> list[str]:
     )
 
 
-def lake_columns(dat: Datorium, ns: str) -> list[str]:
+def lake_columns(dat: Rhizodat, ns: str) -> list[str]:
     lake: Any = dat.store("lake")
     return [f.name for f in lake.catalog.load_table(f"{ns}.tasks").schema().fields]
 
 
 def test_two_releases_migrate_every_store_once(
-    dat: Datorium, tmp_path: Path, wall: Wall, names: dict[str, str], faker: Faker
+    dat: Rhizodat, tmp_path: Path, wall: Wall, names: dict[str, str], faker: Faker
 ) -> None:
     folder = write(tmp_path / "migrations", names, ("0001_tasks.toml", RELEASE_1))
     assert dat.migrate(folder).applied == (1,)
@@ -193,7 +193,7 @@ def test_two_releases_migrate_every_store_once(
 
 
 def test_a_failed_release_is_resumed_after_the_fix(
-    dat: Datorium, tmp_path: Path, names: dict[str, str]
+    dat: Rhizodat, tmp_path: Path, names: dict[str, str]
 ) -> None:
     folder = write(tmp_path / "migrations", names, ("0001_tasks.toml", RELEASE_1))
     broken = RELEASE_2.replace("ADD COLUMN IF NOT EXISTS points Nullable(Int32)", "ADD COLUMN")

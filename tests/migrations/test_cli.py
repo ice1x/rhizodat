@@ -1,7 +1,7 @@
-"""``datorium migrate``: run a migration directory from an operator shell.
+"""``rhizodat migrate``: run a migration directory from an operator shell.
 
-Stores and the journal come from the environment (``DATORIUM_STORE_<NAME>``,
-``DATORIUM_JOURNAL``), so DSNs and their secrets stay out of the command line.
+Stores and the journal come from the environment (``RHIZODAT_STORE_<NAME>``,
+``RHIZODAT_JOURNAL``), so DSNs and their secrets stay out of the command line.
 A story editor's deploy script runs it before starting the new release.
 """
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from faker import Faker
 
-from datorium.check import main
+from rhizodat.check import main
 
 CHAPTERS = '[[steps]]\nstore = "pg"\nsql = "CREATE TABLE IF NOT EXISTS chapter (id int)"\n'
 SCENES = '[[steps]]\nstore = "pg"\nsql = "CREATE TABLE IF NOT EXISTS scene (id int)"\n'
@@ -23,8 +23,8 @@ def env(
 ) -> dict[str, str]:
     sep = "&" if "?" in pg_dsn else "?"
     values = {
-        "DATORIUM_STORE_PG": f"{pg_dsn}{sep}schema={pg_schema}",
-        "DATORIUM_JOURNAL": f"file://{tmp_path / 'journal.db'}",
+        "RHIZODAT_STORE_PG": f"{pg_dsn}{sep}schema={pg_schema}",
+        "RHIZODAT_JOURNAL": f"file://{tmp_path / 'journal.db'}",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -78,9 +78,9 @@ def test_migrate_fails_with_the_reason_and_status_2_or_1(
     assert main(["migrate", str(root)]) == 2  # refused before anything ran
     assert "no store named 'missing'" in capsys.readouterr().err
 
-    monkeypatch.delenv("DATORIUM_STORE_PG")
+    monkeypatch.delenv("RHIZODAT_STORE_PG")
     assert main(["migrate", str(root)]) == 2
-    assert "DATORIUM_STORE_" in capsys.readouterr().err
+    assert "RHIZODAT_STORE_" in capsys.readouterr().err
 
 
 def test_secrets_never_reach_the_output(
@@ -91,7 +91,7 @@ def test_secrets_never_reach_the_output(
     faker: Faker,
 ) -> None:
     secret = faker.pystr(min_chars=24, max_chars=24)
-    monkeypatch.setenv("DATORIUM_STORE_PG", f"postgresql://writer:{secret}@127.0.0.1:1/app")
+    monkeypatch.setenv("RHIZODAT_STORE_PG", f"postgresql://writer:{secret}@127.0.0.1:1/app")
     root = folder(tmp_path, ("0001_chapters.toml", CHAPTERS))
     assert main(["migrate", str(root)]) == 1  # the store is unreachable
     captured = capsys.readouterr()

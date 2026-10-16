@@ -1,0 +1,25 @@
+[package]
+name = "rhizodat-clickhouse"
+version = "0.0.0"
+description = "ClickHouse for rhizodat-core: a one-phase store applied after the decision (clickhouse crate)"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+bytes = "1"
+clickhouse = { version = "0.15", features = ["uuid"] }
+rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+rhizodat-postgres = { path = "../rhizodat-postgres" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-postgres = "0.7"
+
+[lints]
+workspace = true

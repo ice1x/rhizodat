@@ -1,0 +1,23 @@
+[package]
+name = "rhizodat-conformance"
+version = "0.0.0"
+description = "The Rust crates against the language-neutral vectors in conformance/ (tests only)"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+async-trait = "0.1"
+rhizodat-clickhouse = { path = "../rhizodat-clickhouse" }
+rhizodat-core = { path = "../rhizodat-core" }
+rhizodat-drevo = { path = "../rhizodat-drevo" }
+rhizodat-iceberg = { path = "../rhizodat-iceberg" }
+rhizodat-postgres = { path = "../rhizodat-postgres" }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+serde_json = "1"
+uuid = "1"
+
+[lints]
+workspace = true

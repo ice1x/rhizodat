@@ -7,7 +7,7 @@ from faker import Faker
 from hypothesis import given
 from hypothesis import strategies as st
 
-from datorium.core.dsn import DSN, DSNError, parse_dsn
+from rhizodat.core.dsn import DSN, DSNError, parse_dsn
 
 # --- PostgreSQL ------------------------------------------------------------
 
@@ -111,9 +111,9 @@ def test_iceberg_rest_requires_a_host() -> None:
 
 
 def test_file_dsn() -> None:
-    dsn = parse_dsn("file:///var/lib/datorium/journal.db")
+    dsn = parse_dsn("file:///var/lib/rhizodat/journal.db")
     assert dsn.store == "file"
-    assert dsn.path == "/var/lib/datorium/journal.db"
+    assert dsn.path == "/var/lib/rhizodat/journal.db"
 
 
 def test_file_dsn_must_be_local() -> None:
@@ -196,7 +196,7 @@ def test_dsn_is_immutable_and_hashable() -> None:
 
 
 def test_redact_needs_no_registered_scheme(faker: Faker) -> None:
-    from datorium.core.dsn import redact
+    from rhizodat.core.dsn import redact
 
     secret = faker.pystr(min_chars=12, max_chars=12)
     raw = f"nosuchstore://me:{secret}@host:1/db?api_token={secret}&region=eu"

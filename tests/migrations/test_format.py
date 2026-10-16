@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from faker import Faker
 
-from datorium.migrations import (
+from rhizodat.migrations import (
     Migration,
     MigrationFormatError,
     Step,

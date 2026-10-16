@@ -3,7 +3,7 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "datorium"
+name = "rhizodat"
 version = "0.1.0.dev0"
 description = "Bitemporal polyglot data layer over PostgreSQL, ClickHouse, drevo and Apache Iceberg"
 readme = "README.md"
@@ -32,17 +32,17 @@ clickhouse = ["clickhouse-connect>=0.8"]
 drevo = ["neo4j>=5.20"]
 # pyarrow writes the data files; sqlalchemy is for iceberg+sql:// catalogs.
 iceberg = ["pyiceberg[pyarrow,sql-sqlite]>=0.12"]
-# datorium-MCP, the MCP server shipped with datorium (the datorium-mcp command).
+# rhizodat-MCP, the MCP server shipped with rhizodat (the rhizodat-mcp command).
 mcp = ["mcp>=2.3"]
-# datorium.testing: the adapter contract suite for adapter authors.
+# rhizodat.testing: the adapter contract suite for adapter authors.
 testing = ["pytest>=8", "faker>=30"]
 
 [project.scripts]
-datorium = "datorium.check:main"
-datorium-mcp = "datorium.mcp.server:main"
+rhizodat = "rhizodat.check:main"
+rhizodat-mcp = "rhizodat.mcp.server:main"
 
 [project.urls]
-Repository = "https://github.com/ice1x/datorium"
+Repository = "https://github.com/ice1x/rhizodat"
 
 [dependency-groups]
 dev = [
@@ -67,7 +67,7 @@ drevo = ["drevo-py"]
 drevo-py = { git = "https://github.com/ice1x/drevo", rev = "cf9c7664e573906f2f7e86bd15639b7c3be559fe", subdirectory = "drevo-py" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/datorium"]
+packages = ["src/rhizodat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,12 +10,12 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium.adapters.drevo import ANCHOR, DrevoStore
-from datorium.core.coordinator import gid_for
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord
-from datorium.testing.parts import CONTRACT_PART, commit, part_values
 from drevo_parts import clear_parts, drevo_parts_dsn
+from rhizodat.adapters.drevo import ANCHOR, DrevoStore
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord
+from rhizodat.testing.parts import CONTRACT_PART, commit, part_values
 
 LABEL = CONTRACT_PART.table
 

@@ -1,8 +1,8 @@
-# Writing a datorium store adapter
+# Writing a rhizodat store adapter
 
-A store joins datorium through an adapter: a small package that declares the
+A store joins rhizodat through an adapter: a small package that declares the
 store kind and its connection strings, and implements the interfaces the
-commit protocol calls. datorium's own adapters (PostgreSQL, ClickHouse, drevo,
+commit protocol calls. rhizodat's own adapters (PostgreSQL, ClickHouse, drevo,
 Iceberg) are built exactly like a third-party one. This guide covers what an
 adapter must do, how to check it, and which databases can or cannot be one.
 
@@ -18,7 +18,7 @@ Contents:
 
 ## 1. Can the store join at all?
 
-datorium commits a meta-transaction over several stores with a journal and
+rhizodat commits a meta-transaction over several stores with a journal and
 the decision recorded in it (README: *The commit protocol*). A store takes part
 in one of two ways, and needs **one** of them.
 
@@ -50,13 +50,13 @@ Repository hides this: it reads the newest version every part already has.
 
 **A store that offers neither cannot be an adapter.** If writes can be neither
 prepared nor re-applied idempotently with a reliable "already applied?" check,
-a crash between the decision and the write leaves datorium unable to finish
+a crash between the decision and the write leaves rhizodat unable to finish
 the transaction or to know it is finished. See [section 8](#8-databases-supported-candidates-not-viable).
 
 ## 2. The declaration
 
 ```python
-from datorium import Adapter, Scheme
+from rhizodat import Adapter, Scheme
 
 ADAPTER = Adapter(
     kind="mysql",                                   # [a-z][a-z0-9_]{0,31}
@@ -64,29 +64,29 @@ ADAPTER = Adapter(
     open_store=lambda name, dsn: MySqlStore(dsn, name=name),
     open_journal=None,          # only for a shared ACID store that can hold the journal
     journal_location=None,      # where a journal at a DSN lives (for Fenced stores)
-    query_help="SQL (MySQL 8 dialect), parameters as %s",   # shown by datorium-MCP
+    query_help="SQL (MySQL 8 dialect), parameters as %s",   # shown by rhizodat-MCP
 )
 ```
 
-Register it with an entry point, and datorium loads it on first use:
+Register it with an entry point, and rhizodat loads it on first use:
 
 ```toml
-[project.entry-points."datorium.adapters"]
-mysql = "datorium_mysql:ADAPTER"
+[project.entry-points."rhizodat.adapters"]
+mysql = "rhizodat_mysql:ADAPTER"
 ```
 
-Or call `datorium.register_adapter(ADAPTER)` yourself. A `Scheme` says whether
+Or call `rhizodat.register_adapter(ADAPTER)` yourself. A `Scheme` says whether
 the DSN needs a host or a path (`"required"`, `"optional"`, `"none"`) and the
 default port. Parsing a DSN imports no driver. Import yours lazily, so that
 installing the adapter does not force the driver.
 
 ## 3. The interfaces
 
-Three objects, as in `datorium.core.coordinator` and
-`datorium.core.unit_of_work`:
+Three objects, as in `rhizodat.core.coordinator` and
+`rhizodat.core.unit_of_work`:
 
 ```python
-class Store:                      # one configured store; lives as long as Datorium
+class Store:                      # one configured store; lives as long as Rhizodat
     name: str
     two_phase: bool
     def branch(self, dat_txn) -> Branch: ...      # one per Unit of Work touching the store
@@ -120,9 +120,9 @@ What each must keep:
 | `commit_one_phase` | The only branch of a meta-transaction: commit natively, no journal. |
 | `rollback` | Before the decision: discard everything, an open or a prepared transaction alike. Never raises for "nothing to roll back". |
 | `finish` | After the decision: make the branch visible (`COMMIT PREPARED`, apply the payload, commit the staged files). **Idempotent**; an unknown gid means "already resolved". Recovery may call it on another host, from the journal record alone. |
-| `is_applied` | Whether the branch is visible, to settle an ambiguous commit. Never guess: without evidence, answer `False` (datorium then finishes again, which must be harmless). |
+| `is_applied` | Whether the branch is visible, to settle an ambiguous commit. Never guess: without evidence, answer `False` (rhizodat then finishes again, which must be harmless). |
 | `abort` | Roll back a prepared gid, or drop staged data. Idempotent. Only ever called before a commit decision. |
-| `prepared_gids` | The prepared transactions the store holds: datorium's (`dat:` prefix) and others, which it leaves alone. A one-phase store returns `[]`. |
+| `prepared_gids` | The prepared transactions the store holds: rhizodat's (`dat:` prefix) and others, which it leaves alone. A one-phase store returns `[]`. |
 | `is_retryable` | `True` only for errors where re-running the whole Unit of Work may succeed: serialization failures, deadlocks, a lost connection before prepare, a prepared fence. Never for a bug, a constraint violation or a full store. |
 
 Two rules that are easy to get wrong:
@@ -140,8 +140,8 @@ Checked with `isinstance`. Implement the ones that apply.
 
 | Capability | Where | What for |
 |---|---|---|
-| `read_only(query, params)` (`ReadOnlyQueries`) | store | Native reads the store itself refuses to turn into writes. datorium-MCP uses them. |
-| `applied_location` (`AppliedLocation`) | store | Where the applied markers live. `Datorium` refuses two stores sharing one: they would block or confuse each other. |
+| `read_only(query, params)` (`ReadOnlyQueries`) | store | Native reads the store itself refuses to turn into writes. rhizodat-MCP uses them. |
+| `applied_location` (`AppliedLocation`) | store | Where the applied markers live. `Rhizodat` refuses two stores sharing one: they would block or confuse each other. |
 | `fence_location` (`Fenced`) | store | While a branch is prepared, nothing else commits there (drevo's fence), so the journal must live elsewhere. |
 | `classify(error) -> ErrorKind` (`Classifies`) | branch, participant | Error kinds beyond retryable / not (section 5). |
 | `free_space() -> int \| None` (`Capacity`) | store | Bytes left, for the `min_free` check before the decision. `None` when the store cannot tell. |
@@ -158,7 +158,7 @@ Checked with `isinstance`. Implement the ones that apply.
 - `PERMANENT`: anything else.
 
 `is_retryable` stays and must agree: true exactly for `TRANSIENT`. Without
-`classify`, datorium classifies by `is_retryable`, and an error caused by a
+`classify`, rhizodat classifies by `is_retryable`, and an error caused by a
 device out of space (`ENOSPC`, `EDQUOT` anywhere in the cause chain) is
 `STORE_FULL` whoever raised it.
 
@@ -171,7 +171,7 @@ store can refuse a meta-transaction before the decision.
 ## 6. Entity parts
 
 To hold entity fields (the Repository), implement
-`datorium.core.parts.PartStore` on the store and `PartBranch` on its branches:
+`rhizodat.core.parts.PartStore` on the store and `PartBranch` on its branches:
 - `install_part`;
 - `read_part(known_at)`;
 - `part_history`;
@@ -188,11 +188,11 @@ The README's *How parts are stored* table shows the four layouts.
 
 ## 7. Checking an adapter
 
-1. **Dry run:** `datorium adapter check <module:ADAPTER> [--dsn DSN] [--json]`.
+1. **Dry run:** `rhizodat adapter check <module:ADAPTER> [--dsn DSN] [--json]`.
    It reports the declaration, the interfaces and every optional capability,
    with a completeness score, and writes nothing.
 2. **The adapter contract:** subclass
-   `datorium.testing.contract.AdapterContract` with a `Harness`. The harness
+   `rhizodat.testing.contract.AdapterContract` with a `Harness`. The harness
    needs three things:
    - `open_store(name)`: a store in a place of its own;
    - `write(branch, key)`;
@@ -203,10 +203,10 @@ The README's *How parts are stored* table shows the four layouts.
    classification, and a crash at every step of the commit protocol followed
    by one recovery run.
 3. **The parts contract** (entity parts):
-   `datorium.testing.parts.PartStoreContract` with a `parts_store` fixture.
+   `rhizodat.testing.parts.PartStoreContract` with a `parts_store` fixture.
 
 ```python
-from datorium.testing.contract import AdapterContract
+from rhizodat.testing.contract import AdapterContract
 
 class TestMySqlContract(AdapterContract):
     @pytest.fixture
@@ -258,6 +258,6 @@ it.
   third-party SaaS endpoints without idempotency keys: a retry after a lost
   response may write twice.
 
-A store in the last two groups can still be fed *from* datorium, for example
+A store in the last two groups can still be fed *from* rhizodat, for example
 by a consumer that reads committed data. It just cannot be a participant in a
 meta-transaction.

@@ -1,4 +1,4 @@
-"""datorium's Iceberg adapter keeps the adapter contract (one phase: staged Parquet
+"""rhizodat's Iceberg adapter keeps the adapter contract (one phase: staged Parquet
 files committed as a snapshot after the decision): SQLite catalog and REST over S3."""
 
 import uuid
@@ -9,8 +9,8 @@ import pytest
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType, UUIDType
 
-from datorium.adapters.iceberg import IcebergBranch, IcebergStore
-from datorium.testing.contract import AdapterContract
+from rhizodat.adapters.iceberg import IcebergBranch, IcebergStore
+from rhizodat.testing.contract import AdapterContract
 
 SCHEMA = Schema(
     NestedField(1, "key", StringType(), required=True),

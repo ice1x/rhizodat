@@ -8,8 +8,8 @@ from decimal import Decimal
 
 import pytest
 
-from datorium.core.identity import is_uuid7
-from datorium.core.mapping import MappingError, Ref, entity, is_entity, mapping_of
+from rhizodat.core.identity import is_uuid7
+from rhizodat.core.mapping import MappingError, Ref, entity, is_entity, mapping_of
 
 
 @entity(stores={"crm": ["name", "email"]})

@@ -26,11 +26,11 @@ from pyiceberg.types import (
     UUIDType,
 )
 
-from datorium.adapters.iceberg import IcebergBranch, IcebergStore, catalog_properties
-from datorium.core.coordinator import gid_for
-from datorium.core.errors import Capacity, ErrorKind, classify
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord
+from rhizodat.adapters.iceberg import IcebergBranch, IcebergStore, catalog_properties
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.errors import Capacity, ErrorKind, classify
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord
 
 TS = 1_760_000_000_000 << 16
 
@@ -242,7 +242,7 @@ def test_appends_to_one_table_become_one_file(store: IcebergStore, faker: Faker)
     assert existing(store, payload) == 1
 
 
-def test_reserved_columns_are_set_by_datorium(store: IcebergStore, faker: Faker) -> None:
+def test_reserved_columns_are_set_by_rhizodat(store: IcebergStore, faker: Faker) -> None:
     data = [{**r, "dat_txn": uuid.uuid4()} for r in sales(faker, 1)]
     with pytest.raises(ValueError, match="dat_txn"):
         store.branch(new_id()).append("erp.sales", data)

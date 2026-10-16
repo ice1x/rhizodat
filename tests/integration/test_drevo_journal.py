@@ -15,11 +15,11 @@ import pytest
 from faker import Faker
 
 from conftest import drevo_embedded_available
-from datorium import Committed, Datorium, Retry, UnitOfWork
-from datorium.adapters.drevo import DrevoJournal, DrevoStore
-from datorium.adapters.postgres import PostgresStore
-from datorium.core.journal import State
 from fakes import Crash
+from rhizodat import Committed, Retry, Rhizodat, UnitOfWork
+from rhizodat.adapters.drevo import DrevoJournal, DrevoStore
+from rhizodat.adapters.postgres import PostgresStore
+from rhizodat.core.journal import State
 
 
 class Wall:
@@ -32,7 +32,7 @@ class Wall:
 
 @dataclass
 class Tracker:
-    dat: Datorium
+    dat: Rhizodat
     pg: PostgresStore
     graph: DrevoStore
     journal: DrevoJournal
@@ -61,7 +61,7 @@ def tracker(pg_dsn: str, pg_schema: str, tmp_path: Path) -> Iterator[Tracker]:
     graph = DrevoStore(f"drevo://{tmp_path / 'bugs.drevo'}", name="graph")
     wall = Wall()
     journal = DrevoJournal(f"drevo://{tmp_path / 'journal.drevo'}", wall_ms=wall)
-    dat = Datorium(
+    dat = Rhizodat(
         stores={"pg": pg, "graph": graph},
         journal=journal,
         finish=Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0),

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from faker import Faker
 
-from datorium.core.journal import BranchRecord, JournalConflict, SqliteJournal, State
+from rhizodat.core.journal import BranchRecord, JournalConflict, SqliteJournal, State
 
 
 def run_process(code: str, *args: str) -> str:
@@ -26,7 +26,7 @@ def run_process(code: str, *args: str) -> str:
 
 COORDINATOR_THAT_CRASHES_AFTER_PREPARE = """
     import os, sys, uuid
-    from datorium.core.journal import BranchRecord, SqliteJournal, State
+    from rhizodat.core.journal import BranchRecord, SqliteJournal, State
     path, txn = sys.argv[1], uuid.UUID(sys.argv[2])
     j = SqliteJournal(path, wall_ms=lambda: 1_000)
     branches = [BranchRecord(s, f"dat:{txn}:{s}", True) for s in ("pg", "graph")]
@@ -38,7 +38,7 @@ COORDINATOR_THAT_CRASHES_AFTER_PREPARE = """
 
 RECOVERY_WORKER = """
     import sys
-    from datorium.core.journal import SqliteJournal, State
+    from rhizodat.core.journal import SqliteJournal, State
     j = SqliteJournal(sys.argv[1], wall_ms=lambda: 60_000)
     for record in j.pending(updated_before_ms=30_000):
         if record.state in (State.ACTIVE, State.PREPARED):

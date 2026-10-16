@@ -1,4 +1,4 @@
-"""``DATORIUM_TEST_NO_SKIPS=1``: a skipped test fails instead.
+"""``RHIZODAT_TEST_NO_SKIPS=1``: a skipped test fails instead.
 
 Store-backed tests skip when their store is not configured, which is right on a
 laptop and wrong in a CI job that starts every store: there a skip means a test
@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-ENV = "DATORIUM_TEST_NO_SKIPS"
+ENV = "RHIZODAT_TEST_NO_SKIPS"
 
 
 @pytest.hookimpl(hookwrapper=True)

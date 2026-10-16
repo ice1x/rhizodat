@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from conftest import drevo_embedded_available
-from datorium.adapters.drevo import ANCHOR, DrevoStore
-from datorium.testing.parts import CONTRACT_PART
+from rhizodat.adapters.drevo import ANCHOR, DrevoStore
+from rhizodat.testing.parts import CONTRACT_PART
 
 LABEL = CONTRACT_PART.table
 

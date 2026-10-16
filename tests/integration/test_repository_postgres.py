@@ -16,10 +16,10 @@ import psycopg
 import pytest
 from faker import Faker
 
-from datorium import Datorium, Ref, UnitOfWork, entity
-from datorium.adapters.postgres import PostgresJournal, PostgresStore
-from datorium.core.clock import HybridLogicalClock
-from datorium.core.repository import EntityNotFound, NotRestorable
+from rhizodat import Ref, Rhizodat, UnitOfWork, entity
+from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
+from rhizodat.core.clock import HybridLogicalClock
+from rhizodat.core.repository import EntityNotFound, NotRestorable
 
 DAY_MS = 86_400_000
 
@@ -77,9 +77,9 @@ def wall() -> Wall:
 
 
 @pytest.fixture
-def dat(pg_dsn: str, pg_schema: str, triage_schema: str, wall: Wall) -> Iterator[Datorium]:
+def dat(pg_dsn: str, pg_schema: str, triage_schema: str, wall: Wall) -> Iterator[Rhizodat]:
     journal = PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall)
-    d = Datorium(
+    d = Rhizodat(
         stores={
             "tracker": PostgresStore(pg_dsn, name="tracker", schema=pg_schema),
             "triage": PostgresStore(pg_dsn, name="triage", schema=triage_schema),
@@ -103,7 +103,7 @@ def new_issue(faker: Faker) -> Issue:
 
 
 def test_an_issue_lives_across_two_stores_and_keeps_its_history(
-    dat: Datorium, faker: Faker, wall: Wall
+    dat: Rhizodat, faker: Faker, wall: Wall
 ) -> None:
     issues = dat.repository(Issue)
     issue = new_issue(faker)
@@ -148,7 +148,7 @@ def test_an_issue_lives_across_two_stores_and_keeps_its_history(
     assert len(tracker) == 3
 
 
-def test_a_deleted_task_is_gone_from_every_version(dat: Datorium, faker: Faker) -> None:
+def test_a_deleted_task_is_gone_from_every_version(dat: Rhizodat, faker: Faker) -> None:
     tasks = dat.repository(Task)
     task = Task(summary=faker.bs(), assignee=None, done=False)
     tasks.add(task)
@@ -170,7 +170,7 @@ def test_a_deleted_task_is_gone_from_every_version(dat: Datorium, faker: Faker) 
 
 
 def test_a_deleted_comment_can_be_restored_then_is_purged(
-    dat: Datorium, faker: Faker, wall: Wall
+    dat: Rhizodat, faker: Faker, wall: Wall
 ) -> None:
     issue = new_issue(faker)
     dat.repository(Issue).add(issue)
@@ -201,7 +201,7 @@ def test_a_deleted_comment_can_be_restored_then_is_purged(
     assert comments.get(kept.dat_id) == kept
 
 
-def test_closing_an_issue_and_its_task_is_one_unit_of_work(dat: Datorium, faker: Faker) -> None:
+def test_closing_an_issue_and_its_task_is_one_unit_of_work(dat: Rhizodat, faker: Faker) -> None:
     issue = new_issue(faker)
     task = Task(summary=f"fix: {issue.title}", assignee=faker.user_name(), done=False)
     dat.repository(Issue).add(issue)

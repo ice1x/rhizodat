@@ -6,11 +6,11 @@ from collections.abc import Iterator
 import pytest
 from faker import Faker
 
-from datorium.adapters.clickhouse import ClickHouseStore
-from datorium.core.coordinator import gid_for
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord
-from datorium.testing.parts import CONTRACT_PART, commit, part_values
+from rhizodat.adapters.clickhouse import ClickHouseStore
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord
+from rhizodat.testing.parts import CONTRACT_PART, commit, part_values
 
 
 @pytest.fixture

@@ -5,9 +5,9 @@ import errno
 import pytest
 from faker import Faker
 
-from datorium import Aborted, StoreFull
-from datorium.core.errors import Capacity, Classifies, ErrorKind, classify
-from datorium.core.identity import new_id
+from rhizodat import Aborted, StoreFull
+from rhizodat.core.errors import Capacity, Classifies, ErrorKind, classify
+from rhizodat.core.identity import new_id
 
 
 class OnlyRetryable:

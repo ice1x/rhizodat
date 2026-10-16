@@ -1,6 +1,6 @@
-"""datorium-MCP tools without the MCP SDK: stores and read-only queries.
+"""rhizodat-MCP tools without the MCP SDK: stores and read-only queries.
 
-The tools are plain functions over a ``Datorium``; the server only exposes them.
+The tools are plain functions over a ``Rhizodat``; the server only exposes them.
 Their results are JSON values, so every store value is converted.
 """
 
@@ -14,12 +14,12 @@ from typing import Any
 import pytest
 from faker import Faker
 
-from datorium import Datorium
-from datorium.core.journal import MemoryJournal
-from datorium.core.result import Result
-from datorium.mcp.config import ConfigError, config_from_env
-from datorium.mcp.tools import Tools, jsonable
 from fakes import FakeStoreHandle, Faults, World
+from rhizodat import Rhizodat
+from rhizodat.core.journal import MemoryJournal
+from rhizodat.core.result import Result
+from rhizodat.mcp.config import ConfigError, config_from_env
+from rhizodat.mcp.tools import Tools, jsonable
 
 
 class ReadableStore(FakeStoreHandle):
@@ -47,7 +47,7 @@ def world() -> World:
 
 
 def tools_for(stores: dict[str, Any], journal: MemoryJournal | None, **kwargs: Any) -> Tools:
-    return Tools(Datorium(stores=stores, journal=journal), **kwargs)
+    return Tools(Rhizodat(stores=stores, journal=journal), **kwargs)
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def tools(orders: ReadableStore, journal: MemoryJournal) -> Iterator[Tools]:
 def test_stores_lists_names_kinds_and_redacted_dsns(world: World) -> None:
     store = ReadableStore(world, "erp", [])
     t = Tools(
-        Datorium(stores={"erp": store}),
+        Rhizodat(stores={"erp": store}),
         dsns={"erp": "postgresql://app:s3cret@db.internal:5432/erp"},
     )
     assert t.stores() == [
@@ -183,10 +183,10 @@ def test_unknown_objects_become_their_text() -> None:
 def test_config_from_the_environment(faker: Faker) -> None:
     pg = f"postgresql://{faker.user_name()}@db/erp"
     env = {
-        "DATORIUM_STORE_ERP": pg,
-        "DATORIUM_STORE_LAKE": "iceberg+rest://cat:8181/w",
-        "DATORIUM_JOURNAL": "file:///tmp/j.db",
-        "DATORIUM_MCP_MAX_ROWS": "50",
+        "RHIZODAT_STORE_ERP": pg,
+        "RHIZODAT_STORE_LAKE": "iceberg+rest://cat:8181/w",
+        "RHIZODAT_JOURNAL": "file:///tmp/j.db",
+        "RHIZODAT_MCP_MAX_ROWS": "50",
         "HOME": "/home/x",
     }
     config = config_from_env(env)
@@ -196,25 +196,25 @@ def test_config_from_the_environment(faker: Faker) -> None:
 
 
 def test_config_needs_a_store_and_valid_numbers() -> None:
-    with pytest.raises(ConfigError, match="DATORIUM_STORE_"):
-        config_from_env({"DATORIUM_JOURNAL": "file:///j.db"})
-    with pytest.raises(ConfigError, match="DATORIUM_MCP_MAX_ROWS"):
-        config_from_env({"DATORIUM_STORE_A": "clickhouse://h/db", "DATORIUM_MCP_MAX_ROWS": "x"})
-    with pytest.raises(ConfigError, match="DATORIUM_MCP_MAX_ROWS"):
-        config_from_env({"DATORIUM_STORE_A": "clickhouse://h/db", "DATORIUM_MCP_MAX_ROWS": "0"})
+    with pytest.raises(ConfigError, match="RHIZODAT_STORE_"):
+        config_from_env({"RHIZODAT_JOURNAL": "file:///j.db"})
+    with pytest.raises(ConfigError, match="RHIZODAT_MCP_MAX_ROWS"):
+        config_from_env({"RHIZODAT_STORE_A": "clickhouse://h/db", "RHIZODAT_MCP_MAX_ROWS": "x"})
+    with pytest.raises(ConfigError, match="RHIZODAT_MCP_MAX_ROWS"):
+        config_from_env({"RHIZODAT_STORE_A": "clickhouse://h/db", "RHIZODAT_MCP_MAX_ROWS": "0"})
 
 
 def test_config_store_names_are_lower_case() -> None:
-    config = config_from_env({"DATORIUM_STORE_Big_Lake": "clickhouse://h/db"})
+    config = config_from_env({"RHIZODAT_STORE_Big_Lake": "clickhouse://h/db"})
     assert config.stores == {"big_lake": "clickhouse://h/db"}
     assert config.journal is None
 
 
-@pytest.mark.parametrize("removed", ["DATORIUM_MCP_RECOVERY", "DATORIUM_MCP_RECOVERY_STALE_S"])
+@pytest.mark.parametrize("removed", ["RHIZODAT_MCP_RECOVERY", "RHIZODAT_MCP_RECOVERY_STALE_S"])
 def test_config_refuses_the_removed_recovery_settings(removed: str) -> None:
-    """Transactions and recovery are datorium's own business, not the agent's."""
+    """Transactions and recovery are rhizodat's own business, not the agent's."""
     with pytest.raises(ConfigError, match=f"{removed}.*removed"):
-        config_from_env({"DATORIUM_STORE_A": "clickhouse://h/db", removed: "1"})
+        config_from_env({"RHIZODAT_STORE_A": "clickhouse://h/db", removed: "1"})
 
 
 def test_tools_offer_no_journal_or_recovery_access(tools: Tools) -> None:

@@ -9,10 +9,10 @@ from typing import Any
 import pytest
 
 from conftest import drevo_embedded_available
-from datorium.adapters.drevo import DrevoBranch, DrevoStore
-from datorium.core.coordinator import gid_for
-from datorium.core.identity import new_id
-from datorium.core.journal import BranchRecord
+from rhizodat.adapters.drevo import DrevoBranch, DrevoStore
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.identity import new_id
+from rhizodat.core.journal import BranchRecord
 
 
 def raised(call: Callable[[], object]) -> BaseException:
