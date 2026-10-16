@@ -12,8 +12,8 @@ or calls ``register_adapter`` itself. Adapters are loaded on first use; a plug-i
 that fails to load is skipped and reported when a DSN needs a missing scheme.
 
 What a store can do beyond ``Store`` is a capability protocol here
-(``ReadOnlyQueries``, ``AppliedLocation``, ``Fenced``, ``Migrates``), checked
-with ``isinstance``.
+(``ReadOnlyQueries``, ``AppliedLocation``, ``Fenced``, ``Migrates``, ``Loads``),
+checked with ``isinstance``.
 """
 
 import importlib
@@ -25,15 +25,20 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from rhizodat.core.journal import Journal
     from rhizodat.core.result import Result
     from rhizodat.core.unit_of_work import Store
+    from rhizodat.ingest.schema import Column
+    from rhizodat.migrations.format import Step
 
 __all__ = [
     "ENTRY_POINT_GROUP",
     "Adapter",
     "AppliedLocation",
     "Fenced",
+    "Loads",
     "Migrates",
     "ReadOnlyQueries",
     "Scheme",
@@ -133,6 +138,38 @@ class Migrates(Protocol):
     def migration_kinds(self) -> frozenset[str]: ...
 
     def run_migration_step(self, kind: str, body: Any) -> None:  # noqa: ANN401 - TOML data
+        ...
+
+
+@runtime_checkable
+class Loads(Protocol):
+    """Imports files: tables from portable columns, and rows loaded as one unit.
+
+    The table is created and widened only through migration steps (the store's
+    ``Migrates`` kinds), so every schema change is recorded. ``load`` takes
+    pyarrow record batches whose columns are a subset of the table's (left-out
+    columns are null) and makes all of them visible at once, or none: a failure
+    halfway, the source's or the store's, leaves the table as it was. ``replace``
+    swaps the table's contents for the batches, as one unit too.
+    """
+
+    def table_columns(self, table: str) -> list[str] | None:
+        """The table's column names in order; ``None`` if there is no such table."""
+        ...
+
+    def create_table_steps(
+        self, table: str, columns: "Sequence[Column]", *, order_by: Sequence[str] = ()
+    ) -> "list[Step]":
+        """Idempotent migration steps creating the table; ``order_by`` is the sort key
+        for stores that have one (others ignore it)."""
+        ...
+
+    def add_column_steps(self, table: str, columns: "Sequence[Column]") -> "list[Step]":
+        """Idempotent migration steps adding nullable columns."""
+        ...
+
+    def load(self, table: str, batches: "Iterable[Any]", *, replace: bool = False) -> int:
+        """Load the batches as one unit; the number of rows loaded."""
         ...
 
 

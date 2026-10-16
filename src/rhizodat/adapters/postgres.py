@@ -26,7 +26,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote_plus
 
@@ -50,6 +50,9 @@ from rhizodat.core.result import Result
 
 if TYPE_CHECKING:
     import psycopg
+
+    from rhizodat.ingest.schema import Column
+    from rhizodat.migrations.format import Step
 
 __all__ = [
     "ADAPTER",
@@ -168,6 +171,29 @@ def _column_type(annotation: object) -> str:
         bytes: "bytea",
     }
     return natives.get(annotation, "jsonb")
+
+
+# Imports: portable column types as PostgreSQL types.
+_IMPORT_TYPES = {
+    "boolean": "boolean",
+    "int64": "bigint",
+    "float64": "double precision",
+    "date": "date",
+    "timestamp": "timestamp",
+    "timestamptz": "timestamptz",
+    "string": "text",
+}
+
+
+def _quoted(name: str) -> str:
+    """Any name as a quoted identifier."""
+    if "\x00" in name:
+        raise ValueError(f"cannot name a PostgreSQL column {name!r}: it holds a NUL")
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _import_table(table: str) -> str:
+    return ".".join(_quoted(part) for part in table.split(".", 1))
 
 
 def _ident(name: str) -> str:
@@ -347,6 +373,61 @@ class PostgresStore:
         with self.connect() as conn, conn.transaction():
             for sql in sqls:
                 conn.execute(sql.encode())
+
+    # --- Loads -------------------------------------------------------------------------------
+
+    def table_columns(self, table: str) -> list[str] | None:
+        schema, dot, name = table.rpartition(".")
+        rows = self.execute(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_schema = coalesce(%s, current_schema()) AND table_name = %s"
+            " ORDER BY ordinal_position",
+            (schema if dot else None, name),
+        ).all()
+        return [r["column_name"] for r in rows] or None
+
+    def create_table_steps(
+        self, table: str, columns: Sequence["Column"], *, order_by: Sequence[str] = ()
+    ) -> list["Step"]:
+        """``CREATE TABLE IF NOT EXISTS``; a column with no missing value is ``NOT NULL``.
+        ``order_by`` is ignored (PostgreSQL tables have no sort key)."""
+        from rhizodat.migrations.format import Step
+
+        cols = ", ".join(
+            f"{_quoted(c.name)} {_IMPORT_TYPES[c.type]}{'' if c.nullable else ' NOT NULL'}"
+            for c in columns
+        )
+        return [
+            Step(self.name, "sql", f"CREATE TABLE IF NOT EXISTS {_import_table(table)} ({cols})")
+        ]
+
+    def add_column_steps(self, table: str, columns: Sequence["Column"]) -> list["Step"]:
+        from rhizodat.migrations.format import Step
+
+        body = [
+            f"ALTER TABLE {_import_table(table)} ADD COLUMN IF NOT EXISTS"
+            f" {_quoted(c.name)} {_IMPORT_TYPES[c.type]}"
+            for c in columns
+        ]
+        return [Step(self.name, "sql", body)]
+
+    def load(self, table: str, batches: Iterable[Any], *, replace: bool = False) -> int:
+        """``COPY`` every batch in one transaction (``replace``: ``TRUNCATE`` first, in it)."""
+        rows = 0
+        with self.connect() as conn, conn.transaction():
+            if replace:
+                conn.execute(f"TRUNCATE {_import_table(table)}".encode())
+            for batch in batches:
+                if not batch.num_rows:
+                    continue
+                names = ", ".join(_quoted(n) for n in batch.schema.names)
+                copy_sql = f"COPY {_import_table(table)} ({names}) FROM STDIN"
+                values = [col.to_pylist() for col in batch.columns]
+                with conn.cursor().copy(copy_sql.encode()) as copy:
+                    for row in zip(*values, strict=True):
+                        copy.write_row(row)
+                rows += batch.num_rows
+        return rows
 
     def read_only(
         self, sql: str, params: Mapping[str, Any] | Sequence[Any] | None = None
