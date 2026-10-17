@@ -9,3 +9,5 @@
 ::: rhizodat.ingest.schema
 
 ::: rhizodat.ingest.graph
+
+::: rhizodat.ingest.relate

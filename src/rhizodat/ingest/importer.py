@@ -24,7 +24,10 @@ from rhizodat.ingest.sources import DEFAULT_NULLS, _shown, infer_schema, read_ba
 from rhizodat.migrations.format import Migration, Step, load_migrations, to_toml
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from rhizodat.api import Rhizodat
+    from rhizodat.ingest.relate import Relationship
 
 __all__ = [
     "GraphReport",
@@ -193,12 +196,55 @@ def import_graph(
     a second import of the same file updates what changed instead of duplicating."""
     from rhizodat.ingest.graph import read_rdf
 
+    target = _graph_store(dat, store)
+    graph = read_rdf(source, format=format)
+    nodes, edges = target.load_graph(graph, batch=batch)
+    return GraphReport(_shown(source), store, nodes, edges)
+
+
+@dataclass(frozen=True, slots=True)
+class TablesGraphReport:
+    store: str
+    relationships: list["Relationship"]
+    """Every candidate found (or given), accepted or not."""
+    nodes: int
+    edges: int
+
+
+def _graph_store(dat: "Rhizodat", store: str) -> Any:  # noqa: ANN401 - LoadsGraphs
     target = dat.store(store)
     if not isinstance(target, LoadsGraphs):
         raise ValueError(
             f"store {store!r} ({type(target).__name__}) cannot load graphs: its adapter"
             " implements no LoadsGraphs capability"
         )
-    graph = read_rdf(source, format=format)
+    return target
+
+
+def import_tables_graph(
+    dat: "Rhizodat",
+    sources: "Mapping[str, str | Path]",
+    *,
+    store: str,
+    keys: "Mapping[str, str | None] | None" = None,
+    min_coverage: float = 0.95,
+    relationships: "Sequence[Relationship] | None" = None,
+    dry_run: bool = False,
+    batch: int = 500,
+) -> TablesGraphReport:
+    """Several tables (by name) as one graph in ``store``: rows as nodes, references
+    between them as edges, inferred unless ``relationships`` are given; one unit."""
+    from rhizodat.ingest.relate import infer_relationships, read_tables, tables_to_graph
+
+    target = _graph_store(dat, store)
+    tables = read_tables(sources, keys=keys)
+    found = (
+        list(relationships)
+        if relationships is not None
+        else infer_relationships(tables, min_coverage=min_coverage)
+    )
+    graph = tables_to_graph(tables, found)
+    if dry_run:
+        return TablesGraphReport(store, found, len(graph.nodes), len(graph.edges))
     nodes, edges = target.load_graph(graph, batch=batch)
-    return GraphReport(_shown(source), store, nodes, edges)
+    return TablesGraphReport(store, found, nodes, edges)

@@ -1,6 +1,7 @@
 """Importing files into a store, with the table's schema inferred from the file.
 
-``import_graph`` loads an RDF file into a graph store. ``infer_schema`` reads a
+``import_graph`` loads an RDF file into a graph store, ``import_tables_graph``
+several tables with the references between them. ``infer_schema`` reads a
 CSV, TSV, JSON Lines or Parquet file (local or in
 object storage) and gives every column the narrowest portable type that holds
 for all its values. ``import_file`` turns a new table, or new columns, into a
@@ -12,8 +13,10 @@ from rhizodat.ingest.importer import (
     GraphReport,
     ImportPlan,
     ImportReport,
+    TablesGraphReport,
     import_file,
     import_graph,
+    import_tables_graph,
     plan_import,
 )
 from rhizodat.ingest.schema import Column, LogicalType, TableSchema
@@ -27,8 +30,10 @@ __all__ = [
     "ImportReport",
     "LogicalType",
     "TableSchema",
+    "TablesGraphReport",
     "import_file",
     "import_graph",
+    "import_tables_graph",
     "infer_schema",
     "plan_import",
     "read_batches",
