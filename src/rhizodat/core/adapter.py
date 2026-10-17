@@ -13,7 +13,7 @@ that fails to load is skipped and reported when a DSN needs a missing scheme.
 
 What a store can do beyond ``Store`` is a capability protocol here
 (``ReadOnlyQueries``, ``AppliedLocation``, ``Fenced``, ``Migrates``, ``Loads``,
-``LoadsGraphs``),
+``LoadsGraphs``, ``Vectors``),
 checked with ``isinstance``.
 """
 
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from rhizodat.core.journal import Journal
     from rhizodat.core.result import Result
     from rhizodat.core.unit_of_work import Store
+    from rhizodat.core.vectors import Neighbour, VectorCandidate
     from rhizodat.ingest.graph import GraphData
     from rhizodat.ingest.schema import Column
     from rhizodat.migrations.format import Step
@@ -45,6 +46,7 @@ __all__ = [
     "Migrates",
     "ReadOnlyQueries",
     "Scheme",
+    "Vectors",
     "adapter_for",
     "adapters",
     "register_adapter",
@@ -188,6 +190,34 @@ class LoadsGraphs(Protocol):
 
     def load_graph(self, graph: "GraphData", *, batch: int = 500) -> tuple[int, int]:
         """Write ``graph``; the numbers of nodes and edges written."""
+        ...
+
+
+@runtime_checkable
+class Vectors(Protocol):
+    """Holds embeddings beside the nodes they describe and finds the nearest ones.
+
+    A vector is stored in a node property, with the model that made it and a hash
+    of the text it was made from (``<property>_model``, ``<property>_hash``), so
+    an embedding run can skip what has not changed.
+    """
+
+    def vector_candidates(
+        self, label: str, text_property: str, vector_property: str
+    ) -> "list[VectorCandidate]":
+        """Every ``label`` node with text in ``text_property``."""
+        ...
+
+    def write_vectors(
+        self, label: str, vector_property: str, rows: "list[dict[str, Any]]", *, batch: int = 500
+    ) -> int:
+        """Write ``{key, vector, hash, model}`` rows as one unit; the number written."""
+        ...
+
+    def nearest(
+        self, label: str, vector_property: str, vector: "list[float]", *, k: int = 10
+    ) -> "list[Neighbour]":
+        """The ``k`` ``label`` nodes closest to ``vector`` by cosine, closest first."""
         ...
 
 
