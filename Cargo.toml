@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rhizodat-clickhouse", "crates/rhizodat-conformance", "crates/rhizodat-core", "crates/rhizodat-drevo", "crates/rhizodat-iceberg", "crates/rhizodat-postgres"]
+members = ["crates/rhizodat-clickhouse", "crates/rhizodat-conformance", "crates/rhizodat-core", "crates/rhizodat-drevo", "crates/rhizodat-iceberg", "crates/rhizodat-postgres", "crates/rhizodat-py"]
 
 [workspace.package]
 edition = "2024"

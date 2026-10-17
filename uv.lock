@@ -2365,6 +2365,9 @@ docs = [
 drevo = [
     { name = "drevo-py" },
 ]
+native = [
+    { name = "rhizodat-native" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2403,6 +2406,12 @@ docs = [
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
 ]
 drevo = [{ name = "drevo-py", git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe" }]
+native = [{ name = "rhizodat-native", directory = "crates/rhizodat-py" }]
+
+[[package]]
+name = "rhizodat-native"
+version = "0.0.0"
+source = { directory = "crates/rhizodat-py" }
 
 [[package]]
 name = "rhizodat-ontology"
