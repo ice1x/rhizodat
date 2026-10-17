@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rhizodat-ontology"
+version = "0.1.0.dev0"
+description = "Proposes an ontology for rhizodat graph imports with an LLM: a proposal to review, never written by itself"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "ice1x" }]
+dependencies = ["rhizodat[ingest]", "anthropic>=1.15"]
+
+[project.scripts]
+rhizodat-ontology = "rhizodat_ontology.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rhizodat_ontology"]
+
+[tool.uv.sources]
+rhizodat = { workspace = true }

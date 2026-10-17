@@ -29,7 +29,14 @@ from typing import Any
 from rhizodat.ingest.graph import Edge, GraphData, Node
 from rhizodat.ingest.sources import infer_schema, read_batches
 
-__all__ = ["Relationship", "Table", "infer_relationships", "read_tables", "tables_to_graph"]
+__all__ = [
+    "Relationship",
+    "Table",
+    "infer_relationships",
+    "measure",
+    "read_tables",
+    "tables_to_graph",
+]
 
 _REF_SUFFIX = re.compile(r"(_id|_ref|id)$", re.IGNORECASE)
 _ID_SUFFIX = re.compile(r"_?id$", re.IGNORECASE)
@@ -172,6 +179,23 @@ def infer_relationships(
                     Relationship(table.name, column, target, key, matched, len(present), accepted)
                 )
     return found
+
+
+def measure(tables: Mapping[str, Table], table: str, column: str, target: str) -> Relationship:
+    """How many values of ``table.column`` are keys of ``target``: a relationship someone
+    proposed (a person, a model), checked against the data. Accepted when any matched."""
+    for name in (table, target):
+        if name not in tables:
+            raise ValueError(f"no table {name} (tables: {', '.join(tables)})")
+    source, to = tables[table], tables[target]
+    if column not in source.columns:
+        raise ValueError(f"table {table}: no column {column}")
+    if to.key is None:
+        raise ValueError(f"table {target} has no key to refer to")
+    keys = {_match_value(row[to.key]) for row in to.rows}
+    present = [v for v in (_match_value(row.get(column)) for row in source.rows) if v is not None]
+    matched = sum(1 for v in present if v in keys)
+    return Relationship(table, column, target, to.key, matched, len(present), matched > 0)
 
 
 def tables_to_graph(

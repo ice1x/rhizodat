@@ -73,7 +73,47 @@ def drevo_bolt_dsn() -> str:
 @pytest.fixture(scope="session")
 def clickhouse_server_dsn() -> str:
     """DSN of a disposable ClickHouse; tests get their own database (``clickhouse_dsn``)."""
-    return _store_dsn(CLICKHOUSE_ENV)
+    dsn = _store_dsn(CLICKHOUSE_ENV)
+    _wait_until_steady(dsn)
+    return dsn
+
+
+def _wait_until_steady(dsn: str, *, in_a_row: int = 3, within_s: float = 60.0) -> None:
+    """Wait until ClickHouse answers ``in_a_row`` queries in a row.
+
+    The image's entrypoint creates the user and database on a temporary server,
+    then restarts the real one; its healthcheck (``/ping``) can pass on the
+    temporary server, and the first tests then hit the restart (CI saw
+    "Connection reset by peer" on the first ClickHouse tests, twice in a row).
+    """
+    import time
+
+    import clickhouse_connect
+
+    from rhizodat.core.dsn import parse_dsn
+
+    server = parse_dsn(dsn)
+    deadline = time.monotonic() + within_s
+    steady = 0
+    while steady < in_a_row:
+        try:
+            client = clickhouse_connect.get_client(
+                host=server.host,
+                port=server.port,
+                username=server.user or "default",
+                password=server.password or "",
+                autogenerate_session_id=False,
+            )
+            try:
+                client.command("SELECT 1")
+            finally:
+                client.close()
+            steady += 1
+        except Exception:
+            steady = 0
+            if time.monotonic() > deadline:
+                raise
+        time.sleep(0.3)
 
 
 @pytest.fixture
