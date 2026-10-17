@@ -7,3 +7,5 @@
       members: [infer_schema, read_batches, source_format, DEFAULT_NULLS]
 
 ::: rhizodat.ingest.schema
+
+::: rhizodat.ingest.graph

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rhizodat.core.adapter import Loads, Migrates
+from rhizodat.core.adapter import Loads, LoadsGraphs, Migrates
 from rhizodat.ingest.schema import Column, TableSchema
 from rhizodat.ingest.sources import DEFAULT_NULLS, _shown, infer_schema, read_batches
 from rhizodat.migrations.format import Migration, Step, load_migrations, to_toml
@@ -26,7 +26,14 @@ from rhizodat.migrations.format import Migration, Step, load_migrations, to_toml
 if TYPE_CHECKING:
     from rhizodat.api import Rhizodat
 
-__all__ = ["ImportPlan", "ImportReport", "import_file", "plan_import"]
+__all__ = [
+    "GraphReport",
+    "ImportPlan",
+    "ImportReport",
+    "import_file",
+    "import_graph",
+    "plan_import",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,3 +164,41 @@ def import_file(
         dat.migrate(directory)
     rows = target.load(table, read_batches(source, plan.schema), replace=replace)
     return ImportReport(plan, rows, migration_id)
+
+
+# --- graphs -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class GraphReport:
+    source: str
+    """The source as shown (secrets masked)."""
+    store: str
+    nodes: int
+    edges: int
+
+
+def import_graph(
+    dat: "Rhizodat",
+    source: str | Path,
+    *,
+    store: str,
+    format: str | None = None,
+    batch: int = 500,
+) -> GraphReport:
+    """Import an RDF file (Turtle, N-Triples, N3, JSON-LD, RDF/XML, OWL) into a graph
+    store, as one unit: resources become nodes keyed by their IRI, links edges.
+
+    A graph has no schema to migrate: labels and edge types come with the data, and
+    a second import of the same file updates what changed instead of duplicating."""
+    from rhizodat.ingest.graph import read_rdf
+
+    target = dat.store(store)
+    if not isinstance(target, LoadsGraphs):
+        raise ValueError(
+            f"store {store!r} ({type(target).__name__}) cannot load graphs: its adapter"
+            " implements no LoadsGraphs capability"
+        )
+    graph = read_rdf(source, format=format)
+    nodes, edges = target.load_graph(graph, batch=batch)
+    return GraphReport(_shown(source), store, nodes, edges)

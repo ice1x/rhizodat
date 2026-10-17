@@ -2028,6 +2028,18 @@ wheels = [
 ]
 
 [[package]]
+name = "rdflib"
+version = "7.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyparsing" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/f5/18bb77b7af9526add0c727a3b2048959847dc5fb030913e2918bf384fec3/rdflib-7.6.0.tar.gz", hash = "sha256:6c831288d5e4a5a7ece85d0ccde9877d512a3d0f02d7c06455d00d6d0ea379df", size = 4943826, upload-time = "2026-02-13T07:15:55.938Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/c2/6604a71269e0c1bd75656d5a001432d16f2cc5b8c057140ec797155c295e/rdflib-7.6.0-py3-none-any.whl", hash = "sha256:30c0a3ebf4c0e09215f066be7246794b6492e054e782d7ac2a34c9f70a15e0dd", size = 615416, upload-time = "2026-02-13T07:15:46.487Z" },
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2073,6 +2085,7 @@ iceberg = [
 ]
 ingest = [
     { name = "pyarrow" },
+    { name = "rdflib" },
 ]
 mcp = [
     { name = "mcp" },
@@ -2097,6 +2110,7 @@ dev = [
     { name = "pyarrow" },
     { name = "pyiceberg", extra = ["pyarrow", "sql-sqlite"] },
     { name = "pytest" },
+    { name = "rdflib" },
     { name = "ruff" },
 ]
 docs = [
@@ -2118,6 +2132,7 @@ requires-dist = [
     { name = "pyarrow", marker = "extra == 'ingest'", specifier = ">=17" },
     { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], marker = "extra == 'iceberg'", specifier = ">=0.12" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8" },
+    { name = "rdflib", marker = "extra == 'ingest'", specifier = ">=7" },
 ]
 provides-extras = ["postgres", "clickhouse", "drevo", "iceberg", "ingest", "mcp", "testing"]
 
@@ -2133,6 +2148,7 @@ dev = [
     { name = "pyarrow", specifier = ">=17" },
     { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], specifier = ">=0.12" },
     { name = "pytest", specifier = ">=8.3" },
+    { name = "rdflib", specifier = ">=7" },
     { name = "ruff", specifier = ">=0.8" },
 ]
 docs = [

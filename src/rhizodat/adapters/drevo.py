@@ -36,7 +36,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from rhizodat.core.adapter import Adapter, Scheme
 from rhizodat.core.dsn import DSN, parse_dsn
@@ -57,6 +57,9 @@ from rhizodat.core.parts import Part, Version
 from rhizodat.core.result import Result
 from rhizodat.core.rows import decode_value, encode_value
 
+if TYPE_CHECKING:
+    from rhizodat.ingest.graph import GraphData
+
 __all__ = [
     "ADAPTER",
     "ANCHOR",
@@ -76,6 +79,19 @@ Params = Mapping[str, Any] | None
 
 ANCHOR = "DatEntity"
 """The label of the node a reference edge points to: one per referenced ``dat_id``."""
+
+# Graph imports: the label every imported node is created with (drevo creates a node
+# with exactly one label; its classes are added after).
+RESOURCE = "Resource"
+_GRAPH_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _graph_name(kind: str, name: str) -> str:
+    if not _GRAPH_NAME.match(name):
+        raise ValueError(
+            f"invalid {kind} {name!r}: letters, digits and _, not starting with a digit"
+        )
+    return f"`{name}`"
 
 
 class _UnknownGid(Exception):
@@ -451,6 +467,44 @@ class DrevoStore:
 
         for query in statements(kind, body):
             self._backend.execute(query, None)
+
+    # --- LoadsGraphs ---------------------------------------------------------------------------
+
+    def load_graph(self, graph: "GraphData", *, batch: int = 500) -> tuple[int, int]:
+        """Every node and edge of ``graph`` in one drevo transaction, ``batch`` rows per
+        statement: nodes are merged on their title (the IRI) with the base label
+        ``Resource`` and their classes as labels, then edges between them."""
+        if batch < 1:
+            raise ValueError(f"batch must be at least 1, not {batch}")
+        by_labels: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+        for node in graph.nodes.values():
+            labels = tuple(_graph_name("label", label) for label in node.labels)
+            by_labels.setdefault(labels, []).append({"k": node.key, "p": dict(node.properties)})
+        by_type: dict[str, list[dict[str, str]]] = {}
+        for edge in graph.edges:
+            by_type.setdefault(_graph_name("edge type", edge.type), []).append(
+                {"s": edge.source, "o": edge.target}
+            )
+        base = _graph_name("label", RESOURCE)
+        tx = self._backend.begin()
+        try:
+            for labels, nodes in by_labels.items():
+                extra = f" SET n:{':'.join(labels)}" if labels else ""
+                query = f"UNWIND $rows AS r MERGE (n:{base} {{title: r.k}}){extra} SET n += r.p"
+                for i in range(0, len(nodes), batch):
+                    tx.execute(query, {"rows": nodes[i : i + batch]})
+            for edge_type, links in by_type.items():
+                query = (
+                    f"UNWIND $rows AS r MATCH (a:{base} {{title: r.s}}), (b:{base} {{title: r.o}})"
+                    f" MERGE (a)-[:{edge_type}]->(b)"
+                )
+                for i in range(0, len(links), batch):
+                    tx.execute(query, {"rows": links[i : i + batch]})
+            tx.commit()
+        except BaseException:
+            tx.rollback()
+            raise
+        return len(graph.nodes), len(graph.edges)
 
     def read_only(self, query: str, params: Params = None) -> Result:
         """A native read that never keeps a write: it runs in a transaction that is

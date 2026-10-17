@@ -25,7 +25,9 @@ def add_parser(commands: Any) -> None:  # noqa: ANN401 - argparse's subparsers a
     )
     cmd.add_argument("source", help="a path or URI (s3://, gs://, file://)")
     cmd.add_argument("--store", required=True, help="the store's name (RHIZODAT_STORE_<NAME>)")
-    cmd.add_argument("--table", required=True, help="the table (Iceberg: namespace.table)")
+    cmd.add_argument(
+        "--table", help="the table (Iceberg: namespace.table); not for an RDF file into a graph"
+    )
     cmd.add_argument(
         "--migrations", help="the migration directory; needed for a new table or columns"
     )
@@ -33,7 +35,11 @@ def add_parser(commands: Any) -> None:  # noqa: ANN401 - argparse's subparsers a
     cmd.add_argument(
         "--order-by", default="", help="sort key columns, comma-separated (ClickHouse)"
     )
-    cmd.add_argument("--format", choices=["csv", "tsv", "jsonl", "parquet"])
+    cmd.add_argument(
+        "--format",
+        choices=["csv", "tsv", "jsonl", "parquet", "turtle", "nt", "n3", "json-ld", "xml"],
+        help="the file's format when its name does not tell (the last five are RDF)",
+    )
     cmd.add_argument(
         "--null",
         action="append",
@@ -74,6 +80,70 @@ def _columns(plan: Any) -> list[dict[str, Any]]:  # noqa: ANN401 - ImportPlan
     ]
 
 
+_RDF = ("turtle", "nt", "n3", "json-ld", "xml")
+
+
+def _run_graph(args: argparse.Namespace, stores: dict[str, str], journal: str | None) -> int:
+    """An RDF file into a graph store: no table, no migration, one transaction."""
+    from rhizodat.api import Rhizodat
+    from rhizodat.ingest import import_graph
+
+    source = args.source
+    if args.table:
+        return _fail("an RDF file goes into a graph: --table does not apply", 2, source)
+    try:
+        dat = Rhizodat(stores=stores, journal=journal)
+    except Exception as exc:
+        return _fail(f"cannot open the stores: {type(exc).__name__}: {exc}", 2, source)
+    with dat:
+        if args.dry_run:
+            from rhizodat.ingest.graph import read_rdf
+
+            try:
+                graph = read_rdf(source, format=args.format)
+            except (ValueError, OSError) as exc:
+                return _fail(str(exc), 2, source)
+            labels = sorted({label for n in graph.nodes.values() for label in n.labels})
+            types = sorted({e.type for e in graph.edges})
+            out = {
+                "nodes": len(graph.nodes),
+                "edges": len(graph.edges),
+                "labels": labels,
+                "edge_types": types,
+            }
+            if args.json:
+                print(json.dumps(out, indent=2))
+            else:
+                print(f"{len(graph.nodes)} nodes, {len(graph.edges)} edges -> {args.store}")
+                print(f"  labels: {', '.join(labels) or '-'}")
+                print(f"  edge types: {', '.join(types) or '-'}")
+            return 0
+        try:
+            report = import_graph(dat, source, store=args.store, format=args.format)
+        except (ValueError, KeyError, OSError) as exc:
+            text = str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
+            return _fail(text, 2, source)
+        except Exception as exc:
+            return _fail(
+                f"load failed, the graph is as it was: {type(exc).__name__}: {exc}", 1, source
+            )
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "source": report.source,
+                    "store": report.store,
+                    "nodes": report.nodes,
+                    "edges": report.edges,
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"{report.nodes} nodes, {report.edges} edges -> {report.store}")
+    return 0
+
+
 def run(args: argparse.Namespace, environ: Mapping[str, str] | None = None) -> int:
     from pathlib import Path
 
@@ -89,6 +159,12 @@ def run(args: argparse.Namespace, environ: Mapping[str, str] | None = None) -> i
         return _fail(
             "no stores configured: set RHIZODAT_STORE_<NAME>=<dsn> for each store", 2, source
         )
+    from rhizodat.ingest.graph import graph_format
+
+    if args.format in _RDF or (args.format is None and graph_format(source)):
+        return _run_graph(args, stores, env.get("RHIZODAT_JOURNAL") or None)
+    if not args.table:
+        return _fail("--table is needed to import a table (only RDF files go without)", 2, source)
     options: dict[str, Any] = {
         "store": args.store,
         "table": args.table,

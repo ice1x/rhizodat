@@ -33,7 +33,7 @@ drevo = ["neo4j>=5.20"]
 # pyarrow writes the data files; sqlalchemy is for iceberg+sql:// catalogs.
 iceberg = ["pyiceberg[pyarrow,sql-sqlite]>=0.12"]
 # rhizodat.ingest: file imports with schema inference (rhizodat import).
-ingest = ["pyarrow>=17"]
+ingest = ["pyarrow>=17", "rdflib>=7"]
 # rhizodat-MCP, the MCP server shipped with rhizodat (the rhizodat-mcp command).
 mcp = ["mcp>=2.3"]
 # rhizodat.testing: the adapter contract suite for adapter authors.
@@ -59,6 +59,7 @@ dev = [
     "clickhouse-connect>=0.8",
     "pyiceberg[pyarrow,sql-sqlite]>=0.12",
     "mcp>=2.3",
+    "rdflib>=7",
 ]
 
 # The documentation site: uv run --group docs mkdocs serve
