@@ -2,7 +2,7 @@
 
 ::: rhizodat.core.adapter
     options:
-      members: [Adapter, Scheme, register_adapter, adapter_for, adapters, ReadOnlyQueries, AppliedLocation, Fenced, Migrates, Loads, LoadsGraphs]
+      members: [Adapter, Scheme, register_adapter, adapter_for, adapters, ReadOnlyQueries, AppliedLocation, Fenced, Migrates, Loads, LoadsGraphs, Vectors]
 
 ::: rhizodat.core.parts
     options:

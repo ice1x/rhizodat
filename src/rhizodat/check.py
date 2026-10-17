@@ -169,6 +169,8 @@ _STORE_CHECKS: tuple[tuple[str, Level], ...] = (
     ("PartBranch (entity parts in a Unit of Work)", "optional"),
     ("Migrates (schema migration steps)", "optional"),
     ("Loads (file imports)", "optional"),
+    ("LoadsGraphs (graph imports)", "optional"),
+    ("Vectors (embeddings)", "optional"),
     ("store closes", "required"),
 )
 
@@ -248,7 +250,15 @@ def _parses(adapter: Adapter, dsn: str) -> str:
 
 
 def _store_checks(run: _Run, store: Any) -> None:  # noqa: ANN401 - any adapter's store
-    from rhizodat.core.adapter import AppliedLocation, Fenced, Loads, Migrates, ReadOnlyQueries
+    from rhizodat.core.adapter import (
+        AppliedLocation,
+        Fenced,
+        Loads,
+        LoadsGraphs,
+        Migrates,
+        ReadOnlyQueries,
+        Vectors,
+    )
     from rhizodat.core.errors import Capacity, Classifies, ErrorKind, classify
     from rhizodat.core.identity import new_id
     from rhizodat.core.parts import PartBranch, PartStore
@@ -357,6 +367,8 @@ def _store_checks(run: _Run, store: Any) -> None:  # noqa: ANN401 - any adapter'
         isinstance(store, Loads) and isinstance(store, Migrates),
         "" if isinstance(store, Migrates) or not isinstance(store, Loads) else "needs Migrates too",
     )
+    run.add("LoadsGraphs (graph imports)", "optional", isinstance(store, LoadsGraphs))
+    run.add("Vectors (embeddings)", "optional", isinstance(store, Vectors))
 
 
 def _redacted(dsn: str | None) -> str | None:
@@ -374,6 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("adapter", help="module:ATTR (e.g. rhizodat_mysql:ADAPTER) or a kind")
     check.add_argument("--dsn", help="open a store at this DSN and check it (nothing is written)")
     check.add_argument("--json", action="store_true", help="print the report as JSON")
+    from rhizodat.embed import cli as embed_cli
     from rhizodat.ingest import cli as import_cli
     from rhizodat.ingest import relate_cli
     from rhizodat.migrations import cli as migrate_cli
@@ -381,6 +394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     migrate_cli.add_parser(commands)
     import_cli.add_parser(commands)
     relate_cli.add_parser(commands)
+    embed_cli.add_parsers(commands)
     args = parser.parse_args(argv)
     if args.command == "migrate":
         return migrate_cli.run(args)
@@ -388,6 +402,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return import_cli.run(args)
     if args.command == "relate":
         return relate_cli.run(args)
+    if args.command == "embed":
+        return embed_cli.run_embed(args)
+    if args.command == "similar":
+        return embed_cli.run_similar(args)
 
     try:
         adapter = load_adapter(args.adapter)

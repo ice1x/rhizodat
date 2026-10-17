@@ -59,6 +59,7 @@ nav:
       - Repository: guide/repository.md
       - Schema migrations: guide/migrations.md
       - File imports: guide/imports.md
+      - Embeddings: guide/embeddings.md
       - rhizodat-MCP: guide/mcp.md
   - Adapters:
       - Writing an adapter: adapters/index.md
@@ -68,6 +69,7 @@ nav:
       - Repository: reference/repository.md
       - Migrations: reference/migrations.md
       - Imports: reference/ingest.md
+      - Embeddings: reference/embed.md
       - Adapters and capabilities: reference/adapter.md
       - Testing: reference/testing.md
   - Development:

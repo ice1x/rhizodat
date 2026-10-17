@@ -58,6 +58,7 @@ from rhizodat.core.result import Result
 from rhizodat.core.rows import decode_value, encode_value
 
 if TYPE_CHECKING:
+    from rhizodat.core.vectors import Neighbour, VectorCandidate
     from rhizodat.ingest.graph import GraphData
 
 __all__ = [
@@ -467,6 +468,69 @@ class DrevoStore:
 
         for query in statements(kind, body):
             self._backend.execute(query, None)
+
+    # --- Vectors -------------------------------------------------------------------------------
+
+    def vector_candidates(
+        self, label: str, text_property: str, vector_property: str
+    ) -> "list[VectorCandidate]":
+        from rhizodat.core.vectors import VectorCandidate
+
+        lab, text = _graph_name("label", label), _graph_name("property", text_property)
+        model = _graph_name("property", f"{vector_property}_model")
+        digest = _graph_name("property", f"{vector_property}_hash")
+        rows = self._backend.execute(
+            f"MATCH (n:{lab}) WHERE n.{text} IS NOT NULL"
+            f" RETURN n.title AS k, n.{text} AS t, n.{digest} AS h, n.{model} AS m",
+            None,
+        ).all()
+        return [VectorCandidate(r["k"], str(r["t"]), r["h"], r["m"]) for r in rows]
+
+    def write_vectors(
+        self, label: str, vector_property: str, rows: list[dict[str, Any]], *, batch: int = 500
+    ) -> int:
+        """All rows in one drevo transaction, ``batch`` per statement."""
+        if batch < 1:
+            raise ValueError(f"batch must be at least 1, not {batch}")
+        lab, vec = _graph_name("label", label), _graph_name("property", vector_property)
+        model = _graph_name("property", f"{vector_property}_model")
+        digest = _graph_name("property", f"{vector_property}_hash")
+        query = (
+            f"UNWIND $rows AS r MATCH (n:{lab} {{title: r.key}})"
+            f" SET n.{vec} = r.vector, n.{digest} = r.hash, n.{model} = r.model"
+        )
+        tx = self._backend.begin()
+        try:
+            for i in range(0, len(rows), batch):
+                tx.execute(query, {"rows": rows[i : i + batch]})
+            tx.commit()
+        except BaseException:
+            tx.rollback()
+            raise
+        return len(rows)
+
+    def nearest(
+        self, label: str, vector_property: str, vector: list[float], *, k: int = 10
+    ) -> "list[Neighbour]":
+        from rhizodat.core.vectors import Neighbour
+
+        if k < 1:
+            raise ValueError(f"k must be at least 1, not {k}")
+        _graph_name("label", label)
+        _graph_name("property", vector_property)
+        rows = self._backend.execute(
+            f"MATCH (n:`{label}`) SEARCH n IN (VECTOR INDEX {label}.{vector_property}"
+            f" FOR $q LIMIT {int(k)}) SCORE AS s RETURN n.title AS k, s AS s, properties(n) AS p",
+            {"q": [float(x) for x in vector]},
+        ).all()
+        hidden = {vector_property, f"{vector_property}_model", f"{vector_property}_hash"}
+        found = [
+            Neighbour(
+                r["k"], float(r["s"]), {p: v for p, v in dict(r["p"]).items() if p not in hidden}
+            )
+            for r in rows
+        ]
+        return sorted(found, key=lambda n: -n.score)
 
     # --- LoadsGraphs ---------------------------------------------------------------------------
 
