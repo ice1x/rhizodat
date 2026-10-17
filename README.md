@@ -28,8 +28,8 @@ with Rhizodat(stores={"pg": PG, "graph": GRAPH}, journal=JOURNAL) as dat:
 ```
 
 The whole script: [examples/quickstart.py](examples/quickstart.py). More in
-[examples/](examples/) and the [documentation](docs/index.md): concepts,
-guides (Repository, migrations, file imports, MCP), adapters and the API
-reference (`uv run --group docs mkdocs serve`).
+[examples/](examples/) and the
+[documentation](https://ice1x.github.io/rhizodat/): concepts, guides
+(Repository, migrations, file imports, MCP), adapters and the API reference.
 
 Apache-2.0. Status: v0.1 in progress.
