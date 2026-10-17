@@ -147,6 +147,8 @@ Checked with `isinstance`. Implement the ones that apply.
 | `free_space() -> int \| None` (`Capacity`) | store | Bytes left, for the `min_free` check before the decision. `None` when the store cannot tell. |
 | `PartStore`, `PartBranch` | store, branch | Entity parts: the store can hold a share of an entity's fields (section 6). |
 | `table_columns`, `create_table_steps`, `add_column_steps`, `load` (`Loads`, with `Migrates`) | store | File imports (`rhizodat import`): tables from portable column types (`boolean`, `int64`, `float64`, `date`, `timestamp`, `timestamptz`, `string`) through migration steps, and `load(table, batches, replace=)` of pyarrow record batches as one unit: a failure halfway leaves the table as it was. |
+| `load_graph(graph, batch=)` (`LoadsGraphs`) | store | Graph imports (RDF, related tables): nodes keyed by IRI with the base label `Resource` and their classes, typed edges, all in one transaction, merged so a reload updates in place. |
+| `vector_candidates`, `write_vectors`, `nearest` (`Vectors`) | store | Embeddings: vectors kept beside nodes' text with their model and text hash, written as one unit, and the nearest nodes by cosine. |
 | `migration_kinds`, `run_migration_step(kind, body)` (`Migrates`) | store | Schema migration steps of the kinds it names (`sql`, `cypher`, `iceberg`, or the adapter's own). A step must be safe to run again: a migration over several stores is not atomic, and after a failure the whole migration runs again. |
 
 ## 5. Errors
