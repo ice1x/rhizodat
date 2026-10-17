@@ -1,4 +1,5 @@
 site_name: rhizodat
+site_url: https://ice1x.github.io/rhizodat/
 site_description: A bitemporal polyglot data layer over PostgreSQL, ClickHouse, drevo and Apache Iceberg
 repo_url: https://github.com/ice1x/rhizodat
 repo_name: ice1x/rhizodat
