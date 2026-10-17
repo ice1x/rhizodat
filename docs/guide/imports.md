@@ -65,3 +65,43 @@ rhizodat import world.ttl --store graph --dry-run
   failure halfway writes nothing. Nodes and edges are merged, so a second
   import of a revised file updates values instead of duplicating.
 - A graph has no schema to migrate, so a graph import writes no migration.
+
+## Graphs from several tables
+
+Exported tables (CSV, TSV, JSON Lines, Parquet) become one graph, with the
+references between them inferred from their columns:
+
+```python
+from rhizodat.ingest import import_tables_graph
+
+report = import_tables_graph(
+    dat, {"customers": "customers.csv", "orders": "orders.csv"}, store="graph"
+)
+[(r.table, r.column, r.target, r.coverage, r.accepted) for r in report.relationships]
+```
+
+```
+rhizodat relate customers.csv orders.csv order_lines.csv --store graph --dry-run
++ orders.customer_id -> customers.id  100/100
++ order_lines.order_id -> orders.id  300/300
+- payments.order_ref -> orders.id  47/50
+would load 450 nodes, 400 edges -> graph
+```
+
+- A table's key is a column with no missing and no repeated value (`id`,
+  else `<table>_id`, else the first such column), or the one given
+  (`keys=` / `--key TABLE=COLUMN`).
+- A column refers to a table when its name says so: without `_id` or `_ref`
+  it is the table's name in the singular (`customer_id` → `customers`); an id
+  column naming no table refers to its own table (`manager_id` in
+  `employees`). Matching values alone are not enough, since quantities 1..5
+  match ids 1..5 completely.
+- A reference is accepted when at least `min_coverage` (0.95) of its values
+  are keys of the target; every candidate is reported with how many matched,
+  so orphans in an export show as a near miss. Relationships can also be
+  given by hand.
+- Rows become nodes labelled after their table (`order_lines` →
+  `OrderLine`), keyed `<table>:<key>`; references become edges named after
+  the column (`customer_id` → `customer`). All of it loads in one
+  transaction. Tables are read into memory: this is for exports of
+  moderate size.

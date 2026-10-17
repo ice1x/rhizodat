@@ -375,15 +375,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("--dsn", help="open a store at this DSN and check it (nothing is written)")
     check.add_argument("--json", action="store_true", help="print the report as JSON")
     from rhizodat.ingest import cli as import_cli
+    from rhizodat.ingest import relate_cli
     from rhizodat.migrations import cli as migrate_cli
 
     migrate_cli.add_parser(commands)
     import_cli.add_parser(commands)
+    relate_cli.add_parser(commands)
     args = parser.parse_args(argv)
     if args.command == "migrate":
         return migrate_cli.run(args)
     if args.command == "import":
         return import_cli.run(args)
+    if args.command == "relate":
+        return relate_cli.run(args)
 
     try:
         adapter = load_adapter(args.adapter)
