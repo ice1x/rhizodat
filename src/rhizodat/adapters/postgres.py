@@ -497,6 +497,18 @@ class PostgresStore:
         rows = self.execute(sql.select(where, "dat_tx_time"), [dat_id]).all()
         return [sql.version(r) for r in rows]
 
+    def part_versions(
+        self, part: Part, *, known_at: int | None = None
+    ) -> list[tuple[uuid.UUID, Version]]:
+        sql = self._part_sql(part)
+        where = "dat_tx_time IS NOT NULL"
+        params: list[Any] = []
+        if known_at is not None:
+            where += " AND dat_tx_time <= %s"
+            params.append(known_at)
+        rows = self.execute(sql.select(where, "dat_tx_time, dat_id"), params).all()
+        return [(r["dat_id"], sql.version(r)) for r in rows]
+
     def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
         sql = self._part_sql(part)
         rows = self.execute(

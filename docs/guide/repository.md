@@ -18,6 +18,9 @@ orders.restore(order_id)              # soft delete only, within the window
 orders.purge_expired()                # erase soft deletes whose window is over
 ```
 
+A type with a `Vector` field also has `similar`, the nearest entities at a
+moment: see [Embeddings](embeddings.md#vector-fields-on-entities).
+
 - **One write, one Unit of Work.** Every write of `dat.repository(T)` is a Unit
   of Work of its own, with retries, and writes a version of **every** part of
   the entity, so the parts of one version share a `dat_txn`. Writing parts in

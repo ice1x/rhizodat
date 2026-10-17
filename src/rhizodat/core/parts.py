@@ -11,7 +11,9 @@ Stores join by implementing two capabilities, checked with ``isinstance``:
 - ``PartBranch`` on a branch: writes inside a Unit of Work, and reads that see
   them. ``dat_tx_time`` is only known at stage, so the branch fills it (and a
   missing creation time) then;
-- ``PartStore`` on a store: committed reads outside any Unit of Work.
+- ``PartStore`` on a store: committed reads outside any Unit of Work;
+- ``ScansParts`` on a store: every entity's committed versions at once, for
+  searches over all entities of a type (``similar``).
 
 Values reach the store as plain data: references are their ``dat_id``.
 """
@@ -30,6 +32,7 @@ __all__ = [
     "Part",
     "PartBranch",
     "PartStore",
+    "ScansParts",
     "Version",
     "from_storage",
     "hlc_bound",
@@ -137,6 +140,16 @@ class PartStore(Protocol):
 
     def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
         """Entities whose latest version is a soft delete older than ``deleted_before``."""
+        ...
+
+
+@runtime_checkable
+class ScansParts(Protocol):
+    def part_versions(
+        self, part: Part, *, known_at: int | None = None
+    ) -> list[tuple[uuid.UUID, Version]]:
+        """Every committed version of every entity with ``dat_tx_time <= known_at``
+        (all, if ``None``), oldest first."""
         ...
 
 
