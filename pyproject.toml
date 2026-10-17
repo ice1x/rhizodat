@@ -71,12 +71,17 @@ docs = ["mkdocs>=1.6,<2", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.27"]
 # (needs a Rust toolchain). Install with: uv sync --group drevo
 drevo = ["drevo-py"]
 
+# The core in Rust (crates/rhizodat-py, built with maturin; needs a Rust toolchain).
+# The package uses it when installed: uv sync --group native
+native = ["rhizodat-native"]
+
 [tool.uv.workspace]
 # rhizodat-ontology: an LLM plugin, a package of its own (plugins/).
 members = ["plugins/*"]
 
 [tool.uv.sources]
 rhizodat-ontology = { workspace = true }
+rhizodat-native = { path = "crates/rhizodat-py" }
 drevo-py = { git = "https://github.com/ice1x/drevo", rev = "cf9c7664e573906f2f7e86bd15639b7c3be559fe", subdirectory = "drevo-py" }
 
 [tool.hatch.build.targets.wheel]

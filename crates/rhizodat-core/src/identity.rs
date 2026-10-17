@@ -84,7 +84,13 @@ pub fn system_ms() -> i64 {
     }
 }
 
-fn os_randbits(bits: u32) -> u64 {
+/// A uniformly random value below `2^bits` from the operating system.
+///
+/// # Panics
+///
+/// When the operating system's random source fails.
+#[must_use]
+pub fn os_randbits(bits: u32) -> u64 {
     let value = getrandom::u64().expect("the operating system random source failed");
     value & ((1_u64 << bits) - 1)
 }

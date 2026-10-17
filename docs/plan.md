@@ -165,6 +165,17 @@ Steps:
    core without changing its public API; a C ABI (cbindgen) for Go. Open
    questions to settle first: Python callbacks (`transactional` functions) into
    an async core and the GIL, and results across the boundary (Arrow).
+   ✔ First step, [`crates/rhizodat-py`](https://github.com/ice1x/rhizodat/tree/main/crates/rhizodat-py): the optional
+   module `rhizodat_native` (PyO3, abi3, built with maturin) with the pure
+   parts of the core: UUIDv7, the HLC, gids and migration files, passing the
+   same vectors. The package makes `new_id` with it when it is installed and
+   stays pure Python otherwise. Callbacks and the GIL, settled for synchronous
+   callbacks: the core holds a mutex while it calls its sources, so a generator
+   or clock over the system sources (no Python) is shared between threads and
+   releases the GIL, while one over Python callables is bound to the thread
+   that made it; a callback's exception is kept and raised once the core
+   returns. Next: the coordinator, where `transactional` functions are called
+   from an async core.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

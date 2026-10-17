@@ -7,6 +7,7 @@ tmpfs, so every `up` starts empty):
 docker compose up -d --wait   # PostgreSQL (2PC enabled) and a disposable drevo
 docker compose --profile '*' up -d --wait   # every store, plus toxiproxy
 uv sync --group drevo         # optional: embedded drevo-py from the pinned commit (Rust)
+uv sync --group native        # optional: the core in Rust (crates/rhizodat-py, maturin)
 uv run pytest
 docker compose down
 ```
@@ -38,3 +39,10 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+`crates/rhizodat-py` is the Python module `rhizodat_native` (PyO3): UUIDv7,
+the hybrid logical clock, gids and migration files from the Rust core.
+`uv sync --group native` builds and installs it (`uv sync` alone removes it
+again: list both groups, e.g. `--group drevo --group native`); the package
+then makes `new_id` with it, and `RHIZODAT_NATIVE=0` turns it off.
+`tests/conformance/test_native_vectors.py` runs the vectors through it.

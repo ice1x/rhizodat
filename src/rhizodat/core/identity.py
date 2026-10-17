@@ -9,6 +9,9 @@ one generator are strictly increasing even within one millisecond or when the
 wall clock steps back. Each new millisecond seeds the counter with 11 random
 bits, leaving at least 2048 values before it overflows; on overflow the
 timestamp moves one millisecond ahead of the wall clock.
+
+``new_id`` is the Rust generator when ``rhizodat_native`` is installed
+(``rhizodat.core.native``): the same layout, checked by the same vectors.
 """
 
 import secrets
@@ -16,6 +19,8 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+
+from rhizodat.core.native import NATIVE
 
 __all__ = ["IdGenerator", "is_uuid7", "new_id", "timestamp_ms"]
 
@@ -66,7 +71,7 @@ class IdGenerator:
         return uuid.UUID(int=value)
 
 
-new_id = IdGenerator()
+new_id: Callable[[], uuid.UUID] = NATIVE.new_id if NATIVE is not None else IdGenerator()
 """Process-wide generator for ``dat_id`` and ``dat_txn``."""
 
 
