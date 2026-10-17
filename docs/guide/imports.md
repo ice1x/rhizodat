@@ -35,3 +35,33 @@ rhizodat import exports/moods.csv --store pg --table mood --migrations migration
 - S3 credentials come from the `AWS_*` environment or the URI
   (`s3://ACCESS:SECRET@bucket/key?endpoint_override=...`); the secret is
   masked wherever the source is shown.
+
+## Graphs from RDF
+
+An RDF file (Turtle, N-Triples, N3, JSON-LD, RDF/XML, OWL) goes into a graph
+store such as drevo:
+
+```python
+from rhizodat.ingest import import_graph
+
+report = import_graph(dat, "world.ttl", store="graph")
+report.nodes, report.edges
+```
+
+```
+rhizodat import world.ttl --store graph --dry-run
+```
+
+- Each resource is a node keyed by its IRI (its title in drevo), with the base
+  label `Resource` and every `rdf:type` as a further label (the class's local
+  name). A blank node is keyed `_:<id>`.
+- A literal value is a property named after its predicate's local name; values
+  in several languages are a list. Integers, floats, booleans and text keep
+  their type; dates, times and decimals are stored as their exact text.
+- A link to another resource is an edge typed after its predicate
+  (`ex:lives-in` → `lives_in`); a local name two vocabularies share keeps them
+  apart with their prefixes (`a_name`, `b_name`).
+- Everything is written in one transaction (the store's `LoadsGraphs`): a
+  failure halfway writes nothing. Nodes and edges are merged, so a second
+  import of a revised file updates values instead of duplicating.
+- A graph has no schema to migrate, so a graph import writes no migration.

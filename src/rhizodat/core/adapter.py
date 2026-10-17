@@ -12,7 +12,8 @@ or calls ``register_adapter`` itself. Adapters are loaded on first use; a plug-i
 that fails to load is skipped and reported when a DSN needs a missing scheme.
 
 What a store can do beyond ``Store`` is a capability protocol here
-(``ReadOnlyQueries``, ``AppliedLocation``, ``Fenced``, ``Migrates``, ``Loads``),
+(``ReadOnlyQueries``, ``AppliedLocation``, ``Fenced``, ``Migrates``, ``Loads``,
+``LoadsGraphs``),
 checked with ``isinstance``.
 """
 
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from rhizodat.core.journal import Journal
     from rhizodat.core.result import Result
     from rhizodat.core.unit_of_work import Store
+    from rhizodat.ingest.graph import GraphData
     from rhizodat.ingest.schema import Column
     from rhizodat.migrations.format import Step
 
@@ -39,6 +41,7 @@ __all__ = [
     "AppliedLocation",
     "Fenced",
     "Loads",
+    "LoadsGraphs",
     "Migrates",
     "ReadOnlyQueries",
     "Scheme",
@@ -170,6 +173,21 @@ class Loads(Protocol):
 
     def load(self, table: str, batches: "Iterable[Any]", *, replace: bool = False) -> int:
         """Load the batches as one unit; the number of rows loaded."""
+        ...
+
+
+@runtime_checkable
+class LoadsGraphs(Protocol):
+    """Imports graphs: nodes keyed by their IRI and typed edges, written as one unit.
+
+    Every node gets the base label ``Resource`` and its classes as further labels;
+    a node or edge that is already there is updated, not duplicated, so a second
+    load of the same file changes only what changed. A failure halfway writes
+    nothing.
+    """
+
+    def load_graph(self, graph: "GraphData", *, batch: int = 500) -> tuple[int, int]:
+        """Write ``graph``; the numbers of nodes and edges written."""
         ...
 
 
