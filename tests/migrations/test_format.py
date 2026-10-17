@@ -159,3 +159,32 @@ def test_a_written_migration_is_readable() -> None:
     assert text.startswith('description = "the bug table and its graph index"\n')
     assert '\n[[steps]]\nstore = "pg"\nsql = """\nCREATE TABLE IF NOT EXISTS bug (' in text
     assert parse_migration("0001_bugs.toml", text) == m
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        ((0, "a", [Step("pg", "sql", "x")]), "at least 1"),
+        ((1, "Bad-Name", [Step("pg", "sql", "x")]), "lower-case"),
+        ((1, "a", []), "no steps"),
+        ((1, "a", [Step("pg", "kv", {1: "x"})]), "keys must be strings"),
+        ((1, "a", [Step("pg", "kv", None)]), "unsupported value None"),
+    ],
+)
+def test_migrations_built_in_code_are_checked_like_files(args: tuple, message: str) -> None:  # type: ignore[type-arg]
+    with pytest.raises(MigrationFormatError, match=message):
+        Migration.of(*args)
+
+
+def test_a_migration_that_bypassed_the_checks_cannot_be_written() -> None:
+    unchecked = Migration(1, "a", (Step("pg", "kv", object()),))
+    with pytest.raises(ValueError, match="cannot write"):
+        to_toml(unchecked)
+
+
+def test_two_migrations_with_one_id_are_refused() -> None:
+    from rhizodat.migrations.format import by_id
+
+    m = Migration.of(1, "a", [Step("pg", "sql", "x")])
+    with pytest.raises(MigrationFormatError, match="two migrations with id 1"):
+        by_id([m, m])

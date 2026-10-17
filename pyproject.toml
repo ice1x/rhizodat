@@ -49,6 +49,7 @@ Repository = "https://github.com/ice1x/rhizodat"
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-cov>=6",
     "faker>=30",
     "ruff>=0.8",
     "mypy>=1.13",
@@ -81,6 +82,17 @@ pythonpath = ["tests"]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
 xfail_strict = true
 filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["rhizodat"]
+branch = true
+
+[tool.coverage.report]
+# The CI job running every test (drevo-embedded) fails below this.
+fail_under = 92
+skip_covered = true
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "if __name__ == .__main__.:", "^\\s*\\.\\.\\.$"]
 
 [tool.ruff]
 line-length = 100

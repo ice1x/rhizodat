@@ -113,4 +113,5 @@ jobs:
           docker compose --profile clickhouse --profile iceberg --profile faults up -d --wait
           grep -v '^#' .env.test >> "$GITHUB_ENV"
       - run: uv sync --locked --group drevo
-      - run: uv run --group drevo pytest
+      # Coverage of src/rhizodat with branches; below 92 % the job fails.
+      - run: uv run --group drevo pytest --cov --cov-report=term-missing:skip-covered
