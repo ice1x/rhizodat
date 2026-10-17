@@ -607,6 +607,17 @@ class DrevoStore:
         query = nodes.select("v.dat_id = $id AND v.dat_tx_time IS NOT NULL", "v.dat_tx_time")
         return [nodes.version(r["p"]) for r in self._backend.execute(query, {"id": str(dat_id)})]
 
+    def part_versions(
+        self, part: Part, *, known_at: int | None = None
+    ) -> list[tuple[uuid.UUID, Version]]:
+        nodes = self._parts.install(part)
+        where = "v.dat_tx_time IS NOT NULL"
+        if known_at is not None:
+            where += " AND v.dat_tx_time <= $k"
+        query = nodes.select(where, "v.dat_tx_time, v.dat_id")
+        rows = self._backend.execute(query, {"k": known_at} if known_at is not None else None)
+        return [(uuid.UUID(r["p"]["dat_id"]), nodes.version(r["p"])) for r in rows]
+
     def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
         if limit <= 0:
             return []

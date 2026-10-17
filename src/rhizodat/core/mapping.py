@@ -8,7 +8,9 @@ no central registry. Rules:
 - ``dat_*`` names are reserved for service fields, and ``valid_from`` /
   ``valid_to`` too when valid time is on;
 - links to other entities are ``Ref[T]`` values holding the target's
-  ``dat_id``; the mapping records the target type name for integrity checks.
+  ``dat_id``; the mapping records the target type name for integrity checks;
+- an embedding is a ``list[float]`` field marked ``Annotated[..., Vector(n)]``
+  (``rhizodat.core.vectors``): checked on write, searchable with ``similar``.
 
 ``@entity`` turns the class into a keyword-only dataclass with a ``dat_id``
 field (a new UUIDv7 unless given) and, with ``valid_time=True``, the
@@ -102,6 +104,20 @@ class EntityMapping:
                     ann = object
             types_[f] = _resolve_forward(ann, namespace)
         return types_
+
+    def vectors(self) -> dict[str, int]:
+        """Each ``Vector`` field and its dimensions."""
+        from rhizodat.core.vectors import vector_dimensions
+
+        found: dict[str, int] = {}
+        for f, annotation in self.field_types().items():
+            try:
+                dimensions = vector_dimensions(annotation)
+            except TypeError as exc:
+                raise MappingError(f"{self.type_name}.{f}: {exc}") from None
+            if dimensions is not None:
+                found[f] = dimensions
+        return found
 
     def store_of(self, field: str) -> str:
         for store, fields in self.stores.items():

@@ -1,5 +1,9 @@
 # Embeddings
 
+Two ways to keep vectors: as a [field of an entity](#vector-fields-on-entities),
+versioned with it, or beside the text of graph nodes. This page starts with
+graph nodes.
+
 Vectors for the text of graph nodes, kept beside them, and the nodes nearest
 to a text or a vector. The store needs the `Vectors` capability: drevo has it,
 and searches by cosine without a separate index.
@@ -56,3 +60,42 @@ one transaction: a failure (the model's or the store's) writes none.
 
 Search with the model that made the stored vectors: vectors of different
 models are not comparable.
+
+## Vector fields on entities
+
+A field marked `Vector(n)` holds an embedding of `n` floats. It is an
+ordinary field of the entity: written in the same Unit of Work as the rest,
+in any store, so re-embedding is a new version. Keep the model next to it.
+
+```python
+from typing import Annotated
+from rhizodat import Vector, entity
+
+@entity(stores={"pg": ["title", "embedding", "model"]})
+class Issue:
+    title: str
+    embedding: Annotated[list[float], Vector(384)] | None
+    model: str | None
+
+issues = dat.repository(Issue)
+issues.add(Issue(title=title, embedding=embedder.embed([title])[0], model=embedder.model))
+
+for m in issues.similar("embedding", "login crashes", embedder=embedder, k=5):
+    print(m.score, m.entity.title)
+
+issues.similar("embedding", vector, as_of=last_week)   # the vectors valid then
+issues.get(issue_id, as_of=last_week).model            # which model made them
+```
+
+A write checks the vector: `n` finite numbers, stored as floats; `None` is
+allowed when the field is optional. `similar` takes a vector or a text (with
+the `embedder` that made the stored vectors) and returns a `Match` per entity,
+closest first: the whole entity as `get` would return it at the same
+`as_of` / `known_at`, and its cosine `score`. Soft-deleted entities and
+entities without a vector then are left out.
+
+The search is exact: it scans the versions the store knew at that moment
+(`ScansParts`) and compares every vector, with no index. That keeps the past
+searchable and is fine for thousands of entities. Stores keep the vector the
+way they keep any list of floats, so it reads back exactly; pgvector is not
+needed.

@@ -12,6 +12,7 @@ from rhizodat.core.errors import ErrorKind
 from rhizodat.core.mapping import Ref, entity
 from rhizodat.core.retry import Retry
 from rhizodat.core.unit_of_work import UnitOfWork
+from rhizodat.core.vectors import Match, Vector
 
 __version__ = version("rhizodat")
 
@@ -22,12 +23,14 @@ __all__ = [
     "CommittedPending",
     "ErrorKind",
     "InDoubt",
+    "Match",
     "Ref",
     "Retry",
     "Rhizodat",
     "Scheme",
     "StoreFull",
     "UnitOfWork",
+    "Vector",
     "__version__",
     "entity",
     "register_adapter",

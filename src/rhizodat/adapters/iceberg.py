@@ -433,6 +433,17 @@ class IcebergStore:
         rows = self.execute(table.table, {"row_filter": row_filter}).all()
         return [table.version(r) for r in sorted(rows, key=lambda r: r["dat_tx_time"])]
 
+    def part_versions(
+        self, part: Part, *, known_at: int | None = None
+    ) -> list[tuple[uuid.UUID, Version]]:
+        table = self.part_table(part)
+        rows = self.execute(
+            table.table,
+            {} if known_at is None else {"row_filter": f"dat_tx_time <= {int(known_at)}"},
+        ).all()
+        rows.sort(key=lambda r: (r["dat_tx_time"], r["dat_id"]))
+        return [(uuid.UUID(r["dat_id"]), table.version(r)) for r in rows]
+
     def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
         table = self.part_table(part)
         fields = ("dat_id", "dat_deleted", "dat_tx_time")

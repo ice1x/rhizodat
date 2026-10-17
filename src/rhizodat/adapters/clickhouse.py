@@ -428,6 +428,17 @@ class ClickHouseStore:
         )
         return [table.version(r) for r in rows]
 
+    def part_versions(
+        self, part: Part, *, known_at: int | None = None
+    ) -> list[tuple[uuid.UUID, Version]]:
+        table = self.part_table(part)
+        where = "" if known_at is None else " WHERE dat_tx_time <= {k:Int64}"
+        rows = self._rows(
+            f"SELECT {table.select()} FROM `{table.table}`{where} ORDER BY dat_tx_time, dat_id",
+            {} if known_at is None else {"k": known_at},
+        )
+        return [(r["dat_id"], table.version(r)) for r in rows]
+
     def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
         table = self.part_table(part)
         rows = self._rows(

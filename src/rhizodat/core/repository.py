@@ -10,6 +10,11 @@ share a ``dat_txn``; a read assembles the parts of one version.
   one Unit of Work of its own, with retries; reads go to the committed data and
   take ``as_of`` (transaction time).
 
+A ``Vector`` field is checked on write and stored like any list of floats, so
+re-embedding is a new version. ``EntityRepository.similar`` finds the entities
+whose vectors are nearest to a query among the versions valid at a moment: an
+exact scan of the store's versions (``ScansParts``), without an index.
+
 Delete is a hard delete, erasing every version in every store, unless the type
 is declared with ``soft_delete``: then it adds a version marked deleted, hidden
 from reads, restorable within the window and erased by ``purge_expired`` after.
@@ -17,7 +22,7 @@ from reads, restorable within the window and erased by ``purge_expired`` after.
 
 import dataclasses
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -29,16 +34,19 @@ from rhizodat.core.parts import (
     Part,
     PartBranch,
     PartStore,
+    ScansParts,
     Version,
     from_storage,
     hlc_bound,
     hlc_datetime,
     to_storage,
 )
+from rhizodat.core.vectors import Match, as_vector, cosine
 
 if TYPE_CHECKING:
     from rhizodat.api import Rhizodat
     from rhizodat.core.unit_of_work import UnitOfWork
+    from rhizodat.embed import Embedder
 
 __all__ = ["EntityExists", "EntityNotFound", "EntityRepository", "NotRestorable", "Repository"]
 
@@ -79,6 +87,7 @@ class _Kind:
         self.mapping: EntityMapping = mapping_of(entity_type)
         self.parts = {store: Part.of(entity_type, store) for store in self.mapping.stores}
         self.window = self.mapping.soft_delete_window or window
+        self.vectors = self.mapping.vectors()
 
     @property
     def window_hlc(self) -> int:
@@ -89,9 +98,15 @@ class _Kind:
             raise TypeError(f"expected a {self.mapping.type_name}, got {type(obj).__name__}")
         validity = self._validity(obj)
         return {
-            store: {f: to_storage(v) for f, v in values.items()} | validity
+            store: {f: self._value(f, v) for f, v in values.items()} | validity
             for store, values in self.mapping.split(obj).items()
         }
+
+    def _value(self, field: str, value: Any) -> Any:  # noqa: ANN401 - any field value
+        dimensions = self.vectors.get(field)
+        if dimensions is not None and value is not None:
+            return as_vector(value, dimensions, f"{self.mapping.type_name}.{field}")
+        return to_storage(value)
 
     def _validity(self, obj: object) -> dict[str, Any]:
         """The period ``obj`` holds for, checked; empty for a type without valid time."""
@@ -112,9 +127,7 @@ class _Kind:
 
     def holds_at(self, snap: "_Snapshot", at: datetime) -> bool:
         """Whether the version's period contains ``at`` (from inclusive, to exclusive)."""
-        values = snap.any.values
-        start, end = values.get("valid_from"), values.get("valid_to")
-        return (start is None or start <= at) and (end is None or at < end)
+        return _holds(snap.any, at)
 
     def assemble(self, snap: _Snapshot) -> object:
         parts = {
@@ -320,6 +333,94 @@ class EntityRepository[T]:
         """Every committed version, oldest first (soft deletes included)."""
         return [cast("T", self._kind.assemble(s)) for s in self._snapshots(dat_id, None)]
 
+    def similar(
+        self,
+        field: str,
+        query: str | Sequence[float],
+        *,
+        k: int = 10,
+        as_of: datetime | None = None,
+        known_at: datetime | None = None,
+        embedder: "Embedder | None" = None,
+    ) -> list[Match[T]]:
+        """The ``k`` entities whose ``field`` vector is nearest to ``query``, closest first.
+
+        ``query`` is a vector, or a text embedded with ``embedder`` (the model that
+        made the stored vectors). Only the version ``get`` would return at the same
+        ``as_of`` / ``known_at`` counts; entities without a vector there are left out.
+        """
+        name = self._kind.mapping.type_name
+        dimensions = self._kind.vectors.get(field)
+        if dimensions is None:
+            raise ValueError(f"{name}.{field} is not a vector field")
+        if k < 1:
+            raise ValueError(f"k must be at least 1, not {k}")
+        if isinstance(query, str):
+            if embedder is None:
+                raise ValueError("a text query needs an embedder: the one that made the vectors")
+            [query] = embedder.embed([query])
+        wanted = as_vector(query, dimensions, f"the query for {name}.{field}")
+        store = self._kind.mapping.store_of(field)
+        scanner = self._dat.store(store)
+        if not isinstance(scanner, ScansParts):
+            raise TypeError(
+                f"store {store!r} ({type(scanner).__name__}) cannot be searched: its adapter"
+                " implements no ScansParts"
+            )
+        valid_at, bound = self._moments(as_of, known_at)
+
+        by_id: dict[uuid.UUID, list[Version]] = {}
+        for dat_id, v in scanner.part_versions(self._kind.parts[store], known_at=bound):
+            by_id.setdefault(dat_id, []).append(v)
+        ranked: list[tuple[float, uuid.UUID]] = []
+        for dat_id, versions in by_id.items():
+            chosen = _choose(versions, valid_at)
+            if chosen is not None and chosen.values.get(field) is not None:
+                ranked.append((cosine(wanted, chosen.values[field]), dat_id))
+        ranked.sort(key=lambda pair: -pair[0])
+
+        found: list[Match[T]] = []
+        for _, dat_id in ranked:
+            snap = self._at(dat_id, valid_at, bound)
+            if snap is None:  # erased, or still finishing, since the scan
+                continue
+            entity = cast("T", self._kind.assemble(snap))
+            vector = getattr(entity, field)
+            if vector is not None:
+                found.append(Match(entity, cosine(wanted, vector)))
+            if len(found) == k:
+                break
+        found.sort(key=lambda m: -m.score)
+        return found
+
+    def _moments(
+        self, as_of: datetime | None, known_at: datetime | None
+    ) -> tuple[datetime | None, int]:
+        """The valid-time moment (``None`` without valid time) and the knowledge bound."""
+        if not self._kind.mapping.valid_time:
+            if as_of is not None and known_at is not None:
+                raise ValueError(
+                    f"{self._kind.mapping.type_name} has no valid time:"
+                    " as_of and known_at are the same moment, give one"
+                )
+            at = as_of if as_of is not None else known_at
+            return None, hlc_bound(at) if at is not None else self._dat.clock.now().encode()
+        valid_at = as_of if as_of is not None else datetime.now(UTC)
+        hlc_bound(valid_at)  # refuses a moment without a time zone
+        bound = hlc_bound(known_at) if known_at is not None else self._dat.clock.now().encode()
+        return valid_at, bound
+
+    def _at(self, dat_id: uuid.UUID, valid_at: datetime | None, bound: int) -> _Snapshot | None:
+        """The live version ``get`` returns for these moments."""
+        if valid_at is None:
+            snap = self._consistent(dat_id, bound)
+            return snap if snap is not None and not snap.any.deleted else None
+        known = self._snapshots(dat_id, bound)
+        if not known or known[-1].any.deleted:
+            return None
+        holding = [s for s in known if self._kind.holds_at(s, valid_at)]
+        return holding[-1] if holding else None
+
     def _snapshots(self, dat_id: uuid.UUID, known_at: int | None) -> list[_Snapshot]:
         """Every version every store has (and knew at ``known_at``), oldest first."""
         by_txn: dict[uuid.UUID, dict[str, Version]] = {}
@@ -424,6 +525,21 @@ class EntityRepository[T]:
                 return _Snapshot(dat_id, found)
             known_at = min(v.dat_tx_time or 0 for v in found.values())
         return None
+
+
+def _holds(version: Version, at: datetime) -> bool:
+    start, end = version.values.get("valid_from"), version.values.get("valid_to")
+    return (start is None or start <= at) and (end is None or at < end)
+
+
+def _choose(versions: list[Version], valid_at: datetime | None) -> Version | None:
+    """Of one entity's versions (oldest first), the live one for ``valid_at``."""
+    if versions[-1].deleted:
+        return None
+    if valid_at is None:
+        return versions[-1]
+    holding = [v for v in versions if _holds(v, valid_at)]
+    return holding[-1] if holding else None
 
 
 def _id_of(obj: object) -> uuid.UUID:

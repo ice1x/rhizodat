@@ -37,7 +37,7 @@ from rhizodat.core.coordinator import gid_for
 from rhizodat.core.identity import new_id
 from rhizodat.core.journal import BranchRecord
 from rhizodat.core.mapping import Ref, entity
-from rhizodat.core.parts import Part, PartBranch, PartStore
+from rhizodat.core.parts import Part, PartBranch, PartStore, ScansParts
 
 __all__ = ["CONTRACT_PART", "PartStoreContract", "commit", "part_values"]
 
@@ -340,3 +340,37 @@ class PartStoreContract:
 
         assert store.expired_parts(CONTRACT_PART, deleted_before=8 << 16, limit=10) == [old]
         assert store.expired_parts(CONTRACT_PART, deleted_before=8 << 16, limit=0) == []
+
+    def test_the_versions_of_every_entity_known_at_a_moment(self, store: Any, faker: Faker) -> None:
+        assert isinstance(store, ScansParts)
+        a, b, erased = new_id(), new_id(), new_id()
+        values = {k: part_values(faker) for k in ("a1", "b1", "a2", "e1")}
+
+        def write(dat_id: uuid.UUID, v: dict[str, Any], ts: int) -> None:
+            commit(store, lambda br: br.write_part(CONTRACT_PART, dat_id, v, created=1), ts)
+
+        write(a, values["a1"], 1 << 16)
+        write(erased, values["e1"], 1 << 16)
+        write(b, values["b1"], 2 << 16)
+        write(a, values["a2"], 3 << 16)
+        commit(store, lambda br: br.erase_part(CONTRACT_PART, erased), 4 << 16)
+        pending = store.branch(new_id())  # not committed: never seen
+        pending.write_part(CONTRACT_PART, b, part_values(faker), created=1)
+
+        mine = {a, b, erased}
+
+        def seen(known_at: int | None) -> list[tuple[uuid.UUID, int | None, dict[str, Any]]]:
+            return [
+                (dat_id, v.dat_tx_time, dict(v.values))
+                for dat_id, v in store.part_versions(CONTRACT_PART, known_at=known_at)
+                if dat_id in mine
+            ]
+
+        assert seen(2 << 16) == [(a, 1 << 16, values["a1"]), (b, 2 << 16, values["b1"])]
+        assert seen(None) == [
+            (a, 1 << 16, values["a1"]),
+            (b, 2 << 16, values["b1"]),
+            (a, 3 << 16, values["a2"]),
+        ]
+        assert seen((1 << 16) - 1) == []
+        pending.rollback()

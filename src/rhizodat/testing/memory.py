@@ -1,6 +1,6 @@
 """An in-memory two-phase store that holds entity parts, for tests of code on rhizodat.
 
-``MemoryEntityStore`` implements ``Store`` with ``PartStore``, and its branches
+``MemoryEntityStore`` implements ``Store`` with ``PartStore`` and ``ScansParts``, and its branches
 ``PartBranch``: what a branch writes is invisible to others until it commits.
 ``hold_finish`` keeps prepared work invisible after the decision until
 ``release``, to test reads while a meta-transaction is still finishing.
@@ -72,6 +72,19 @@ class MemoryEntityStore:
     def part_history(self, part: Part, dat_id: uuid.UUID) -> list[Version]:
         with self._lock:
             return list(self._versions.get((part.table, dat_id), []))
+
+    def part_versions(
+        self, part: Part, *, known_at: int | None = None
+    ) -> list[tuple[uuid.UUID, Version]]:
+        with self._lock:
+            found = [
+                (dat_id, v)
+                for (table, dat_id), versions in self._versions.items()
+                if table == part.table
+                for v in versions
+                if known_at is None or (v.dat_tx_time or 0) <= known_at
+            ]
+        return sorted(found, key=lambda pair: pair[1].dat_tx_time or 0)
 
     def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
         with self._lock:
