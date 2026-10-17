@@ -17,6 +17,10 @@ from rhizodat.testing.memory import MemoryEntityStore
 
 @pytest.fixture
 def dat() -> Iterator[Rhizodat]:
+    from conftest import drevo_embedded_available
+
+    if not drevo_embedded_available():
+        pytest.skip("drevo-py with 2PC is not installed: uv sync --group drevo")
     d = Rhizodat(stores={"journal": "drevo+mem://"})
     yield d
     d.close()
