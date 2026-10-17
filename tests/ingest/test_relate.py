@@ -141,3 +141,21 @@ def test_names_values_and_tables_without_keys(tmp_path: Path) -> None:
     assert infer_relationships(tables) == []
     graph = tables_to_graph(tables, [])
     assert set(graph.nodes) == {"log:1", "log:2", "categories:1"}  # row numbers without a key
+
+
+def test_a_proposed_relationship_is_measured_against_the_data(erp: dict[str, Path]) -> None:
+    from rhizodat.ingest.relate import measure
+
+    tables = read_tables(erp)
+    rel = measure(tables, "payments", "order_ref", "orders")
+    assert (rel.matched, rel.total, rel.accepted) == (47, 50, True)
+    assert not measure(tables, "customers", "name", "orders").accepted  # nothing matches
+    for args, message in [
+        (("nope", "x", "orders"), "no table nope"),
+        (("orders", "nope", "customers"), "no column nope"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            measure(tables, *args)
+    no_key = read_tables(erp, keys={"customers": None})
+    with pytest.raises(ValueError, match="no key"):
+        measure(no_key, "orders", "customer_id", "customers")

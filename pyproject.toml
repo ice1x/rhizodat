@@ -61,6 +61,7 @@ dev = [
     "pyiceberg[pyarrow,sql-sqlite]>=0.12",
     "mcp>=2.3",
     "rdflib>=7",
+    "rhizodat-ontology",
 ]
 
 # The documentation site: uv run --group docs mkdocs serve
@@ -70,14 +71,19 @@ docs = ["mkdocs>=1.6,<2", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.27"]
 # (needs a Rust toolchain). Install with: uv sync --group drevo
 drevo = ["drevo-py"]
 
+[tool.uv.workspace]
+# rhizodat-ontology: an LLM plugin, a package of its own (plugins/).
+members = ["plugins/*"]
+
 [tool.uv.sources]
+rhizodat-ontology = { workspace = true }
 drevo-py = { git = "https://github.com/ice1x/drevo", rev = "cf9c7664e573906f2f7e86bd15639b7c3be559fe", subdirectory = "drevo-py" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rhizodat"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "plugins/rhizodat-ontology/tests"]
 pythonpath = ["tests"]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
 xfail_strict = true
@@ -110,7 +116,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "PT", "ANN"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "plugins/rhizodat-ontology/src", "plugins/rhizodat-ontology/tests"]
 
 [[tool.mypy.overrides]]
 # Optional at runtime: pyarrow, and drevo-py (built from source, only in the "drevo" group).
