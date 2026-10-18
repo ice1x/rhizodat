@@ -42,6 +42,26 @@ create_exception!(
     PyValueError,
     "A migration file that does not follow the format."
 );
+create_exception!(
+    rhizodat_native,
+    AbortedError,
+    PyException,
+    "A meta-transaction committed nothing; `retryable` says if a re-run may help."
+);
+create_exception!(
+    rhizodat_native,
+    InDoubtError,
+    PyException,
+    "A meta-transaction's outcome is unknown; recovery resolves it from the journal."
+);
+create_exception!(
+    rhizodat_native,
+    InvalidUnitOfWork,
+    PyValueError,
+    "A Unit of Work that cannot be committed as given."
+);
+
+mod coordinator;
 
 /// The first error a Python callback raised while the core was running.
 #[derive(Clone, Default)]
@@ -344,6 +364,11 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "MigrationFormatError",
         py.get_type::<MigrationFormatError>(),
     )?;
+    m.add("AbortedError", py.get_type::<AbortedError>())?;
+    m.add("InDoubtError", py.get_type::<InDoubtError>())?;
+    m.add("InvalidUnitOfWork", py.get_type::<InvalidUnitOfWork>())?;
+    m.add_class::<coordinator::MemoryJournal>()?;
+    m.add_class::<coordinator::Coordinator>()?;
     m.add_function(wrap_pyfunction!(id_generator, m)?)?;
     m.add_function(wrap_pyfunction!(new_id, m)?)?;
     m.add_function(wrap_pyfunction!(is_uuid7, m)?)?;

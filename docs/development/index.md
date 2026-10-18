@@ -46,3 +46,11 @@ the hybrid logical clock, gids and migration files from the Rust core.
 again: list both groups, e.g. `--group drevo --group native`); the package
 then makes `new_id` with it, and `RHIZODAT_NATIVE=0` turns it off.
 `tests/conformance/test_native_vectors.py` runs the vectors through it.
+
+It also exposes the commit protocol: `rhizodat_native.Coordinator(journal)`
+runs a Unit of Work's branches (any Python objects with the branch methods)
+through the core on a single-threaded executor, calling back into each object
+along the way and raising the same `AbortedError` / `InDoubtError` /
+`InvalidUnitOfWork` as the Python reference. The core runs with the GIL
+released and each callback re-takes it for its one call.
+`tests/core/test_native_coordinator.py` drives it with fake branches.

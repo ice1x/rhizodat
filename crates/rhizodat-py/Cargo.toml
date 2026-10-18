@@ -16,6 +16,8 @@ test = false
 doctest = false
 
 [dependencies]
+async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["executor"] }
 pyo3 = { version = "0.30", features = ["abi3-py312", "uuid"] }
 rhizodat-core = { path = "../rhizodat-core" }
 serde_json = "1"

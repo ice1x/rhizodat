@@ -174,8 +174,22 @@ Steps:
    or clock over the system sources (no Python) is shared between threads and
    releases the GIL, while one over Python callables is bound to the thread
    that made it; a callback's exception is kept and raised once the core
-   returns. Next: the coordinator, where `transactional` functions are called
-   from an async core.
+   returns.
+   ✔ The coordinator across the boundary (`rhizodat_native.Coordinator`): a
+   Python Unit of Work hands it its branches (any objects with the branch
+   methods) and the core runs the commit protocol — one-phase, two-phase
+   through the in-memory journal, roll back before the decision, the
+   all-or-nothing property — calling back into each object's `stage` /
+   `prepare` / `finish` and so on. The async core runs on a single-threaded
+   executor with the GIL released (`Python::detach`) and each callback re-takes
+   it for its one call (`Python::attach`), so nothing leaves the calling
+   thread and there is no cross-thread hazard; the first exception a callback
+   raises is kept and chained as the `__cause__` of `AbortedError` /
+   `InDoubtError`, as the Python reference chains the store's own error. Driven
+   by fakes, like the Rust and Python coordinator tests, so no Docker.
+   Next: the real Rust adapters behind this surface (so the package's own
+   `transactional` runs on the core), then results across the boundary (Arrow)
+   and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
