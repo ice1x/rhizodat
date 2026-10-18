@@ -3359,6 +3359,8 @@ dependencies = [
 name = "rhizodat-py"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
+ "futures",
  "pyo3",
  "pyo3-build-config",
  "rhizodat-core",
