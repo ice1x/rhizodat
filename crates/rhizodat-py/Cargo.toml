@@ -19,8 +19,12 @@ doctest = false
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 pyo3 = { version = "0.30", features = ["abi3-py312", "uuid"] }
-rhizodat-core = { path = "../rhizodat-core" }
+rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
+rhizodat-postgres = { path = "../rhizodat-postgres" }
 serde_json = "1"
+# A current-thread runtime drives the async adapters (and their connection tasks)
+# on the calling thread, so native commits keep the single-threaded property.
+tokio = { version = "1", features = ["rt", "time"] }
 uuid = "1"
 
 [build-dependencies]

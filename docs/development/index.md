@@ -54,3 +54,12 @@ along the way and raising the same `AbortedError` / `InDoubtError` /
 `InvalidUnitOfWork` as the Python reference. The core runs with the GIL
 released and each callback re-takes it for its one call.
 `tests/core/test_native_coordinator.py` drives it with fake branches.
+
+A branch may also be a native store — `rhizodat_native.PostgresStore(dsn, name,
+schema)` with `rhizodat_native.PostgresJournal(dsn, schema)` — whose Rust branch,
+participant and journal (`crates/rhizodat-postgres`) run the whole protocol
+against real PostgreSQL with no Python callbacks on the path; a Unit of Work may
+mix native stores and Python branch objects. A commit with any native store runs
+on a current-thread tokio runtime (so it stays single-threaded, like the
+callback path) and needs the compose PostgreSQL.
+`tests/core/test_native_postgres.py` drives it.

@@ -29,10 +29,12 @@ use rhizodat_core::clock::HybridLogicalClock;
 use rhizodat_core::coordinator::{CommitError, Coordinator as CoreCoordinator, Outcome};
 use rhizodat_core::journal::{BranchRecord, Journal, MemoryJournal as CoreJournal};
 use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
-use rhizodat_core::timer::NoWait;
+use rhizodat_core::timer::{NoWait, TokioTimer};
+use rhizodat_postgres::PostgresStore as CorePgStore;
 use uuid::Uuid;
 
-use crate::{AbortedError, Failure, InDoubtError, InvalidUnitOfWork};
+use crate::postgres::{PostgresJournal, PostgresStore};
+use crate::{AbortedError, Failure, InDoubtError, InvalidUnitOfWork, journal_record_dict, op_err};
 
 /// A Python branch callback raised; it is kept in the [`Failure`] cell.
 #[derive(Debug)]
@@ -233,6 +235,13 @@ fn commit_error(py: Python<'_>, error: CommitError, failure: &Failure) -> PyErr 
 #[pyclass(module = "rhizodat_native")]
 pub struct MemoryJournal(Arc<CoreJournal>);
 
+impl MemoryJournal {
+    /// The wrapped core journal as a trait object, for the coordinator.
+    fn as_journal(&self) -> Arc<dyn Journal> {
+        self.0.clone()
+    }
+}
+
 #[pymethods]
 impl MemoryJournal {
     #[new]
@@ -246,22 +255,54 @@ impl MemoryJournal {
         let record = py
             .detach(|| block_on(self.0.get(dat_txn)))
             .map_err(|e| InvalidUnitOfWork::new_err(e.to_string()))?;
-        let Some(record) = record else {
-            return Ok(None);
-        };
-        let dict = PyDict::new(py);
-        dict.set_item("state", record.state.as_str())?;
-        dict.set_item("dat_txn", record.dat_txn)?;
-        dict.set_item("dat_tx_time", record.dat_tx_time)?;
-        Ok(Some(dict))
+        match record {
+            Some(record) => Ok(Some(journal_record_dict(
+                py,
+                record.state.as_str(),
+                record.dat_txn,
+                record.dat_tx_time,
+            )?)),
+            None => Ok(None),
+        }
     }
+}
+
+/// How the coordinator resolves its optional journal argument: either in-memory
+/// or in PostgreSQL.
+fn resolve_journal(journal: &Bound<'_, PyAny>) -> PyResult<Arc<dyn Journal>> {
+    if let Ok(memory) = journal.cast::<MemoryJournal>() {
+        return Ok(memory.borrow().as_journal());
+    }
+    if let Ok(postgres) = journal.cast::<PostgresJournal>() {
+        return Ok(postgres.borrow().as_journal());
+    }
+    Err(InvalidUnitOfWork::new_err(
+        "journal must be a MemoryJournal or a PostgresJournal",
+    ))
+}
+
+/// One branch of a Unit of Work, before the core runs: a native store (its
+/// branch is opened async at commit time) or a Python object with the branch
+/// methods.
+enum Slot {
+    Native(Arc<CorePgStore>),
+    Py(Box<PyBranch>),
+}
+
+/// The ways a native commit ends: the protocol's own outcome, or a failure to
+/// open a store's transaction before the protocol could start.
+enum NativeError {
+    /// A store's `BEGIN`/connect failed; nothing was committed.
+    Connect(BoxError),
+    /// The commit protocol ran and failed.
+    Commit(CommitError),
 }
 
 /// Runs the commit protocol for Python Units of Work. One coordinator serves
 /// many of them and keeps a hybrid logical clock across them.
 #[pyclass(module = "rhizodat_native")]
 pub struct Coordinator {
-    journal: Option<Arc<CoreJournal>>,
+    journal: Option<Arc<dyn Journal>>,
     clock: Arc<HybridLogicalClock>,
 }
 
@@ -269,14 +310,18 @@ pub struct Coordinator {
 impl Coordinator {
     #[new]
     #[pyo3(signature = (journal = None))]
-    fn new(journal: Option<PyRef<'_, MemoryJournal>>) -> Self {
-        Self {
-            journal: journal.map(|j| j.0.clone()),
+    fn new(journal: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        Ok(Self {
+            journal: journal.map(resolve_journal).transpose()?,
             clock: Arc::new(HybridLogicalClock::new()),
-        }
+        })
     }
 
     /// Commit `branches` as the meta-transaction `dat_txn`.
+    ///
+    /// A branch is either a native store (`PostgresStore`), whose Rust branch
+    /// runs the protocol with no Python on the path, or any Python object with
+    /// the branch methods. A Unit of Work may mix the two.
     ///
     /// Returns `{"status", "dat_txn", "dat_tx_time"}` (`status` is `committed`
     /// or `pending`). Raises `AbortedError` (with `dat_txn` and `retryable`),
@@ -289,36 +334,116 @@ impl Coordinator {
     ) -> PyResult<Bound<'py, PyDict>> {
         let failure = Failure::default();
         let mut participants = Participants::new();
-        let mut core_branches: Vec<Box<dyn Branch>> = Vec::with_capacity(branches.len());
+        let mut slots: Vec<Slot> = Vec::with_capacity(branches.len());
+        let mut any_native = false;
         for obj in branches {
             let bound = obj.bind(py);
-            let store: String = bound.call_method0("store")?.extract()?;
-            let two_phase: bool = bound.call_method0("two_phase")?.extract()?;
-            participants = participants.with(
-                store.clone(),
-                Arc::new(PyParticipant {
-                    obj: obj.clone_ref(py),
+            if let Ok(store) = bound.cast::<PostgresStore>() {
+                let core = store.borrow().core();
+                any_native = true;
+                participants = participants.with(core.name().to_owned(), core.participant());
+                slots.push(Slot::Native(core));
+            } else {
+                let store: String = bound.call_method0("store")?.extract()?;
+                let two_phase: bool = bound.call_method0("two_phase")?.extract()?;
+                participants = participants.with(
+                    store.clone(),
+                    Arc::new(PyParticipant {
+                        obj: obj.clone_ref(py),
+                        failure: failure.clone(),
+                    }),
+                );
+                slots.push(Slot::Py(Box::new(PyBranch {
+                    obj,
+                    store,
+                    two_phase,
                     failure: failure.clone(),
-                }),
-            );
-            core_branches.push(Box::new(PyBranch {
-                obj,
-                store,
-                two_phase,
-                failure: failure.clone(),
-            }));
+                })));
+            }
         }
-        let journal: Option<Arc<dyn Journal>> = self.journal.clone().map(|j| j as Arc<dyn Journal>);
-        let coordinator = CoreCoordinator::new(
-            journal,
-            participants,
-            self.clock.clone(),
-            Arc::new(NoWait::default()),
-        );
-        let result = py.detach(|| block_on(coordinator.commit(dat_txn, &mut core_branches)));
+
+        let journal = self.journal.clone();
+        let clock = self.clock.clone();
+        if any_native {
+            self.commit_native(py, dat_txn, slots, participants, journal, &failure)
+        } else {
+            // No adapter to drive: the single-threaded executor and no-wait timer
+            // of the Python-callback path, unchanged.
+            let mut core_branches: Vec<Box<dyn Branch>> = slots
+                .into_iter()
+                .map(|slot| match slot {
+                    Slot::Py(branch) => branch as Box<dyn Branch>,
+                    Slot::Native(_) => unreachable!("no native slot without any_native"),
+                })
+                .collect();
+            let coordinator =
+                CoreCoordinator::new(journal, participants, clock, Arc::new(NoWait::default()));
+            match py.detach(|| block_on(coordinator.commit(dat_txn, &mut core_branches))) {
+                Ok(outcome) => outcome_dict(py, outcome),
+                Err(error) => Err(commit_error(py, error, &failure)),
+            }
+        }
+    }
+}
+
+impl Coordinator {
+    /// The commit path for a Unit of Work with at least one native store: a
+    /// current-thread tokio runtime drives the adapters (and the connection
+    /// tasks they spawn) and the real timer backs the retry policy. Each native
+    /// store's branch is opened inside the runtime so its connection lives for
+    /// the whole commit and closes with the runtime.
+    fn commit_native<'py>(
+        &self,
+        py: Python<'py>,
+        dat_txn: Uuid,
+        slots: Vec<Slot>,
+        participants: Participants,
+        journal: Option<Arc<dyn Journal>>,
+        failure: &Failure,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let clock = self.clock.clone();
+        let runtime = crate::runtime().map_err(op_err)?;
+        let result = py.detach(|| {
+            runtime.block_on(async move {
+                let mut core_branches: Vec<Box<dyn Branch>> = Vec::with_capacity(slots.len());
+                for slot in slots {
+                    match slot {
+                        Slot::Py(branch) => core_branches.push(branch),
+                        Slot::Native(store) => {
+                            let branch = store
+                                .branch()
+                                .await
+                                .map_err(|e| NativeError::Connect(Box::new(e) as BoxError))?;
+                            core_branches.push(Box::new(branch));
+                        }
+                    }
+                }
+                let coordinator = CoreCoordinator::new(
+                    journal,
+                    participants,
+                    clock,
+                    Arc::new(TokioTimer::default()),
+                );
+                coordinator
+                    .commit(dat_txn, &mut core_branches)
+                    .await
+                    .map_err(NativeError::Commit)
+            })
+        });
         match result {
             Ok(outcome) => outcome_dict(py, outcome),
-            Err(error) => Err(commit_error(py, error, &failure)),
+            Err(NativeError::Commit(error)) => Err(commit_error(py, error, failure)),
+            Err(NativeError::Connect(error)) => {
+                // Nothing was staged or journaled: report it as an abort so a
+                // caller can retry, with the driver's retryability.
+                let err = AbortedError::new_err(error.to_string());
+                let value = err.value(py).as_any();
+                value.setattr("dat_txn", dat_txn).ok();
+                value
+                    .setattr("retryable", rhizodat_postgres::is_retryable(error.as_ref()))
+                    .ok();
+                Err(err)
+            }
         }
     }
 }

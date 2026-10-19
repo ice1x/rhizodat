@@ -187,9 +187,20 @@ Steps:
    raises is kept and chained as the `__cause__` of `AbortedError` /
    `InDoubtError`, as the Python reference chains the store's own error. Driven
    by fakes, like the Rust and Python coordinator tests, so no Docker.
-   Next: the real Rust adapters behind this surface (so the package's own
-   `transactional` runs on the core), then results across the boundary (Arrow)
-   and the C ABI for Go.
+   ✔ The first real adapter behind this surface (`rhizodat_native.PostgresStore`
+   and `rhizodat_native.PostgresJournal`): a Unit of Work of native stores runs
+   the whole protocol through the core against real PostgreSQL — one-phase for a
+   single store, two-phase through the PostgreSQL journal for several, roll back
+   before the decision, the all-or-nothing property, idempotent replay — with no
+   Python callbacks on the path (a Unit of Work may still mix native stores and
+   Python branch objects). A native commit runs on a current-thread tokio
+   runtime (`TokioTimer` for the retry policy) that drives the adapter and its
+   connection tasks on the calling thread, so it keeps the single-threaded
+   property of the Python-callback path. `tests/core/test_native_postgres.py`
+   drives it against the compose PostgreSQL.
+   Next: the other Rust adapters behind this surface and the package's own
+   `transactional` on the core, then results across the boundary (Arrow) and the
+   C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
