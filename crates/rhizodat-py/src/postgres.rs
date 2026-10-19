@@ -15,6 +15,7 @@ use rhizodat_core::journal::Journal;
 use rhizodat_postgres::{PostgresJournal as CoreJournal, PostgresStore as CoreStore};
 use uuid::Uuid;
 
+use crate::native::{NativeStore, Postgres};
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
 
 /// One PostgreSQL database as a rhizodat store, for a native Unit of Work.
@@ -22,9 +23,9 @@ use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
 pub struct PostgresStore(Arc<CoreStore>);
 
 impl PostgresStore {
-    /// The wrapped core store, shared with the coordinator for a commit.
-    pub(crate) fn core(&self) -> Arc<CoreStore> {
-        self.0.clone()
+    /// The store as a [`NativeStore`] for the coordinator.
+    pub(crate) fn native(&self) -> Arc<dyn NativeStore> {
+        Arc::new(Postgres(self.0.clone()))
     }
 }
 

@@ -198,7 +198,14 @@ Steps:
    connection tasks on the calling thread, so it keeps the single-threaded
    property of the Python-callback path. `tests/core/test_native_postgres.py`
    drives it against the compose PostgreSQL.
-   Next: the other Rust adapters behind this surface and the package's own
+   ✔ The drevo adapter behind the same surface (`rhizodat_native.DrevoStore`
+   over Bolt, `rhizodat_native.DrevoJournal`): the stores now share one
+   `NativeStore` path, so a Unit of Work mixes native adapters freely — a drevo
+   store and a PostgreSQL store commit together as one meta-transaction through
+   a journal (the first cross-adapter native Unit of Work), on the same
+   current-thread runtime (neo4rs and tokio-postgres driven side by side).
+   `tests/core/test_native_drevo.py` drives it against the compose drevo.
+   Next: ClickHouse and Iceberg behind this surface and the package's own
    `transactional` on the core, then results across the boundary (Arrow) and the
    C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance

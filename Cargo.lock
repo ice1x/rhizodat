@@ -3364,6 +3364,7 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "rhizodat-core",
+ "rhizodat-drevo",
  "rhizodat-postgres",
  "serde_json",
  "tokio",
