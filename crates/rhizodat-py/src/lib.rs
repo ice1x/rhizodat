@@ -62,6 +62,37 @@ create_exception!(
 );
 
 mod coordinator;
+mod postgres;
+
+/// A current-thread tokio runtime for one native call: it drives the async
+/// adapter and the connection tasks it spawns on the calling thread, so a native
+/// commit stays single-threaded, like the Python-callback path.
+pub(crate) fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
+/// An operational failure of a native adapter (a connection or a setup error),
+/// as a Python exception. Safe to build without the GIL.
+pub(crate) fn op_err<E: std::fmt::Display>(error: E) -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+}
+
+/// A journal record as a dict (`state`, `dat_txn`, `dat_tx_time`), the shape the
+/// in-memory and the PostgreSQL journals both return.
+pub(crate) fn journal_record_dict<'py>(
+    py: Python<'py>,
+    state: &str,
+    dat_txn: Uuid,
+    dat_tx_time: Option<i64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("state", state)?;
+    dict.set_item("dat_txn", dat_txn)?;
+    dict.set_item("dat_tx_time", dat_tx_time)?;
+    Ok(dict)
+}
 
 /// The first error a Python callback raised while the core was running.
 #[derive(Clone, Default)]
@@ -369,6 +400,8 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("InvalidUnitOfWork", py.get_type::<InvalidUnitOfWork>())?;
     m.add_class::<coordinator::MemoryJournal>()?;
     m.add_class::<coordinator::Coordinator>()?;
+    m.add_class::<postgres::PostgresStore>()?;
+    m.add_class::<postgres::PostgresJournal>()?;
     m.add_function(wrap_pyfunction!(id_generator, m)?)?;
     m.add_function(wrap_pyfunction!(new_id, m)?)?;
     m.add_function(wrap_pyfunction!(is_uuid7, m)?)?;
