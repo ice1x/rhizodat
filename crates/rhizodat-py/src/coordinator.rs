@@ -30,9 +30,10 @@ use rhizodat_core::coordinator::{CommitError, Coordinator as CoreCoordinator, Ou
 use rhizodat_core::journal::{BranchRecord, Journal, MemoryJournal as CoreJournal};
 use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
 use rhizodat_core::timer::{NoWait, TokioTimer};
-use rhizodat_postgres::PostgresStore as CorePgStore;
 use uuid::Uuid;
 
+use crate::drevo::{DrevoJournal, DrevoStore};
+use crate::native::{ConnectError, NativeStore};
 use crate::postgres::{PostgresJournal, PostgresStore};
 use crate::{AbortedError, Failure, InDoubtError, InvalidUnitOfWork, journal_record_dict, op_err};
 
@@ -276,24 +277,39 @@ fn resolve_journal(journal: &Bound<'_, PyAny>) -> PyResult<Arc<dyn Journal>> {
     if let Ok(postgres) = journal.cast::<PostgresJournal>() {
         return Ok(postgres.borrow().as_journal());
     }
+    if let Ok(drevo) = journal.cast::<DrevoJournal>() {
+        return Ok(drevo.borrow().as_journal());
+    }
     Err(InvalidUnitOfWork::new_err(
-        "journal must be a MemoryJournal or a PostgresJournal",
+        "journal must be a MemoryJournal, a PostgresJournal or a DrevoJournal",
     ))
+}
+
+/// The native store a branch object stands for, or `None` for a Python object
+/// with the branch methods.
+fn native_store(branch: &Bound<'_, PyAny>) -> Option<Arc<dyn NativeStore>> {
+    if let Ok(store) = branch.cast::<PostgresStore>() {
+        return Some(store.borrow().native());
+    }
+    if let Ok(store) = branch.cast::<DrevoStore>() {
+        return Some(store.borrow().native());
+    }
+    None
 }
 
 /// One branch of a Unit of Work, before the core runs: a native store (its
 /// branch is opened async at commit time) or a Python object with the branch
 /// methods.
 enum Slot {
-    Native(Arc<CorePgStore>),
+    Native(Arc<dyn NativeStore>),
     Py(Box<PyBranch>),
 }
 
 /// The ways a native commit ends: the protocol's own outcome, or a failure to
 /// open a store's transaction before the protocol could start.
 enum NativeError {
-    /// A store's `BEGIN`/connect failed; nothing was committed.
-    Connect(BoxError),
+    /// A store's branch could not be opened; nothing was committed.
+    Connect(ConnectError),
     /// The commit protocol ran and failed.
     Commit(CommitError),
 }
@@ -338,11 +354,10 @@ impl Coordinator {
         let mut any_native = false;
         for obj in branches {
             let bound = obj.bind(py);
-            if let Ok(store) = bound.cast::<PostgresStore>() {
-                let core = store.borrow().core();
+            if let Some(store) = native_store(bound) {
                 any_native = true;
-                participants = participants.with(core.name().to_owned(), core.participant());
-                slots.push(Slot::Native(core));
+                participants = participants.with(store.name(), store.participant());
+                slots.push(Slot::Native(store));
             } else {
                 let store: String = bound.call_method0("store")?.extract()?;
                 let two_phase: bool = bound.call_method0("two_phase")?.extract()?;
@@ -410,11 +425,8 @@ impl Coordinator {
                     match slot {
                         Slot::Py(branch) => core_branches.push(branch),
                         Slot::Native(store) => {
-                            let branch = store
-                                .branch()
-                                .await
-                                .map_err(|e| NativeError::Connect(Box::new(e) as BoxError))?;
-                            core_branches.push(Box::new(branch));
+                            let branch = store.open_branch().await.map_err(NativeError::Connect)?;
+                            core_branches.push(branch);
                         }
                     }
                 }
@@ -433,15 +445,13 @@ impl Coordinator {
         match result {
             Ok(outcome) => outcome_dict(py, outcome),
             Err(NativeError::Commit(error)) => Err(commit_error(py, error, failure)),
-            Err(NativeError::Connect(error)) => {
+            Err(NativeError::Connect(connect)) => {
                 // Nothing was staged or journaled: report it as an abort so a
                 // caller can retry, with the driver's retryability.
-                let err = AbortedError::new_err(error.to_string());
+                let err = AbortedError::new_err(connect.error.to_string());
                 let value = err.value(py).as_any();
                 value.setattr("dat_txn", dat_txn).ok();
-                value
-                    .setattr("retryable", rhizodat_postgres::is_retryable(error.as_ref()))
-                    .ok();
+                value.setattr("retryable", connect.retryable).ok();
                 Err(err)
             }
         }

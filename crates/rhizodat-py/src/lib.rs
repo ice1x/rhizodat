@@ -62,6 +62,8 @@ create_exception!(
 );
 
 mod coordinator;
+mod drevo;
+mod native;
 mod postgres;
 
 /// A current-thread tokio runtime for one native call: it drives the async
@@ -402,6 +404,8 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<coordinator::Coordinator>()?;
     m.add_class::<postgres::PostgresStore>()?;
     m.add_class::<postgres::PostgresJournal>()?;
+    m.add_class::<drevo::DrevoStore>()?;
+    m.add_class::<drevo::DrevoJournal>()?;
     m.add_function(wrap_pyfunction!(id_generator, m)?)?;
     m.add_function(wrap_pyfunction!(new_id, m)?)?;
     m.add_function(wrap_pyfunction!(is_uuid7, m)?)?;

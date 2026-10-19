@@ -56,10 +56,14 @@ released and each callback re-takes it for its one call.
 `tests/core/test_native_coordinator.py` drives it with fake branches.
 
 A branch may also be a native store — `rhizodat_native.PostgresStore(dsn, name,
-schema)` with `rhizodat_native.PostgresJournal(dsn, schema)` — whose Rust branch,
-participant and journal (`crates/rhizodat-postgres`) run the whole protocol
-against real PostgreSQL with no Python callbacks on the path; a Unit of Work may
-mix native stores and Python branch objects. A commit with any native store runs
-on a current-thread tokio runtime (so it stays single-threaded, like the
-callback path) and needs the compose PostgreSQL.
-`tests/core/test_native_postgres.py` drives it.
+schema)` with `rhizodat_native.PostgresJournal(dsn, schema)`, or
+`rhizodat_native.DrevoStore(dsn, name)` over Bolt with
+`rhizodat_native.DrevoJournal(dsn, label)` — whose Rust branch, participant and
+journal (`crates/rhizodat-postgres`, `crates/rhizodat-drevo`) run the whole
+protocol against the real store with no Python callbacks on the path. A Unit of
+Work may mix native stores (of different kinds) and Python branch objects; a
+meta-transaction over several native stores commits through one of the native
+journals. A commit with any native store runs on a current-thread tokio runtime
+(so it stays single-threaded, like the callback path) and needs the compose
+stores. `tests/core/test_native_postgres.py` and `tests/core/test_native_drevo.py`
+drive it.
