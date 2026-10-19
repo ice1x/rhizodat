@@ -54,6 +54,25 @@ impl NativeStore for Postgres {
     }
 }
 
+/// The ClickHouse adapter as a native store. Its branch is one-phase and opens
+/// without I/O (the HTTP client is lazy), so `open_branch` cannot fail.
+pub(crate) struct ClickHouse(pub Arc<rhizodat_clickhouse::ClickHouseStore>);
+
+#[async_trait]
+impl NativeStore for ClickHouse {
+    fn name(&self) -> String {
+        self.0.name().to_owned()
+    }
+
+    fn participant(&self) -> Arc<dyn Participant> {
+        self.0.participant()
+    }
+
+    async fn open_branch(&self) -> Result<Box<dyn Branch>, ConnectError> {
+        Ok(Box::new(self.0.branch()))
+    }
+}
+
 /// The drevo adapter as a native store.
 pub(crate) struct Drevo(pub Arc<rhizodat_drevo::DrevoStore>);
 

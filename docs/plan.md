@@ -205,9 +205,14 @@ Steps:
    a journal (the first cross-adapter native Unit of Work), on the same
    current-thread runtime (neo4rs and tokio-postgres driven side by side).
    `tests/core/test_native_drevo.py` drives it against the compose drevo.
-   Next: ClickHouse and Iceberg behind this surface and the package's own
-   `transactional` on the core, then results across the boundary (Arrow) and the
-   C ABI for Go.
+   ✔ ClickHouse behind the same surface (`rhizodat_native.ClickHouseStore`): the
+   one-phase branch, applied after the decision. ClickHouse has no journal of its
+   own, so a meta-transaction that includes it (for example with a PostgreSQL
+   store) commits through another store's journal.
+   `tests/core/test_native_clickhouse.py` drives it against the compose
+   ClickHouse.
+   Next: Iceberg behind this surface and the package's own `transactional` on the
+   core, then results across the boundary (Arrow) and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
