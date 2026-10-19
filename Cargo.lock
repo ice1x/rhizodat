@@ -3363,6 +3363,7 @@ dependencies = [
  "futures",
  "pyo3",
  "pyo3-build-config",
+ "rhizodat-clickhouse",
  "rhizodat-core",
  "rhizodat-drevo",
  "rhizodat-postgres",

@@ -32,6 +32,7 @@ use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
 use rhizodat_core::timer::{NoWait, TokioTimer};
 use uuid::Uuid;
 
+use crate::clickhouse::ClickHouseStore;
 use crate::drevo::{DrevoJournal, DrevoStore};
 use crate::native::{ConnectError, NativeStore};
 use crate::postgres::{PostgresJournal, PostgresStore};
@@ -292,6 +293,9 @@ fn native_store(branch: &Bound<'_, PyAny>) -> Option<Arc<dyn NativeStore>> {
         return Some(store.borrow().native());
     }
     if let Ok(store) = branch.cast::<DrevoStore>() {
+        return Some(store.borrow().native());
+    }
+    if let Ok(store) = branch.cast::<ClickHouseStore>() {
         return Some(store.borrow().native());
     }
     None

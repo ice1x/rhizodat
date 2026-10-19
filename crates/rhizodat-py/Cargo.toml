@@ -19,6 +19,7 @@ doctest = false
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 pyo3 = { version = "0.30", features = ["abi3-py312", "uuid"] }
+rhizodat-clickhouse = { path = "../rhizodat-clickhouse" }
 rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
 rhizodat-drevo = { path = "../rhizodat-drevo" }
 rhizodat-postgres = { path = "../rhizodat-postgres" }
