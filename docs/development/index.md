@@ -70,3 +70,8 @@ native store runs on a current-thread tokio runtime (so it stays single-threaded
 like the callback path) and needs the compose stores.
 `tests/core/test_native_postgres.py`, `tests/core/test_native_drevo.py` and
 `tests/core/test_native_clickhouse.py` drive it.
+
+A Unit of Work's own rows reach a ClickHouse store through
+`store.unit()`: buffer rows with `unit.insert(table, columns, rows)` (the core's
+row format, so no Arrow is needed) and hand the unit to `commit` like a store, so
+a native ClickHouse commit writes real data. A unit is spent by its commit.

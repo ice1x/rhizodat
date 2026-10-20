@@ -211,8 +211,15 @@ Steps:
    store) commits through another store's journal.
    `tests/core/test_native_clickhouse.py` drives it against the compose
    ClickHouse.
-   Next: Iceberg behind this surface and the package's own `transactional` on the
-   core, then results across the boundary (Arrow) and the C ABI for Go.
+   ✔ The first data across the boundary (`rhizodat_native.ClickHouseUnit`,
+   `store.unit()`): Python buffers a Unit of Work's rows into it with `insert`
+   (the core's row format, so no Arrow dependency) and hands it to `commit` like
+   a store, so a native ClickHouse commit writes real rows, not just the applied
+   marker. A unit is spent by its commit. `tests/core/test_native_clickhouse.py`
+   writes rows and reads them back, including a ClickHouse + PostgreSQL commit.
+   Next: Iceberg behind this surface (Arrow for its batches) and the package's own
+   `transactional` on the core, then full results across the boundary (Arrow) and
+   the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
