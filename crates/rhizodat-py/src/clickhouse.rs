@@ -16,67 +16,13 @@
 use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 use rhizodat_clickhouse::{ClickHouseBranch as CoreBranch, ClickHouseStore as CoreStore};
 use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{Branch, Participant};
-use uuid::Uuid;
 
 use crate::native::{ClickHouse, NativeStore};
+use crate::rows::row_value;
 use crate::{InvalidUnitOfWork, op_err, runtime};
-
-/// One Python value as a [`RowValue`]. Scalars, bytes, UUIDs, lists and dicts
-/// are carried exactly; temporal and decimal values travel as strings (the
-/// server parses them per column type).
-fn row_value(obj: &Bound<'_, PyAny>) -> PyResult<RowValue> {
-    if obj.is_none() {
-        return Ok(RowValue::Null);
-    }
-    if let Ok(flag) = obj.cast::<PyBool>() {
-        return Ok(RowValue::Bool(flag.is_true()));
-    }
-    if let Ok(bytes) = obj.cast::<PyBytes>() {
-        return Ok(RowValue::Bytes(bytes.as_bytes().to_vec()));
-    }
-    if obj.is_instance_of::<PyInt>() {
-        return Ok(RowValue::Int(obj.extract::<i64>().map_err(|_| {
-            InvalidUnitOfWork::new_err("integer out of range for a 64-bit column")
-        })?));
-    }
-    if obj.is_instance_of::<PyFloat>() {
-        return Ok(RowValue::Float(obj.extract::<f64>()?));
-    }
-    if let Ok(text) = obj.cast::<PyString>() {
-        return Ok(RowValue::Str(text.to_cow()?.into_owned()));
-    }
-    if let Ok(uuid) = obj.extract::<Uuid>() {
-        return Ok(RowValue::Uuid(uuid));
-    }
-    if let Ok(list) = obj.cast::<PyList>() {
-        return Ok(RowValue::List(
-            list.iter()
-                .map(|v| row_value(&v))
-                .collect::<PyResult<_>>()?,
-        ));
-    }
-    if let Ok(dict) = obj.cast::<PyDict>() {
-        let mut pairs = Vec::with_capacity(dict.len());
-        for (key, value) in dict {
-            pairs.push((
-                key.cast::<PyString>()
-                    .map_err(|_| InvalidUnitOfWork::new_err("a map key must be a string"))?
-                    .to_cow()?
-                    .into_owned(),
-                row_value(&value)?,
-            ));
-        }
-        return Ok(RowValue::Map(pairs));
-    }
-    Err(InvalidUnitOfWork::new_err(format!(
-        "unsupported value type for a ClickHouse row: {}",
-        obj.get_type().name()?
-    )))
-}
 
 /// One ClickHouse database as a rhizodat store, for a native Unit of Work.
 #[pyclass(module = "rhizodat_native")]

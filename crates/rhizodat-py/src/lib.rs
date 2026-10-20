@@ -66,6 +66,7 @@ mod coordinator;
 mod drevo;
 mod native;
 mod postgres;
+mod rows;
 
 /// A current-thread tokio runtime for one native call: it drives the async
 /// adapter and the connection tasks it spawns on the calling thread, so a native
@@ -405,6 +406,7 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<coordinator::Coordinator>()?;
     m.add_class::<postgres::PostgresStore>()?;
     m.add_class::<postgres::PostgresJournal>()?;
+    m.add_class::<postgres::PostgresUnit>()?;
     m.add_class::<drevo::DrevoStore>()?;
     m.add_class::<drevo::DrevoJournal>()?;
     m.add_class::<clickhouse::ClickHouseStore>()?;

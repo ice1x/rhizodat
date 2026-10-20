@@ -54,6 +54,39 @@ impl NativeStore for Postgres {
     }
 }
 
+/// The PostgreSQL adapter as a native store that also carries a Unit of Work's
+/// own rows: `open_branch` opens the transaction and loads the buffered rows, so
+/// they are written at stage inside the two-phase commit. The rows are cloned on
+/// open, so a retry of the whole commit opens a fresh branch with the same rows.
+pub(crate) struct PostgresPending {
+    pub store: Arc<rhizodat_postgres::PostgresStore>,
+    pub rows: rhizodat_postgres::PostgresRows,
+}
+
+#[async_trait]
+impl NativeStore for PostgresPending {
+    fn name(&self) -> String {
+        self.store.name().to_owned()
+    }
+
+    fn participant(&self) -> Arc<dyn Participant> {
+        self.store.participant()
+    }
+
+    async fn open_branch(&self) -> Result<Box<dyn Branch>, ConnectError> {
+        match self.store.branch().await {
+            Ok(mut branch) => {
+                branch.load(self.rows.clone());
+                Ok(Box::new(branch))
+            }
+            Err(error) => Err(ConnectError {
+                retryable: rhizodat_postgres::is_retryable(&error),
+                error: Box::new(error) as BoxError,
+            }),
+        }
+    }
+}
+
 /// The ClickHouse adapter as a native store. Its branch is one-phase and opens
 /// without I/O (the HTTP client is lazy), so `open_branch` cannot fail.
 pub(crate) struct ClickHouse(pub Arc<rhizodat_clickhouse::ClickHouseStore>);

@@ -22,6 +22,7 @@
 //! such a configuration; until a Rust facade exists, give each store its own
 //! schema.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
@@ -35,11 +36,17 @@ use rhizodat_core::journal::{
     BranchRecord, Journal, JournalError, JournalRecord, State, check_transition, decode_branches,
     encode_branches,
 };
+use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{BoxError, Branch, Participant};
 use tokio::sync::Mutex;
 use tokio_postgres::error::SqlState;
+use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, NoTls, Row};
 use uuid::Uuid;
+
+/// Columns rhizodat sets on every data row: the meta-transaction and its time.
+/// A Unit of Work's own rows must leave them out; `stage` appends them.
+const RESERVED: [&str; 2] = ["dat_txn", "dat_tx_time"];
 
 /// A setting the adapter refuses before connecting.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +260,207 @@ impl Connector {
     }
 }
 
+/// A double-quoted SQL identifier (table or column). The name is checked by
+/// [`check_identifier`] first, so this only guards against the odd quote.
+fn quote_ident(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+/// One value of a row as the text PostgreSQL parses per column (the row is
+/// inserted as `$n::text::<column type>`, so the server's input function reads
+/// the value exactly as it would from `COPY`/`INSERT` text). `None` is `NULL`.
+///
+/// # Errors
+///
+/// A [`BoxError`] for a list or map: nested values need an explicit array or
+/// JSON column and are not carried across the boundary yet.
+fn pg_text(value: &RowValue) -> Result<Option<String>, BoxError> {
+    Ok(match value {
+        RowValue::Null => None,
+        RowValue::Bool(v) => Some(if *v { "true" } else { "false" }.to_owned()),
+        RowValue::Int(v) => Some(v.to_string()),
+        RowValue::Float(v) if v.is_finite() => Some(v.to_string()),
+        RowValue::Float(v) if v.is_nan() => Some("NaN".to_owned()),
+        RowValue::Float(v) => Some(if *v > 0.0 { "Infinity" } else { "-Infinity" }.to_owned()),
+        RowValue::Str(v) | RowValue::Decimal(v) | RowValue::Date(v) | RowValue::DateTime(v) => {
+            Some(v.clone())
+        }
+        RowValue::Uuid(v) => Some(v.hyphenated().to_string()),
+        RowValue::Bytes(v) => {
+            let mut hex = String::with_capacity(2 + v.len() * 2);
+            hex.push_str("\\x");
+            for byte in v {
+                use std::fmt::Write as _;
+                let _ = write!(hex, "{byte:02x}");
+            }
+            Some(hex)
+        }
+        RowValue::List(_) | RowValue::Map(_) => {
+            return Err("lists and maps are not carried into PostgreSQL rows yet".into());
+        }
+    })
+}
+
+/// The `format_type` of each of `needed` columns of `table`, resolved through
+/// the branch's `search_path`. Errors when the table lacks one of them.
+async fn column_types(
+    client: &Client,
+    table: &str,
+    needed: &[String],
+) -> Result<BTreeMap<String, String>, BoxError> {
+    let rows = client
+        .query(
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod) \
+             FROM pg_attribute a \
+             WHERE a.attrelid = $1::text::regclass AND a.attnum > 0 AND NOT a.attisdropped",
+            &[&quote_ident(table)],
+        )
+        .await?;
+    let types: BTreeMap<String, String> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+    let missing: Vec<&str> = needed
+        .iter()
+        .map(String::as_str)
+        .filter(|c| !types.contains_key(*c))
+        .collect();
+    if missing.is_empty() {
+        Ok(types)
+    } else {
+        Err(format!("table {table:?} has no column(s) {}", missing.join(", ")).into())
+    }
+}
+
+/// Insert every buffered table's rows into the open transaction, stamping each
+/// row with `(dat_txn, dat_tx_time)`. One statement per table (chunked to stay
+/// under PostgreSQL's parameter limit), values bound as `$n::text::<type>` so
+/// the server parses them per the column's own type.
+async fn apply_rows(
+    client: &Client,
+    rows: &PostgresRows,
+    dat_txn: Uuid,
+    dat_tx_time: i64,
+) -> Result<(), BoxError> {
+    for (table, (cols, data)) in &rows.buffer {
+        let mut all: Vec<String> = cols.clone();
+        all.extend(RESERVED.map(str::to_owned));
+        let types = column_types(client, table, &all).await?;
+        let names: Vec<String> = all.iter().map(|c| quote_ident(c)).collect();
+        // 65535 is the server's bind-parameter limit; keep each statement under it.
+        let per_row = all.len();
+        let max_rows = (65535 / per_row.max(1)).max(1);
+        for chunk in data.chunks(max_rows) {
+            let mut params: Vec<Option<String>> = Vec::with_capacity(chunk.len() * per_row);
+            let mut tuples: Vec<String> = Vec::with_capacity(chunk.len());
+            for row in chunk {
+                let mut values: Vec<Option<String>> =
+                    row.iter().map(pg_text).collect::<Result<_, _>>()?;
+                values.push(pg_text(&RowValue::Uuid(dat_txn))?);
+                values.push(pg_text(&RowValue::Int(dat_tx_time))?);
+                let mut placeholders = Vec::with_capacity(per_row);
+                for (col, value) in all.iter().zip(values) {
+                    placeholders.push(format!(
+                        "${}::text::{}",
+                        params.len() + 1,
+                        types.get(col).expect("checked by column_types")
+                    ));
+                    params.push(value);
+                }
+                tuples.push(format!("({})", placeholders.join(", ")));
+            }
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                quote_ident(table),
+                names.join(", "),
+                tuples.join(", ")
+            );
+            let refs: Vec<&(dyn ToSql + Sync)> =
+                params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+            client.execute(&sql, &refs).await?;
+        }
+    }
+    Ok(())
+}
+
+/// A Unit of Work's own rows for a PostgreSQL store, buffered client-side and
+/// written inside the branch's transaction at [`PostgresBranch::stage`] (so they
+/// commit atomically with the meta-transaction, through the two-phase protocol).
+///
+/// The target table carries the user columns plus `dat_txn uuid` and
+/// `dat_tx_time bigint`; those are reserved and [`stage`](PostgresBranch::stage)
+/// appends them to every row. Lists and maps are not carried yet.
+#[derive(Clone, Default)]
+pub struct PostgresRows {
+    buffer: BTreeMap<String, (Vec<String>, Vec<Vec<RowValue>>)>,
+}
+
+impl PostgresRows {
+    /// An empty set of rows.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether no rows have been buffered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// Buffer `rows` (one value per column of `columns`) for `table`.
+    ///
+    /// # Errors
+    ///
+    /// A [`ConfigError`] for a bad table or column name, a reserved column
+    /// (`dat_txn`, `dat_tx_time`), different columns than earlier rows of the
+    /// same table, a row of the wrong length, or a list/map value.
+    pub fn insert(
+        &mut self,
+        table: &str,
+        columns: &[&str],
+        rows: Vec<Vec<RowValue>>,
+    ) -> Result<(), ConfigError> {
+        check_identifier("table", table)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if let Some(reserved) = RESERVED.iter().find(|r| columns.contains(r)) {
+            return Err(ConfigError(format!(
+                "{reserved} is set by rhizodat; leave it out of the rows"
+            )));
+        }
+        for column in columns {
+            check_identifier("column", column)?;
+        }
+        if let Some(row) = rows.iter().find(|r| r.len() != columns.len()) {
+            return Err(ConfigError(format!(
+                "a row has {} values for {} columns",
+                row.len(),
+                columns.len()
+            )));
+        }
+        if rows
+            .iter()
+            .flatten()
+            .any(|v| matches!(v, RowValue::List(_) | RowValue::Map(_)))
+        {
+            return Err(ConfigError(
+                "lists and maps are not carried into PostgreSQL rows yet".to_owned(),
+            ));
+        }
+        let columns: Vec<String> = columns.iter().map(ToString::to_string).collect();
+        let (known, buffered) = self
+            .buffer
+            .entry(table.to_owned())
+            .or_insert_with(|| (columns.clone(), Vec::new()));
+        if *known != columns {
+            return Err(ConfigError(format!(
+                "rows for {table:?} must have the same columns: {known:?}"
+            )));
+        }
+        buffered.extend(rows);
+        Ok(())
+    }
+}
+
 /// One PostgreSQL database as a rhizodat store.
 #[derive(Clone)]
 pub struct PostgresStore {
@@ -348,6 +556,7 @@ impl PostgresStore {
             connector: self.connector.clone(),
             client: Some(client),
             gid: None,
+            rows: PostgresRows::new(),
         })
     }
 
@@ -364,6 +573,7 @@ pub struct PostgresBranch {
     connector: Connector,
     client: Option<Client>,
     gid: Option<String>,
+    rows: PostgresRows,
 }
 
 fn gone() -> BoxError {
@@ -378,6 +588,26 @@ impl PostgresBranch {
     /// When the branch is already prepared, committed or rolled back.
     pub fn client(&self) -> Result<&Client, BoxError> {
         self.client.as_ref().ok_or_else(gone)
+    }
+
+    /// Replace the branch's buffered rows (written at [`stage`](Self::stage)).
+    pub fn load(&mut self, rows: PostgresRows) {
+        self.rows = rows;
+    }
+
+    /// Buffer `rows` (one value per column of `columns`) for `table`, to be
+    /// written inside this branch's transaction at [`stage`](Self::stage).
+    ///
+    /// # Errors
+    ///
+    /// As [`PostgresRows::insert`].
+    pub fn insert(
+        &mut self,
+        table: &str,
+        columns: &[&str],
+        rows: Vec<Vec<RowValue>>,
+    ) -> Result<(), ConfigError> {
+        self.rows.insert(table, columns, rows)
     }
 }
 
@@ -406,6 +636,7 @@ impl Branch for PostgresBranch {
                 &[&dat_txn, &dat_tx_time],
             )
             .await?;
+        apply_rows(client, &self.rows, dat_txn, dat_tx_time).await?;
         Ok(None)
     }
 
@@ -798,6 +1029,47 @@ mod tests {
         let err = PostgresStore::new("mysql://u:hunter2@h/db", "pg", None).unwrap_err();
         assert!(!err.to_string().contains("hunter2"));
         assert!(PostgresStore::new("postgresql://u:p@h:5432/db", "pg", Some("s")).is_ok());
+    }
+
+    #[test]
+    fn buffered_rows_are_validated() {
+        let mut rows = PostgresRows::new();
+        assert!(rows.is_empty());
+        // A reserved column is rejected.
+        assert!(
+            rows.insert("t", &["dat_txn"], vec![vec![RowValue::Null]])
+                .is_err()
+        );
+        // Bad table and column names are rejected.
+        assert!(
+            rows.insert("bad name", &["a"], vec![vec![RowValue::Int(1)]])
+                .is_err()
+        );
+        assert!(
+            rows.insert("t", &["a b"], vec![vec![RowValue::Int(1)]])
+                .is_err()
+        );
+        // Empty rows is a no-op that buffers nothing.
+        rows.insert("t", &["a"], vec![]).unwrap();
+        assert!(rows.is_empty());
+        // A first good batch, then a mismatched one for the same table.
+        rows.insert("t", &["a"], vec![vec![RowValue::Int(1)]])
+            .unwrap();
+        assert!(
+            rows.insert("t", &["b"], vec![vec![RowValue::Int(2)]])
+                .is_err()
+        );
+        // A row of the wrong length is rejected.
+        assert!(
+            rows.insert("t", &["a"], vec![vec![RowValue::Int(1), RowValue::Int(2)]])
+                .is_err()
+        );
+        // Lists and maps are not carried yet.
+        assert!(
+            rows.insert("u", &["a"], vec![vec![RowValue::List(vec![])]])
+                .is_err()
+        );
+        assert!(!rows.is_empty());
     }
 
     #[test]
