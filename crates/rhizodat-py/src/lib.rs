@@ -408,6 +408,7 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<drevo::DrevoStore>()?;
     m.add_class::<drevo::DrevoJournal>()?;
     m.add_class::<clickhouse::ClickHouseStore>()?;
+    m.add_class::<clickhouse::ClickHouseUnit>()?;
     m.add_function(wrap_pyfunction!(id_generator, m)?)?;
     m.add_function(wrap_pyfunction!(new_id, m)?)?;
     m.add_function(wrap_pyfunction!(is_uuid7, m)?)?;

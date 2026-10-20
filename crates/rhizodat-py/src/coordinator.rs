@@ -32,7 +32,7 @@ use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
 use rhizodat_core::timer::{NoWait, TokioTimer};
 use uuid::Uuid;
 
-use crate::clickhouse::ClickHouseStore;
+use crate::clickhouse::{ClickHouseStore, ClickHouseUnit};
 use crate::drevo::{DrevoJournal, DrevoStore};
 use crate::native::{ConnectError, NativeStore};
 use crate::postgres::{PostgresJournal, PostgresStore};
@@ -302,10 +302,12 @@ fn native_store(branch: &Bound<'_, PyAny>) -> Option<Arc<dyn NativeStore>> {
 }
 
 /// One branch of a Unit of Work, before the core runs: a native store (its
-/// branch is opened async at commit time) or a Python object with the branch
+/// branch is opened async at commit time), a native branch already built with
+/// its buffered writes (a `ClickHouseUnit`), or a Python object with the branch
 /// methods.
 enum Slot {
     Native(Arc<dyn NativeStore>),
+    Ready(Box<dyn Branch>),
     Py(Box<PyBranch>),
 }
 
@@ -358,7 +360,12 @@ impl Coordinator {
         let mut any_native = false;
         for obj in branches {
             let bound = obj.bind(py);
-            if let Some(store) = native_store(bound) {
+            if let Ok(unit) = bound.cast::<ClickHouseUnit>() {
+                let (branch, participant, name) = unit.borrow().take()?;
+                any_native = true;
+                participants = participants.with(name, participant);
+                slots.push(Slot::Ready(branch));
+            } else if let Some(store) = native_store(bound) {
                 any_native = true;
                 participants = participants.with(store.name(), store.participant());
                 slots.push(Slot::Native(store));
@@ -392,7 +399,9 @@ impl Coordinator {
                 .into_iter()
                 .map(|slot| match slot {
                     Slot::Py(branch) => branch as Box<dyn Branch>,
-                    Slot::Native(_) => unreachable!("no native slot without any_native"),
+                    Slot::Native(_) | Slot::Ready(_) => {
+                        unreachable!("no native slot without any_native")
+                    }
                 })
                 .collect();
             let coordinator =
@@ -428,6 +437,7 @@ impl Coordinator {
                 for slot in slots {
                     match slot {
                         Slot::Py(branch) => core_branches.push(branch),
+                        Slot::Ready(branch) => core_branches.push(branch),
                         Slot::Native(store) => {
                             let branch = store.open_branch().await.map_err(NativeError::Connect)?;
                             core_branches.push(branch);

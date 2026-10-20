@@ -13,11 +13,28 @@ point the tests at the compose ClickHouse.
 
 import uuid
 from collections.abc import Callable, Iterator
+from typing import Any
 
 import psycopg
 import pytest
 
 native = pytest.importorskip("rhizodat_native")
+
+
+def _ch_client(clickhouse_dsn: str) -> Any:
+    import clickhouse_connect
+
+    from rhizodat.core.dsn import parse_dsn
+
+    server = parse_dsn(clickhouse_dsn)
+    return clickhouse_connect.get_client(
+        host=server.host,
+        port=server.port,
+        username=server.user or "default",
+        password=server.password or "",
+        database=(server.path or "/").lstrip("/") or "default",
+        autogenerate_session_id=False,
+    )
 
 
 @pytest.fixture
@@ -111,3 +128,64 @@ def test_a_meta_transaction_needs_a_journal(
     pg.install()
     with pytest.raises(native.InvalidUnitOfWork):
         native.Coordinator().commit(native.new_id(), [ch, pg])
+
+
+# --- the Unit of Work's rows across the boundary ----------------------------------------
+
+
+def test_a_unit_writes_its_rows(clickhouse_dsn: str) -> None:
+    client = _ch_client(clickhouse_dsn)
+    client.command(
+        "CREATE TABLE events (id Int64, name String, dat_txn UUID, dat_tx_time Int64)"
+        " ENGINE = MergeTree ORDER BY id"
+    )
+    store = native.ClickHouseStore(clickhouse_dsn, "clickhouse")
+    store.install()
+    unit = store.unit()
+    unit.insert("events", ["id", "name"], [[1, "alice"], [2, "bob"]])
+    txn = native.new_id()
+    outcome = native.Coordinator().commit(txn, [unit])
+    assert outcome["status"] == "committed"
+    rows = client.query("SELECT id, name FROM events ORDER BY id").result_rows
+    assert rows == [(1, "alice"), (2, "bob")]
+
+
+def test_a_unit_and_postgres_write_together(
+    clickhouse_dsn: str, pg_dsn: str, make_schema: Callable[[], str]
+) -> None:
+    client = _ch_client(clickhouse_dsn)
+    client.command(
+        "CREATE TABLE sales (amount Int64, dat_txn UUID, dat_tx_time Int64)"
+        " ENGINE = MergeTree ORDER BY amount"
+    )
+    pg_schema, journal_schema = make_schema(), make_schema()
+    store = native.ClickHouseStore(clickhouse_dsn, "clickhouse")
+    store.install()
+    unit = store.unit()
+    unit.insert("sales", ["amount"], [[100], [250]])
+    pg = native.PostgresStore(pg_dsn, "pg", pg_schema)
+    pg.install()
+    journal = native.PostgresJournal(pg_dsn, journal_schema)
+    txn = native.new_id()
+    outcome = native.Coordinator(journal).commit(txn, [unit, pg])
+    assert outcome["status"] == "committed"
+    rows = client.query("SELECT amount FROM sales ORDER BY amount").result_rows
+    assert rows == [(100,), (250,)]
+    assert journal.get(txn)["state"] == "DONE"
+
+
+def test_a_spent_unit_cannot_be_committed_again(clickhouse_dsn: str) -> None:
+    client = _ch_client(clickhouse_dsn)
+    client.command(
+        "CREATE TABLE once (n Int64, dat_txn UUID, dat_tx_time Int64) ENGINE = MergeTree ORDER BY n"
+    )
+    store = native.ClickHouseStore(clickhouse_dsn, "clickhouse")
+    store.install()
+    unit = store.unit()
+    unit.insert("once", ["n"], [[1]])
+    native.Coordinator().commit(native.new_id(), [unit])
+    # The unit is spent: it cannot be committed again, nor can rows be added.
+    with pytest.raises(native.InvalidUnitOfWork):
+        native.Coordinator().commit(native.new_id(), [unit])
+    with pytest.raises(native.InvalidUnitOfWork):
+        unit.insert("once", ["n"], [[2]])
