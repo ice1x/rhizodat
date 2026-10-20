@@ -71,7 +71,14 @@ like the callback path) and needs the compose stores.
 `tests/core/test_native_postgres.py`, `tests/core/test_native_drevo.py` and
 `tests/core/test_native_clickhouse.py` drive it.
 
-A Unit of Work's own rows reach a ClickHouse store through
+A Unit of Work's own rows reach a ClickHouse or a PostgreSQL store through
 `store.unit()`: buffer rows with `unit.insert(table, columns, rows)` (the core's
 row format, so no Arrow is needed) and hand the unit to `commit` like a store, so
-a native ClickHouse commit writes real data. A unit is spent by its commit.
+a native commit writes real data. The target table carries the user columns plus
+`dat_txn` and `dat_tx_time`, which the commit stamps onto every row. A ClickHouse
+unit is one-phase (its rows travel in the journal, applied after the decision)
+and is spent by its commit; a PostgreSQL unit writes its rows inside the branch's
+two-phase transaction and may be reused across a retry. PostgreSQL rows carry
+scalars, decimals, bytes and temporal values (bound as `$n::text::<column type>`,
+so the server parses each per its own column); lists and maps are not carried
+yet.

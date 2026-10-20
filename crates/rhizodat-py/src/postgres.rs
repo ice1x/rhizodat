@@ -7,15 +7,18 @@
 //! Python callbacks on the path. Each native call runs on its own current-thread
 //! runtime ([`crate::runtime`]); a journal reconnects between calls as needed.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rhizodat_core::journal::Journal;
-use rhizodat_postgres::{PostgresJournal as CoreJournal, PostgresStore as CoreStore};
+use rhizodat_postgres::{
+    PostgresJournal as CoreJournal, PostgresRows as CoreRows, PostgresStore as CoreStore,
+};
 use uuid::Uuid;
 
-use crate::native::{NativeStore, Postgres};
+use crate::native::{NativeStore, Postgres, PostgresPending};
+use crate::rows::row_value;
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
 
 /// One PostgreSQL database as a rhizodat store, for a native Unit of Work.
@@ -54,6 +57,66 @@ impl PostgresStore {
             let runtime = runtime().map_err(op_err)?;
             runtime.block_on(store.install()).map_err(op_err)
         })
+    }
+
+    /// A Unit of Work's branch of this store, to buffer rows and then commit.
+    fn unit(&self) -> PostgresUnit {
+        PostgresUnit {
+            store: self.0.clone(),
+            rows: Mutex::new(CoreRows::new()),
+        }
+    }
+}
+
+/// One Unit of Work's buffered rows for a PostgreSQL store. Buffer with
+/// [`PostgresUnit::insert`], then hand it to `Coordinator.commit` like a store:
+/// its rows are written inside the branch's transaction, so they commit
+/// atomically with the meta-transaction through the two-phase protocol. The unit
+/// may be reused and keeps its rows across a retry of the commit.
+#[pyclass(module = "rhizodat_native")]
+pub struct PostgresUnit {
+    store: Arc<CoreStore>,
+    rows: Mutex<CoreRows>,
+}
+
+impl PostgresUnit {
+    /// A native store carrying a snapshot of the buffered rows, for the
+    /// coordinator; the unit itself is left intact.
+    pub(crate) fn pending(&self) -> Arc<dyn NativeStore> {
+        let rows = self
+            .rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Arc::new(PostgresPending {
+            store: self.store.clone(),
+            rows,
+        })
+    }
+}
+
+#[pymethods]
+impl PostgresUnit {
+    /// Buffer `rows` (one value per column of `columns`) for `table`.
+    // PyO3 extracts method arguments by value.
+    #[allow(clippy::needless_pass_by_value)]
+    fn insert(
+        &self,
+        py: Python<'_>,
+        table: &str,
+        columns: Vec<String>,
+        rows: Vec<Vec<Py<PyAny>>>,
+    ) -> PyResult<()> {
+        let rows: Vec<Vec<_>> = rows
+            .into_iter()
+            .map(|row| row.iter().map(|v| row_value(v.bind(py))).collect())
+            .collect::<PyResult<_>>()?;
+        let column_refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(table, &column_refs, rows)
+            .map_err(|e| InvalidUnitOfWork::new_err(e.to_string()))
     }
 }
 

@@ -217,6 +217,15 @@ Steps:
    a store, so a native ClickHouse commit writes real rows, not just the applied
    marker. A unit is spent by its commit. `tests/core/test_native_clickhouse.py`
    writes rows and reads them back, including a ClickHouse + PostgreSQL commit.
+   ✔ The same row path for PostgreSQL (`PostgresStore.unit()`): a unit's rows are
+   written inside the branch's own transaction at stage, so they commit atomically
+   with the meta-transaction through the two-phase protocol. The target table
+   carries the user columns plus `dat_txn`/`dat_tx_time`, stamped onto every row;
+   values are bound as `$n::text::<column type>`, so the server parses each per its
+   own column (scalars, decimals, bytes and temporal values; lists and maps not
+   yet). A PostgreSQL unit may be reused across a retry.
+   `tests/core/test_native_postgres.py` writes rows, reads them back, and replays a
+   commit without duplicating them, including a unit + second-store meta-transaction.
    Next: Iceberg behind this surface (Arrow for its batches) and the package's own
    `transactional` on the core, then full results across the boundary (Arrow) and
    the C ABI for Go.

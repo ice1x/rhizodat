@@ -35,7 +35,7 @@ use uuid::Uuid;
 use crate::clickhouse::{ClickHouseStore, ClickHouseUnit};
 use crate::drevo::{DrevoJournal, DrevoStore};
 use crate::native::{ConnectError, NativeStore};
-use crate::postgres::{PostgresJournal, PostgresStore};
+use crate::postgres::{PostgresJournal, PostgresStore, PostgresUnit};
 use crate::{AbortedError, Failure, InDoubtError, InvalidUnitOfWork, journal_record_dict, op_err};
 
 /// A Python branch callback raised; it is kept in the [`Failure`] cell.
@@ -365,6 +365,11 @@ impl Coordinator {
                 any_native = true;
                 participants = participants.with(name, participant);
                 slots.push(Slot::Ready(branch));
+            } else if let Ok(unit) = bound.cast::<PostgresUnit>() {
+                let store = unit.borrow().pending();
+                any_native = true;
+                participants = participants.with(store.name(), store.participant());
+                slots.push(Slot::Native(store));
             } else if let Some(store) = native_store(bound) {
                 any_native = true;
                 participants = participants.with(store.name(), store.participant());

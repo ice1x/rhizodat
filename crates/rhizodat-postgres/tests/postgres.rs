@@ -23,10 +23,12 @@ use rhizodat_core::gid::gid_for;
 use rhizodat_core::identity::IdGenerator;
 use rhizodat_core::journal::{BranchRecord, Journal, JournalError, State, encode_branches};
 use rhizodat_core::recovery::Recovery;
+use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
 use rhizodat_core::timer::TokioTimer;
 use rhizodat_postgres::{
-    HeuristicOutcome, Isolation, PostgresBranch, PostgresJournal, PostgresStore, is_retryable,
+    HeuristicOutcome, Isolation, PostgresBranch, PostgresJournal, PostgresRows, PostgresStore,
+    is_retryable,
 };
 use uuid::Uuid;
 
@@ -415,6 +417,108 @@ async fn one_phase_commit_and_rollback_of_an_open_branch() {
         ),
         (1, 1)
     );
+    db.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn buffered_rows_cross_the_boundary_and_commit_with_the_meta_transaction() {
+    let db = db!();
+    let store = db.store("orders").await;
+    store
+        .connect()
+        .await
+        .unwrap()
+        .batch_execute(
+            "CREATE TABLE items (\
+             id uuid, qty int, price numeric(10,2), note text, ok bool, raw bytea, \
+             when_ timestamptz, dat_txn uuid, dat_tx_time bigint)",
+        )
+        .await
+        .unwrap();
+    let (txn, id) = (new_id(), new_id());
+    let gid = gid_for(txn, store.name());
+    let mut rows = PostgresRows::new();
+    rows.insert(
+        "items",
+        &["id", "qty", "price", "note", "ok", "raw", "when_"],
+        vec![
+            vec![
+                RowValue::Uuid(id),
+                RowValue::Int(3),
+                RowValue::Decimal("12.34".into()),
+                RowValue::Str("hi".into()),
+                RowValue::Bool(true),
+                RowValue::Bytes(vec![0xff, 0x00, 0x6f]),
+                RowValue::DateTime("2026-10-20T09:30:00+00:00".into()),
+            ],
+            vec![
+                RowValue::Null,
+                RowValue::Null,
+                RowValue::Null,
+                RowValue::Null,
+                RowValue::Null,
+                RowValue::Null,
+                RowValue::Null,
+            ],
+        ],
+    )
+    .unwrap();
+    let mut branch = store.branch().await.unwrap();
+    branch.load(rows);
+    assert_eq!(branch.stage(txn, 42).await.unwrap(), None);
+    branch.prepare(&gid).await.unwrap();
+    assert_eq!(
+        db.count("orders", "items").await,
+        0,
+        "prepared is invisible"
+    );
+
+    let participant = store.participant();
+    let record = BranchRecord::new(store.name(), &gid, true);
+    participant.finish(&record, txn, 42).await.unwrap();
+    assert_eq!(db.count("orders", "items").await, 2);
+    let row = db
+        .admin
+        .query_one(
+            &format!(
+                "SELECT qty, price::text, note, ok, raw, dat_txn, dat_tx_time \
+                 FROM {}_orders.items WHERE id = $1",
+                db.schema
+            ),
+            &[&id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i32>(0), 3);
+    assert_eq!(row.get::<_, String>(1), "12.34");
+    assert_eq!(row.get::<_, String>(2), "hi");
+    assert!(row.get::<_, bool>(3));
+    assert_eq!(row.get::<_, Vec<u8>>(4), vec![0xff, 0x00, 0x6f]);
+    assert_eq!(row.get::<_, Uuid>(5), txn);
+    assert_eq!(row.get::<_, i64>(6), 42);
+    assert_eq!(db.ours_prepared().await, Vec::<String>::new());
+    db.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_for_a_table_without_the_reserved_columns_fail_at_stage() {
+    let db = db!();
+    let store = db.store("orders").await;
+    store
+        .connect()
+        .await
+        .unwrap()
+        .batch_execute("CREATE TABLE plain (a int)")
+        .await
+        .unwrap();
+    let mut branch = store.branch().await.unwrap();
+    branch
+        .insert("plain", &["a"], vec![vec![RowValue::Int(1)]])
+        .unwrap();
+    let err = branch.stage(new_id(), 1).await.unwrap_err();
+    assert!(err.to_string().contains("dat_txn"), "{err}");
+    assert!(!branch.is_retryable(err.as_ref()), "{err}");
+    branch.rollback().await.unwrap();
     db.drop().await;
 }
 
