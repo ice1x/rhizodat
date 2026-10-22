@@ -71,14 +71,21 @@ like the callback path) and needs the compose stores.
 `tests/core/test_native_postgres.py`, `tests/core/test_native_drevo.py` and
 `tests/core/test_native_clickhouse.py` drive it.
 
-A Unit of Work's own rows reach a ClickHouse or a PostgreSQL store through
-`store.unit()`: buffer rows with `unit.insert(table, columns, rows)` (the core's
-row format, so no Arrow is needed) and hand the unit to `commit` like a store, so
-a native commit writes real data. The target table carries the user columns plus
-`dat_txn` and `dat_tx_time`, which the commit stamps onto every row. A ClickHouse
-unit is one-phase (its rows travel in the journal, applied after the decision)
-and is spent by its commit; a PostgreSQL unit writes its rows inside the branch's
+A Unit of Work's own data reaches a store through `store.unit()`. For a
+ClickHouse or a PostgreSQL store it is tabular — buffer rows with
+`unit.insert(table, columns, rows)` (the core's row format, so no Arrow is
+needed); the target table carries the user columns plus `dat_txn` and
+`dat_tx_time`, which the commit stamps onto every row. A ClickHouse unit is
+one-phase (its rows travel in the journal, applied after the decision) and is
+spent by its commit; a PostgreSQL unit writes its rows inside the branch's
 two-phase transaction and may be reused across a retry. PostgreSQL rows carry
 scalars, decimals, bytes and temporal values (bound as `$n::text::<column type>`,
 so the server parses each per its own column); lists and maps are not carried
 yet.
+
+A drevo store is a graph, so its unit buffers parameterized Cypher instead:
+`unit.run(cypher, params)`. The statements run inside the branch's two-phase
+transaction, so they commit atomically with the meta-transaction; each gets
+`dat_txn` and `dat_tx_time` parameters injected, so a statement may stamp its
+nodes with `$dat_txn` (those names are reserved). A drevo unit is reusable.
+Hand any unit to `commit` like a store.

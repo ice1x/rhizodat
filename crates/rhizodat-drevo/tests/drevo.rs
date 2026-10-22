@@ -219,6 +219,7 @@ on_both!(
     prepared_branch_is_committed_by_the_participant_idempotently,
     aborted_gid_is_gone_and_finishing_it_is_a_heuristic_outcome,
     one_phase_commit_and_rollback_of_an_open_branch,
+    a_units_buffered_writes_commit_with_the_meta_transaction,
     the_prepared_fence_rejects_other_writers_with_a_retryable_error,
     a_bug_and_its_graph_link_commit_together,
     a_crash_after_the_graph_prepared_is_presumed_aborted_elsewhere,
@@ -396,6 +397,42 @@ async fn one_phase_commit_and_rollback_of_an_open_branch(target: Target) {
     let mut dropped = g.branch_with_task("dropped").await;
     dropped.rollback().await.unwrap();
     assert_eq!(g.count(&g.tag).await, 1);
+    g.drop().await;
+}
+
+async fn a_units_buffered_writes_commit_with_the_meta_transaction(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
+    let txn = g.txn();
+    let mut branch = g.store.branch().await.unwrap();
+    // Two buffered statements; each stamps its node with the injected $dat_txn.
+    let create = format!("CREATE (:{} {{title: $title, dat_txn: $dat_txn}})", g.tag);
+    branch
+        .enqueue(&create, params![("title", "first")])
+        .unwrap();
+    branch
+        .enqueue(&create, params![("title", "second")])
+        .unwrap();
+    branch.stage(txn, 7).await.unwrap();
+    assert_eq!(
+        g.count(&g.tag).await,
+        0,
+        "staged is invisible before commit"
+    );
+    branch.commit_one_phase().await.unwrap();
+
+    assert_eq!(g.count(&g.tag).await, 2);
+    // Both nodes carry the meta-transaction's stamp.
+    let stamped = g
+        .store
+        .read(
+            &format!("MATCH (x:{} {{dat_txn: $t}}) RETURN count(x) AS n", g.tag),
+            params![("t", txn.to_string())],
+        )
+        .await
+        .unwrap();
+    assert_eq!(stamped[0].int("n").unwrap(), 2);
     g.drop().await;
 }
 

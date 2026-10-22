@@ -75,6 +75,11 @@ mod embedded;
 const MARKER: &str = "CREATE (:DatApplied {dat_txn: $dat_txn, dat_tx_time: $dat_tx_time})";
 const IS_APPLIED: &str = "MATCH (m:DatApplied {dat_txn: $dat_txn}) RETURN count(m) AS n";
 
+/// Parameters rhizodat injects into every staged statement: the meta-transaction
+/// and its time (so a buffered write may reference `$dat_txn` / `$dat_tx_time`).
+/// A buffered write must not supply them itself.
+const RESERVED: [&str; 2] = ["dat_txn", "dat_tx_time"];
+
 // --- values ------------------------------------------------------------------------------
 
 /// A Cypher parameter or result value.
@@ -338,6 +343,48 @@ fn open_backend(dsn: &str) -> Result<Arc<dyn Backend>, ConfigError> {
 
 // --- store, branch, participant ------------------------------------------------------------
 
+/// A Unit of Work's own graph writes for a drevo store, buffered client-side and
+/// run inside the branch's transaction at [`DrevoBranch::stage`] (so they commit
+/// atomically with the meta-transaction through the two-phase protocol).
+///
+/// Each statement is parameterized Cypher; rhizodat injects `dat_txn` and
+/// `dat_tx_time` parameters into every one at stage, so a statement may stamp its
+/// nodes with `$dat_txn` for provenance. Those names are reserved.
+#[derive(Clone, Default)]
+pub struct DrevoWrites {
+    statements: Vec<(String, Params)>,
+}
+
+impl DrevoWrites {
+    /// An empty set of writes.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether no statement has been buffered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.statements.is_empty()
+    }
+
+    /// Buffer a parameterized Cypher statement to run at stage.
+    ///
+    /// # Errors
+    ///
+    /// A [`ConfigError`] when the statement supplies a reserved parameter name
+    /// (`dat_txn`, `dat_tx_time`), which rhizodat sets itself.
+    pub fn push(&mut self, cypher: &str, params: Params) -> Result<(), ConfigError> {
+        if let Some((name, _)) = params.iter().find(|(k, _)| RESERVED.contains(&k.as_str())) {
+            return Err(ConfigError(format!(
+                "{name} is set by rhizodat; leave it out of the parameters"
+            )));
+        }
+        self.statements.push((cypher.to_owned(), params));
+        Ok(())
+    }
+}
+
 /// One drevo graph as a rhizodat store.
 #[derive(Clone)]
 pub struct DrevoStore {
@@ -419,6 +466,7 @@ impl DrevoStore {
             backend: self.backend.clone(),
             tx: Some(tx),
             gid: None,
+            writes: DrevoWrites::new(),
         })
     }
 
@@ -435,6 +483,7 @@ pub struct DrevoBranch {
     backend: Arc<dyn Backend>,
     tx: Option<Box<dyn Tx>>,
     gid: Option<String>,
+    writes: DrevoWrites,
 }
 
 fn gone() -> BoxError {
@@ -449,6 +498,20 @@ impl DrevoBranch {
     /// The engine's error, or when the branch is no longer open.
     pub async fn run(&mut self, cypher: &str, params: Params) -> Result<Vec<Row>, BoxError> {
         self.tx.as_mut().ok_or_else(gone)?.run(cypher, params).await
+    }
+
+    /// Replace the branch's buffered writes (run at [`stage`](Branch::stage)).
+    pub fn load(&mut self, writes: DrevoWrites) {
+        self.writes = writes;
+    }
+
+    /// Buffer a parameterized Cypher statement to run at [`stage`](Branch::stage).
+    ///
+    /// # Errors
+    ///
+    /// As [`DrevoWrites::push`].
+    pub fn enqueue(&mut self, cypher: &str, params: Params) -> Result<(), ConfigError> {
+        self.writes.push(cypher, params)
     }
 }
 
@@ -467,14 +530,20 @@ impl Branch for DrevoBranch {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<Option<Vec<u8>>, BoxError> {
-        self.run(
-            MARKER,
+        let stamp = || -> Params {
             params![
                 ("dat_txn", dat_txn.to_string()),
                 ("dat_tx_time", dat_tx_time)
-            ],
-        )
-        .await?;
+            ]
+        };
+        self.run(MARKER, stamp()).await?;
+        // The Unit of Work's own writes, inside this transaction, each with the
+        // meta-transaction's parameters injected (so they may stamp their nodes).
+        let statements = std::mem::take(&mut self.writes).statements;
+        for (cypher, mut params) in statements {
+            params.extend(stamp());
+            self.run(&cypher, params).await?;
+        }
         Ok(None)
     }
 
@@ -843,6 +912,27 @@ mod tests {
         assert!(graph_location("postgresql://h/d").is_err());
         let err = graph_location("mysql://u:hunter2@h/d").unwrap_err();
         assert!(!err.to_string().contains("hunter2"));
+    }
+
+    #[test]
+    fn buffered_writes_reject_reserved_parameters() {
+        let mut writes = DrevoWrites::new();
+        assert!(writes.is_empty());
+        writes
+            .push("CREATE (:Note {id: $id})", params![("id", "n1")])
+            .unwrap();
+        assert!(!writes.is_empty());
+        // The meta-transaction parameters are rhizodat's to set.
+        assert!(
+            writes
+                .push("CREATE (:X {t: $dat_txn})", params![("dat_txn", "x")])
+                .is_err()
+        );
+        assert!(
+            writes
+                .push("CREATE (:X)", params![("dat_tx_time", 1_i64)])
+                .is_err()
+        );
     }
 
     #[test]

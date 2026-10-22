@@ -409,6 +409,7 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<postgres::PostgresUnit>()?;
     m.add_class::<drevo::DrevoStore>()?;
     m.add_class::<drevo::DrevoJournal>()?;
+    m.add_class::<drevo::DrevoUnit>()?;
     m.add_class::<clickhouse::ClickHouseStore>()?;
     m.add_class::<clickhouse::ClickHouseUnit>()?;
     m.add_function(wrap_pyfunction!(id_generator, m)?)?;
