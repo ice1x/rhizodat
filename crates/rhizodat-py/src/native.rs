@@ -130,6 +130,40 @@ impl NativeStore for Drevo {
     }
 }
 
+/// The drevo adapter as a native store that also carries a Unit of Work's own
+/// graph writes: `open_branch` opens the transaction and loads the buffered
+/// statements, so they run at stage inside the two-phase commit. The writes are
+/// cloned on open, so a retry of the whole commit opens a fresh branch with the
+/// same statements.
+pub(crate) struct DrevoPending {
+    pub store: Arc<rhizodat_drevo::DrevoStore>,
+    pub writes: rhizodat_drevo::DrevoWrites,
+}
+
+#[async_trait]
+impl NativeStore for DrevoPending {
+    fn name(&self) -> String {
+        self.store.name().to_owned()
+    }
+
+    fn participant(&self) -> Arc<dyn Participant> {
+        self.store.participant()
+    }
+
+    async fn open_branch(&self) -> Result<Box<dyn Branch>, ConnectError> {
+        match self.store.branch().await {
+            Ok(mut branch) => {
+                branch.load(self.writes.clone());
+                Ok(Box::new(branch))
+            }
+            Err(error) => Err(ConnectError {
+                retryable: self.store.is_retryable(error_ref(&error)),
+                error,
+            }),
+        }
+    }
+}
+
 /// Borrow a `BoxError` as a `&dyn Error`, for a store's `is_retryable`.
 fn error_ref(error: &BoxError) -> &(dyn Error + 'static) {
     &**error

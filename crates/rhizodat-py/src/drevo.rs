@@ -8,16 +8,73 @@
 //! the path. This module uses Bolt (`drevo+bolt://`); embedded graphs would need
 //! the adapter crate's `embedded` feature.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use rhizodat_core::journal::Journal;
-use rhizodat_drevo::{DrevoJournal as CoreJournal, DrevoStore as CoreStore};
+use rhizodat_drevo::{
+    DrevoJournal as CoreJournal, DrevoStore as CoreStore, DrevoWrites, Params, Value,
+};
 use uuid::Uuid;
 
-use crate::native::{Drevo, NativeStore};
+use crate::native::{Drevo, DrevoPending, NativeStore};
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
+
+/// One Python value as a drevo Cypher [`Value`]. drevo carries scalars and lists;
+/// a UUID travels as its string. Bytes and dicts (maps) are not Cypher values.
+///
+/// # Errors
+///
+/// [`InvalidUnitOfWork`] for an integer out of 64-bit range or an unsupported
+/// type.
+fn cypher_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    if obj.is_none() {
+        return Ok(Value::Null);
+    }
+    if let Ok(flag) = obj.cast::<PyBool>() {
+        return Ok(Value::Bool(flag.is_true()));
+    }
+    if obj.is_instance_of::<PyInt>() {
+        return Ok(Value::Int(obj.extract::<i64>().map_err(|_| {
+            InvalidUnitOfWork::new_err("integer out of range for a 64-bit value")
+        })?));
+    }
+    if obj.is_instance_of::<PyFloat>() {
+        return Ok(Value::Float(obj.extract::<f64>()?));
+    }
+    if let Ok(text) = obj.cast::<PyString>() {
+        return Ok(Value::Str(text.to_cow()?.into_owned()));
+    }
+    if let Ok(uuid) = obj.extract::<Uuid>() {
+        return Ok(Value::Str(uuid.hyphenated().to_string()));
+    }
+    if let Ok(list) = obj.cast::<PyList>() {
+        return Ok(Value::List(
+            list.iter()
+                .map(|v| cypher_value(&v))
+                .collect::<PyResult<_>>()?,
+        ));
+    }
+    Err(InvalidUnitOfWork::new_err(format!(
+        "unsupported value type for a Cypher parameter: {}",
+        obj.get_type().name()?
+    )))
+}
+
+/// A Python mapping of parameter names to values as drevo [`Params`].
+fn cypher_params(params: &Bound<'_, PyDict>) -> PyResult<Params> {
+    let mut out: Params = Vec::with_capacity(params.len());
+    for (key, value) in params {
+        let name = key
+            .cast::<PyString>()
+            .map_err(|_| InvalidUnitOfWork::new_err("a parameter name must be a string"))?
+            .to_cow()?
+            .into_owned();
+        out.push((name, cypher_value(&value)?));
+    }
+    Ok(out)
+}
 
 /// One drevo graph as a rhizodat store, for a native Unit of Work.
 #[pyclass(module = "rhizodat_native")]
@@ -44,6 +101,56 @@ impl DrevoStore {
     #[getter]
     fn name(&self) -> &str {
         self.0.name()
+    }
+
+    /// A Unit of Work's branch of this store, to buffer Cypher writes and commit.
+    fn unit(&self) -> DrevoUnit {
+        DrevoUnit {
+            store: self.0.clone(),
+            writes: Mutex::new(DrevoWrites::new()),
+        }
+    }
+}
+
+/// One Unit of Work's buffered graph writes for a drevo store. Buffer with
+/// [`DrevoUnit::run`], then hand it to `Coordinator.commit` like a store: the
+/// statements run inside the branch's transaction, so they commit atomically
+/// with the meta-transaction through the two-phase protocol. Each statement gets
+/// `dat_txn` and `dat_tx_time` parameters injected, so it may stamp its nodes
+/// with `$dat_txn`. The unit may be reused and keeps its writes across a retry.
+#[pyclass(module = "rhizodat_native")]
+pub struct DrevoUnit {
+    store: Arc<CoreStore>,
+    writes: Mutex<DrevoWrites>,
+}
+
+impl DrevoUnit {
+    /// A native store carrying a snapshot of the buffered writes, for the
+    /// coordinator; the unit itself is left intact.
+    pub(crate) fn pending(&self) -> Arc<dyn NativeStore> {
+        let writes = self
+            .writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Arc::new(DrevoPending {
+            store: self.store.clone(),
+            writes,
+        })
+    }
+}
+
+#[pymethods]
+impl DrevoUnit {
+    /// Buffer a parameterized Cypher statement to run at commit.
+    #[pyo3(signature = (cypher, params = None))]
+    fn run(&self, cypher: &str, params: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+        let params = params.map(cypher_params).transpose()?.unwrap_or_default();
+        self.writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(cypher, params)
+            .map_err(|e| InvalidUnitOfWork::new_err(e.to_string()))
     }
 }
 

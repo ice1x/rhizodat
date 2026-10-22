@@ -226,6 +226,15 @@ Steps:
    yet). A PostgreSQL unit may be reused across a retry.
    `tests/core/test_native_postgres.py` writes rows, reads them back, and replays a
    commit without duplicating them, including a unit + second-store meta-transaction.
+   ✔ The data path for drevo (`DrevoStore.unit()`): a graph store buffers
+   parameterized Cypher instead of rows (`unit.run(cypher, params)`), run inside the
+   branch's two-phase transaction so the statements commit atomically with the
+   meta-transaction. rhizodat injects `dat_txn`/`dat_tx_time` parameters into every
+   statement, so a write may stamp its nodes with `$dat_txn` (those names are
+   reserved). A drevo unit is reusable across meta-transactions.
+   `tests/core/test_native_drevo.py` writes nodes, reads them back stamped, reuses a
+   unit across two meta-transactions, and commits a unit together with a PostgreSQL
+   store through a journal.
    Next: Iceberg behind this surface (Arrow for its batches) and the package's own
    `transactional` on the core, then full results across the boundary (Arrow) and
    the C ABI for Go.
