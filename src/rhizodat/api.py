@@ -7,8 +7,8 @@ import re
 import time
 from collections.abc import Callable, Mapping
 from datetime import timedelta
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate, Self, overload
+from types import ModuleType, TracebackType
+from typing import TYPE_CHECKING, Any, Concatenate, Self, cast, overload
 
 from rhizodat.core.clock import HybridLogicalClock
 from rhizodat.core.coordinator import (
@@ -22,6 +22,12 @@ from rhizodat.core.coordinator import (
 from rhizodat.core.errors import Capacity
 from rhizodat.core.identity import new_id
 from rhizodat.core.journal import Journal, open_journal
+from rhizodat.core.native_uow import (
+    NativeUnitOfWork,
+    journal_classes,
+    native_module,
+    store_classes,
+)
 from rhizodat.core.retry import Retry
 from rhizodat.core.unit_of_work import Store, UnitOfWork
 
@@ -89,6 +95,38 @@ def _check_applied_locations(stores: Mapping[str, "Store"]) -> None:
         seen[where] = name
 
 
+def _native_config(
+    stores: Mapping[str, Any],
+    journal: Any,  # noqa: ANN401 - a native journal, a Journal, a DSN string or None
+) -> "tuple[ModuleType, dict[str, Any], Any] | None":
+    """The native setup for ``stores`` and ``journal``, or ``None`` for the Python path.
+
+    A native facade is opt-in: every store is a ``rhizodat_native`` store object
+    and the journal is a native journal (or ``None``). A store object that the
+    package recognises as native forces the native path, so a partly native
+    configuration is an error rather than a silent fallback.
+    """
+    native = native_module()
+    if native is None:
+        return None
+    store_types = store_classes(native)
+    native_stores = {n: s for n, s in stores.items() if isinstance(s, store_types)}
+    if not native_stores:
+        return None
+    if len(native_stores) != len(stores):
+        other = sorted(set(stores) - set(native_stores))
+        raise ValueError(
+            f"native stores cannot mix with non-native ones (non-native: {other}); give every"
+            " store a rhizodat_native store object, or none"
+        )
+    if journal is not None and not isinstance(journal, journal_classes(native)):
+        raise ValueError(
+            "native stores need a native journal or none: pass a rhizodat_native"
+            " MemoryJournal, PostgresJournal or DrevoJournal (not a DSN string)"
+        )
+    return native, native_stores, journal
+
+
 class Rhizodat:
     def __init__(
         self,
@@ -115,6 +153,15 @@ class Rhizodat:
         for name in stores:
             if not _STORE_NAME.match(name):
                 raise ValueError(f"invalid store name {name!r}: letters, digits, '_', '.', '-'")
+        self.retry = retry or Retry()
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._rand = rand
+        native = _native_config(stores, journal)
+        if native is not None:
+            self._init_native(*native)
+            return
+        self._native = False
         self._stores: dict[str, Store] = {}
         try:
             for name, s in stores.items():
@@ -130,10 +177,6 @@ class Rhizodat:
             open_journal(journal) if isinstance(journal, str) else journal
         )
         self.clock = clock or HybridLogicalClock()
-        self.retry = retry or Retry()
-        self._sleep = sleep
-        self._monotonic = monotonic
-        self._rand = rand
         self._coordinator = Coordinator(
             journal=self.journal,
             participants={name: s.participant() for name, s in self._stores.items()},
@@ -150,6 +193,24 @@ class Rhizodat:
         touching one below it fails with ``StoreFull`` before anything is written.
         ``None``: not checked (a full store still fails when the store reports it)."""
 
+    def _init_native(
+        self,
+        native: ModuleType,
+        stores: "dict[str, Any]",
+        journal: Any,  # noqa: ANN401 - a native journal or None
+    ) -> None:
+        """Set up the opt-in native path: Units of Work commit through
+        ``rhizodat_native.Coordinator`` over the given native stores and journal."""
+        self._native = True
+        self._native_mod = native
+        self._stores = stores
+        self.journal = journal
+        # The native coordinator keeps its own clock; this one is unused on the
+        # native path but kept so ``self.clock`` stays a real clock.
+        self.clock = HybridLogicalClock()
+        self.min_free = None
+        self._coordinator = native.Coordinator(journal)
+
     @property
     def store_names(self) -> tuple[str, ...]:
         """The configured stores, in configuration order."""
@@ -162,8 +223,29 @@ class Rhizodat:
         except KeyError:
             raise KeyError(f"no store named {name!r}; configured: {sorted(self._stores)}") from None
 
+    def _native_uow_store(self, name: str) -> Any:  # noqa: ANN401 - a native store object
+        """A native store about to be used, with its service tables installed the
+        first time (idempotent; only on the write path, like the Python facade)."""
+        store = self.store(name)
+        if name not in self._installed:
+            install = getattr(store, "install", None)
+            if callable(install):
+                install()
+            self._installed.add(name)
+        return store
+
     def unit_of_work(self) -> UnitOfWork:
-        """A Unit of Work that runs once; use ``transactional`` for retries."""
+        """A Unit of Work that runs once; use ``transactional`` for retries.
+
+        On the native path this is a :class:`~rhizodat.core.native_uow.NativeUnitOfWork`,
+        duck-typed to the same surface (``store``, ``commit``, ``rollback`` …) but
+        buffering data on each store's native unit rather than a Python branch.
+        """
+        if self._native:
+            native = NativeUnitOfWork(
+                new_id(), self._native_uow_store, self._coordinator, self._native_mod
+            )
+            return cast("UnitOfWork", native)
         return UnitOfWork(
             new_id(), self._uow_store, self._coordinator, repositories=self._uow_repository
         )
@@ -180,8 +262,16 @@ class Rhizodat:
             self._installed.add(name)
         return store
 
+    def _require_python(self, feature: str) -> None:
+        if self._native:
+            raise NotImplementedError(
+                f"{feature} is not on the native core path yet; use the Python facade"
+                " (DSN strings or Python adapter stores) for it"
+            )
+
     def repository[T](self, entity_type: type[T]) -> "EntityRepository[T]":
         """CRUD for one entity type: committed reads, one Unit of Work per write."""
+        self._require_python("repositories")
         from rhizodat.core.repository import EntityRepository
 
         return EntityRepository(self, entity_type, self._kind(entity_type))
@@ -241,6 +331,7 @@ class Rhizodat:
         return decorate(fn) if fn is not None else decorate
 
     def recovery(self, **kwargs: Any) -> Recovery:  # noqa: ANN401 - Recovery settings
+        self._require_python("recovery")
         if self.journal is None:
             raise ValueError("recovery needs the journal: pass journal=<dsn>")
         return Recovery(
@@ -264,12 +355,14 @@ class Rhizodat:
         fails (earlier migrations stay applied; the next run repeats the failed one).
         ``dry_run`` only checks and reports what would run.
         """
+        self._require_python("migrations")
         from rhizodat.migrations.runner import migrate
 
         return migrate(self, source, to=to, dry_run=dry_run)
 
     def schema_versions(self, *, as_of: "datetime | None" = None) -> "list[AppliedMigration]":
         """The migrations applied (as known at ``as_of``, if given), by id."""
+        self._require_python("migrations")
         from rhizodat.migrations.runner import schema_versions
 
         return schema_versions(self, as_of=as_of)
@@ -287,9 +380,13 @@ class Rhizodat:
 
     def close(self) -> None:
         for s in self._stores.values():
-            s.close()
+            close = getattr(s, "close", None)
+            if callable(close):
+                close()
         if self.journal is not None:
-            self.journal.close()
+            close = getattr(self.journal, "close", None)
+            if callable(close):
+                close()
 
     def _run(
         self,

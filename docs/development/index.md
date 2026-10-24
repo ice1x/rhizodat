@@ -89,3 +89,30 @@ transaction, so they commit atomically with the meta-transaction; each gets
 `dat_txn` and `dat_tx_time` parameters injected, so a statement may stamp its
 nodes with `$dat_txn` (those names are reserved). A drevo unit is reusable.
 Hand any unit to `commit` like a store.
+
+The `rhizodat.Rhizodat` facade runs on this native core, opt-in: build it with
+native store objects and a native journal (or none) —
+
+```python
+import rhizodat_native as native
+from rhizodat import Rhizodat
+
+r = Rhizodat(
+    stores={"pg": native.PostgresStore(dsn, "pg", schema)},
+    journal=native.PostgresJournal(dsn, journal_schema),  # or None for one store
+)
+
+@r.transactional
+def write(uow):
+    uow.store("pg").insert("people", ["name"], [["ada"]])
+```
+
+and its Units of Work commit through `rhizodat_native.Coordinator` instead of
+the Python coordinator, with no Python callbacks on the path. A Unit of Work
+buffers its data on each store's native unit (`uow.store(name).insert(...)` for a
+tabular store, `uow.store(name).run(cypher, params)` for drevo), and
+`transactional`'s retry loop drives it unchanged. Every store must be a native
+store object and the journal a native journal or none (mixing native and Python
+stores, or a DSN-string journal, is refused). Repositories, parts, `execute` and
+migrations are not on the native path yet — use the Python facade (DSN strings or
+Python adapter stores) for those.

@@ -1,0 +1,166 @@
+"""Running a Unit of Work on the native core (``rhizodat_native``), opt-in.
+
+When ``Rhizodat`` is built with native store objects (``PostgresStore``,
+``DrevoStore``, ``ClickHouseStore`` from ``rhizodat_native``) and a native
+journal (or none), its Units of Work commit through ``rhizodat_native.Coordinator``
+instead of the Python coordinator: the whole protocol runs in Rust with no
+Python callbacks on the path. A Unit of Work buffers its data on each store's
+native unit — ``uow.store(name).insert(table, columns, rows)`` for a tabular
+store, ``uow.store(name).run(cypher, params)`` for drevo — and the commit writes
+it inside the meta-transaction.
+
+This is the first step of the facade on the native core (plan step 5):
+repositories, parts, ``execute`` and migrations are not on this path yet; use the
+Python facade for those.
+"""
+
+import functools
+import importlib
+import uuid
+from collections.abc import Callable
+from types import ModuleType, TracebackType
+from typing import Any, Self
+
+from rhizodat.core.coordinator import Aborted, Committed, CommittedPending, InDoubt
+from rhizodat.core.unit_of_work import UnitOfWorkClosed
+
+__all__ = [
+    "NativeUnitOfWork",
+    "journal_classes",
+    "native_module",
+    "store_classes",
+]
+
+Outcome = Committed | CommittedPending
+
+
+@functools.cache
+def native_module() -> ModuleType | None:
+    """``rhizodat_native`` for the facade's native path, imported on demand.
+
+    Unlike :func:`rhizodat.core.native.load`, this ignores ``RHIZODAT_NATIVE=0``:
+    that flag governs whether the package uses the module by default (``new_id``
+    and the like), not an explicit choice to build a native-backed facade.
+    """
+    try:
+        return importlib.import_module("rhizodat_native")
+    except ImportError:
+        return None
+
+
+def store_classes(native: ModuleType) -> tuple[type, ...]:
+    """The native store types a facade may be configured with."""
+    return (native.PostgresStore, native.DrevoStore, native.ClickHouseStore)
+
+
+def journal_classes(native: ModuleType) -> tuple[type, ...]:
+    """The native journal types a native facade accepts."""
+    return (native.MemoryJournal, native.PostgresJournal, native.DrevoJournal)
+
+
+class NativeUnitOfWork:
+    """One meta-transaction that commits through ``rhizodat_native.Coordinator``.
+
+    ``store(name)`` returns that store's native unit, on which the caller buffers
+    the Unit of Work's own data; ``commit`` hands every touched unit to the
+    coordinator. The interface the facade's ``transactional`` retry loop needs
+    (``commit``, ``rollback``, ``is_retryable``, ``full_store``) mirrors the
+    Python :class:`~rhizodat.core.unit_of_work.UnitOfWork`, so the loop drives
+    either kind unchanged.
+    """
+
+    def __init__(
+        self,
+        dat_txn: uuid.UUID,
+        stores: Callable[[str], Any],
+        coordinator: Any,  # noqa: ANN401 - rhizodat_native.Coordinator (an extension type)
+        native: ModuleType,
+    ) -> None:
+        self.dat_txn = dat_txn
+        self.outcome: Outcome | None = None
+        self._stores = stores
+        self._coordinator = coordinator
+        self._native = native
+        self._units: dict[str, Any] = {}
+        self._closed = False
+
+    @property
+    def stores_touched(self) -> tuple[str, ...]:
+        return tuple(self._units)
+
+    def store(self, name: str) -> Any:  # noqa: ANN401 - the store's native unit type
+        """This Unit of Work's native unit in store ``name``: buffer its data on it
+        (``insert`` for a tabular store, ``run`` for drevo)."""
+        self._check_open()
+        unit = self._units.get(name)
+        if unit is None:
+            unit = self._units[name] = self._stores(name).unit()
+        return unit
+
+    def repository(self, entity_type: type) -> Any:  # noqa: ANN401 - never returns (raises)
+        raise NotImplementedError(
+            "repositories are not on the native core path yet; buffer data on the"
+            " store's unit (uow.store(name).insert / .run) or use the Python facade"
+        )
+
+    def commit(self) -> Outcome:
+        self._check_open()
+        self._closed = True
+        if not self._units:
+            self.outcome = Committed(self.dat_txn, None)
+            return self.outcome
+        try:
+            result = self._coordinator.commit(self.dat_txn, list(self._units.values()))
+        except self._native.AbortedError as exc:
+            raise Aborted(
+                self.dat_txn, retryable=bool(getattr(exc, "retryable", False)), reason=str(exc)
+            ) from exc
+        except self._native.InDoubtError as exc:
+            raise InDoubt(self.dat_txn) from exc
+        self.outcome = _outcome(self.dat_txn, result)
+        return self.outcome
+
+    def rollback(self) -> None:
+        # Nothing is staged before commit: the units only hold buffered data, so
+        # dropping them is the whole rollback.
+        if self._closed:
+            return
+        self._closed = True
+        self._units.clear()
+
+    def is_retryable(self, error: BaseException) -> bool:
+        """Whether ``error`` is a transient native abort (what the retry loop re-runs on)."""
+        return isinstance(error, self._native.AbortedError) and bool(
+            getattr(error, "retryable", False)
+        )
+
+    def full_store(self, error: BaseException) -> str | None:
+        # The native path does not report a distinct full-store outcome yet.
+        return None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if exc_type is None:
+            self.commit()
+        elif isinstance(exc, Exception):
+            self.rollback()
+        # A BaseException (shutdown, crash) leaves everything as is for recovery.
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise UnitOfWorkClosed(f"unit of work {self.dat_txn} is already finished")
+
+
+def _outcome(dat_txn: uuid.UUID, result: Any) -> Outcome:  # noqa: ANN401 - coordinator result dict
+    """Map the coordinator's ``{"status", "dat_txn", "dat_tx_time"}`` to an ``Outcome``."""
+    dat_tx_time = result["dat_tx_time"]
+    if result["status"] == "committed":
+        return Committed(dat_txn, dat_tx_time)
+    return CommittedPending(dat_txn, dat_tx_time)

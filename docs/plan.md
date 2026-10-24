@@ -235,9 +235,18 @@ Steps:
    `tests/core/test_native_drevo.py` writes nodes, reads them back stamped, reuses a
    unit across two meta-transactions, and commits a unit together with a PostgreSQL
    store through a journal.
-   Next: Iceberg behind this surface (Arrow for its batches) and the package's own
-   `transactional` on the core, then full results across the boundary (Arrow) and
-   the C ABI for Go.
+   ✔ The package's own `transactional` on the core (opt-in): a `Rhizodat` facade
+   built with native store objects and a native journal (or none) runs its Units of
+   Work through `rhizodat_native.Coordinator` — the whole protocol in Rust, no Python
+   callbacks on the path. A Unit of Work buffers its data on each store's native unit
+   (`uow.store(name).insert(...)` / `.run(cypher, params)`) and `transactional`'s
+   retry loop drives the native Unit of Work unchanged. Repositories, parts,
+   `execute` and migrations are not on this path yet. `tests/core/test_native_facade.py`
+   writes through the facade to one PostgreSQL store, one ClickHouse store, and a
+   PostgreSQL + drevo meta-transaction through a journal.
+   Next: Iceberg behind this surface (Arrow for its batches), then the rest of the
+   facade on the core (repositories, parts, reads — Arrow for full results) and the C
+   ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
