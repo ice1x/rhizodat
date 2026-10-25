@@ -11,7 +11,9 @@ use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use rhizodat_core::journal::BranchRecord;
 use rhizodat_core::store::{BoxError, Branch, Participant};
+use uuid::Uuid;
 
 /// A store's branch could not be opened; nothing was staged or journaled.
 pub(crate) struct ConnectError {
@@ -167,4 +169,107 @@ impl NativeStore for DrevoPending {
 /// Borrow a `BoxError` as a `&dyn Error`, for a store's `is_retryable`.
 fn error_ref(error: &BoxError) -> &(dyn Error + 'static) {
     &**error
+}
+
+/// An Iceberg catalog connected on first use, inside the commit's runtime.
+///
+/// Connecting to a REST catalog is I/O, and its HTTP client is bound to the
+/// runtime that made it, so a native Iceberg store keeps only its DSN and each
+/// commit connects once on its own current-thread runtime, shared by the branch
+/// and the participant of that commit.
+#[derive(Clone)]
+pub(crate) struct IcebergLake {
+    pub dsn: Arc<str>,
+    pub name: Arc<str>,
+    pub store: Arc<tokio::sync::OnceCell<rhizodat_iceberg::IcebergStore>>,
+}
+
+impl IcebergLake {
+    /// A lake for one commit (not yet connected).
+    pub fn new(dsn: Arc<str>, name: Arc<str>) -> Self {
+        Self {
+            dsn,
+            name,
+            store: Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    async fn connect(&self) -> Result<&rhizodat_iceberg::IcebergStore, BoxError> {
+        self.store
+            .get_or_try_init(|| rhizodat_iceberg::IcebergStore::connect(&self.dsn, &self.name))
+            .await
+    }
+}
+
+/// The Iceberg adapter as a native store, with a Unit of Work's own record
+/// batches (none for a bare store): `open_branch` connects and loads the batches,
+/// so stage writes them as Parquet files and the participant appends them after
+/// the decision. The batches are cloned on open, so a retry of the whole commit
+/// opens a fresh branch with the same batches.
+pub(crate) struct IcebergPending {
+    pub lake: IcebergLake,
+    pub batches: rhizodat_iceberg::IcebergBatches,
+}
+
+#[async_trait]
+impl NativeStore for IcebergPending {
+    fn name(&self) -> String {
+        self.lake.name.to_string()
+    }
+
+    fn participant(&self) -> Arc<dyn Participant> {
+        Arc::new(IcebergLakeParticipant(self.lake.clone()))
+    }
+
+    async fn open_branch(&self) -> Result<Box<dyn Branch>, ConnectError> {
+        match self.lake.connect().await {
+            Ok(store) => {
+                let mut branch = store.branch();
+                branch.load(self.batches.clone());
+                Ok(Box::new(branch))
+            }
+            Err(error) => Err(ConnectError {
+                retryable: rhizodat_iceberg::is_retryable(error_ref(&error)),
+                error,
+            }),
+        }
+    }
+}
+
+/// The Iceberg participant over a lake that connects on first use.
+struct IcebergLakeParticipant(IcebergLake);
+
+#[async_trait]
+impl Participant for IcebergLakeParticipant {
+    async fn finish(
+        &self,
+        branch: &BranchRecord,
+        dat_txn: Uuid,
+        dat_tx_time: i64,
+    ) -> Result<(), BoxError> {
+        let store = self.0.connect().await?;
+        store
+            .participant()
+            .finish(branch, dat_txn, dat_tx_time)
+            .await
+    }
+
+    async fn is_applied(&self, branch: &BranchRecord, dat_txn: Uuid) -> Result<bool, BoxError> {
+        let store = self.0.connect().await?;
+        store.participant().is_applied(branch, dat_txn).await
+    }
+
+    async fn abort(&self, branch: &BranchRecord) -> Result<(), BoxError> {
+        let store = self.0.connect().await?;
+        store.participant().abort(branch).await
+    }
+
+    async fn prepared_gids(&self) -> Result<Vec<String>, BoxError> {
+        // One-phase: an Iceberg store never holds prepared transactions.
+        Ok(Vec::new())
+    }
+
+    fn is_retryable(&self, error: &(dyn Error + 'static)) -> bool {
+        rhizodat_iceberg::is_retryable(error)
+    }
 }

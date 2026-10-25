@@ -5,7 +5,8 @@
 //! Iceberg commits optimistically: a commit swaps the table's metadata pointer
 //! to a new snapshot. A branch therefore splits the work:
 //!
-//! - [`IcebergBranch::append`] buffers Arrow record batches per table;
+//! - [`IcebergBranch::append`] buffers Arrow record batches per table (or
+//!   [`IcebergBranch::load`] takes an [`IcebergBatches`] buffered elsewhere);
 //! - `stage` (before prepare, lock-free) conforms each table's batches to its
 //!   Arrow schema, adds `dat_txn` / `dat_tx_time`, and writes Parquet data
 //!   files under the table's location. The files are invisible (no snapshot
@@ -434,7 +435,7 @@ impl IcebergStore {
         IcebergBranch {
             store: self.name.clone(),
             lake: self.lake.clone(),
-            buffer: BTreeMap::new(),
+            batches: IcebergBatches::new(),
             staged: None,
             written: Vec::new(),
             commit_attempted: false,
@@ -448,24 +449,38 @@ impl IcebergStore {
     }
 }
 
-/// One Unit of Work's appends to Iceberg, committed only if the meta-transaction commits.
-pub struct IcebergBranch {
-    store: String,
-    lake: Arc<Lake>,
+/// A Unit of Work's record batches for Iceberg, per table, outside any branch:
+/// buffered once (for example by a Python Unit of Work) and loaded into a fresh
+/// branch with [`IcebergBranch::load`]. Cloning is cheap (a batch shares its
+/// buffers), so a retry of the whole commit loads the same batches again.
+#[derive(Clone, Debug, Default)]
+pub struct IcebergBatches {
     buffer: BTreeMap<String, Vec<RecordBatch>>,
-    staged: Option<(Uuid, i64, Vec<StagedTable>)>,
-    written: Vec<StagedTable>,
-    commit_attempted: bool,
 }
 
-impl IcebergBranch {
+impl IcebergBatches {
+    /// No batches.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether no rows have been buffered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
     /// Buffer `batch` to append to `table` (`namespace.table`). Columns are
-    /// matched by name; table columns the batch lacks are null.
+    /// matched by name; table columns the batch lacks are null. An empty batch
+    /// is dropped.
     ///
     /// # Errors
     ///
-    /// [`IcebergError`] for a reserved column (`dat_txn`, `dat_tx_time`).
+    /// [`IcebergError`] for a table name without a namespace, or a reserved
+    /// column (`dat_txn`, `dat_tx_time`).
     pub fn append(&mut self, table: &str, batch: RecordBatch) -> Result<(), IcebergError> {
+        ident(table).map_err(|e| IcebergError(e.to_string()))?;
         let schema = batch.schema();
         if let Some(reserved) = RESERVED
             .iter()
@@ -479,6 +494,33 @@ impl IcebergBranch {
             self.buffer.entry(table.to_owned()).or_default().push(batch);
         }
         Ok(())
+    }
+}
+
+/// One Unit of Work's appends to Iceberg, committed only if the meta-transaction commits.
+pub struct IcebergBranch {
+    store: String,
+    lake: Arc<Lake>,
+    batches: IcebergBatches,
+    staged: Option<(Uuid, i64, Vec<StagedTable>)>,
+    written: Vec<StagedTable>,
+    commit_attempted: bool,
+}
+
+impl IcebergBranch {
+    /// Buffer `batch` to append to `table` (`namespace.table`). Columns are
+    /// matched by name; table columns the batch lacks are null.
+    ///
+    /// # Errors
+    ///
+    /// As [`IcebergBatches::append`].
+    pub fn append(&mut self, table: &str, batch: RecordBatch) -> Result<(), IcebergError> {
+        self.batches.append(table, batch)
+    }
+
+    /// Replace the branch's buffered batches with `batches`, before stage.
+    pub fn load(&mut self, batches: IcebergBatches) {
+        self.batches = batches;
     }
 
     async fn write(
@@ -629,8 +671,8 @@ impl Branch for IcebergBranch {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<Option<Vec<u8>>, BoxError> {
-        let mut tables = Vec::with_capacity(self.buffer.len());
-        for (name, parts) in &self.buffer {
+        let mut tables = Vec::with_capacity(self.batches.buffer.len());
+        for (name, parts) in &self.batches.buffer {
             let staged = self.write(name, parts, dat_txn, dat_tx_time).await?;
             self.written.push(staged.clone());
             tables.push(staged);
@@ -656,7 +698,7 @@ impl Branch for IcebergBranch {
     }
 
     async fn rollback(&mut self) -> Result<(), BoxError> {
-        self.buffer.clear();
+        self.batches.buffer.clear();
         if self.written.is_empty() {
             return Ok(());
         }
@@ -779,6 +821,56 @@ mod tests {
         for bad in ["sales", "", "erp.", ".sales"] {
             assert!(ident(bad).is_err(), "{bad}");
         }
+    }
+
+    fn batch(columns: &[&str], rows: i64) -> RecordBatch {
+        let fields: Vec<arrow_schema::Field> = columns
+            .iter()
+            .map(|c| arrow_schema::Field::new(*c, DataType::Int64, true))
+            .collect();
+        let arrays: Vec<ArrayRef> = columns
+            .iter()
+            .map(|_| Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef)
+            .collect();
+        RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), arrays).unwrap()
+    }
+
+    #[test]
+    fn batches_buffer_per_table_and_drop_empty_ones() {
+        let mut batches = IcebergBatches::new();
+        assert!(batches.is_empty());
+        batches.append("erp.sales", batch(&["qty"], 0)).unwrap();
+        assert!(batches.is_empty(), "an empty batch is dropped");
+        batches.append("erp.sales", batch(&["qty"], 2)).unwrap();
+        batches.append("erp.sales", batch(&["qty"], 3)).unwrap();
+        batches.append("erp.stock", batch(&["qty"], 1)).unwrap();
+        assert!(!batches.is_empty());
+        let rows: Vec<(&str, usize)> = batches
+            .buffer
+            .iter()
+            .map(|(t, parts)| (t.as_str(), parts.iter().map(RecordBatch::num_rows).sum()))
+            .collect();
+        assert_eq!(rows, [("erp.sales", 5), ("erp.stock", 1)]);
+        let copy = batches.clone();
+        assert_eq!(
+            copy.buffer["erp.sales"].len(),
+            2,
+            "a clone keeps every batch"
+        );
+    }
+
+    #[test]
+    fn batches_refuse_reserved_columns_and_bare_table_names() {
+        let mut batches = IcebergBatches::new();
+        for reserved in RESERVED {
+            let err = batches
+                .append("erp.sales", batch(&["qty", reserved], 1))
+                .unwrap_err();
+            assert!(err.to_string().contains(reserved), "{err}");
+        }
+        let err = batches.append("sales", batch(&["qty"], 1)).unwrap_err();
+        assert!(err.to_string().contains("namespace.table"), "{err}");
+        assert!(batches.is_empty());
     }
 
     #[test]

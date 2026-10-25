@@ -59,17 +59,19 @@ A branch may also be a native store — `rhizodat_native.PostgresStore(dsn, name
 schema)` with `rhizodat_native.PostgresJournal(dsn, schema)`, or
 `rhizodat_native.DrevoStore(dsn, name)` over Bolt with
 `rhizodat_native.DrevoJournal(dsn, label)`, or
-`rhizodat_native.ClickHouseStore(dsn, name)` (one-phase, applied after the
-decision; no journal of its own) — whose Rust branch, participant and journal
-(`crates/rhizodat-postgres`, `crates/rhizodat-drevo`,
-`crates/rhizodat-clickhouse`) run the whole protocol against the real store with
+`rhizodat_native.ClickHouseStore(dsn, name)` or
+`rhizodat_native.IcebergStore(dsn, name)` over a REST catalog (both one-phase,
+applied after the decision; no journal of their own) — whose Rust branch,
+participant and journal (`crates/rhizodat-postgres`, `crates/rhizodat-drevo`,
+`crates/rhizodat-clickhouse`, `crates/rhizodat-iceberg`) run the whole protocol against the real store with
 no Python callbacks on the path. A Unit of Work may mix native stores (of
 different kinds) and Python branch objects; a meta-transaction over several
 native stores commits through one of the native journals. A commit with any
 native store runs on a current-thread tokio runtime (so it stays single-threaded,
 like the callback path) and needs the compose stores.
-`tests/core/test_native_postgres.py`, `tests/core/test_native_drevo.py` and
-`tests/core/test_native_clickhouse.py` drive it.
+`tests/core/test_native_postgres.py`, `tests/core/test_native_drevo.py`,
+`tests/core/test_native_clickhouse.py` and `tests/core/test_native_iceberg.py`
+drive it.
 
 A Unit of Work's own data reaches a store through `store.unit()`. For a
 ClickHouse or a PostgreSQL store it is tabular — buffer rows with
@@ -89,6 +91,16 @@ transaction, so they commit atomically with the meta-transaction; each gets
 `dat_txn` and `dat_tx_time` parameters injected, so a statement may stamp its
 nodes with `$dat_txn` (those names are reserved). A drevo unit is reusable.
 Hand any unit to `commit` like a store.
+
+An Iceberg store takes Arrow: `unit.append(table, data)` with any object that has
+`__arrow_c_stream__` (a pyarrow `Table` or `RecordBatchReader`, a polars frame)
+or the bytes of an Arrow IPC stream, for a `namespace.table`. Columns are matched
+by name and cast to the table's types at stage, which writes Parquet files; the
+participant appends them in one snapshot tagged with the meta-transaction after
+the decision. The data crosses as an IPC stream (pyarrow writes it: one copy) —
+reading the C stream directly would need `unsafe`, which the workspace forbids.
+The store connects to the catalog inside each commit, so building it does no
+I/O. An Iceberg unit is reusable; each commit appends its batches anew.
 
 The `rhizodat.Rhizodat` facade runs on this native core, opt-in: build it with
 native store objects and a native journal (or none) —
@@ -110,7 +122,8 @@ def write(uow):
 and its Units of Work commit through `rhizodat_native.Coordinator` instead of
 the Python coordinator, with no Python callbacks on the path. A Unit of Work
 buffers its data on each store's native unit (`uow.store(name).insert(...)` for a
-tabular store, `uow.store(name).run(cypher, params)` for drevo), and
+tabular store, `uow.store(name).run(cypher, params)` for drevo,
+`uow.store(name).append(table, arrow_data)` for Iceberg), and
 `transactional`'s retry loop drives it unchanged. Every store must be a native
 store object and the journal a native journal or none (mixing native and Python
 stores, or a DSN-string journal, is refused). Repositories, parts, `execute` and

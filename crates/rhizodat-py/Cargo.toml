@@ -16,17 +16,22 @@ test = false
 doctest = false
 
 [dependencies]
+# Iceberg data from Python arrives as an Arrow IPC stream (the Arrow of iceberg-rust).
+arrow-array = "58"
+arrow-ipc = { version = "58", default-features = false }
+arrow-schema = "58"
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 pyo3 = { version = "0.30", features = ["abi3-py312", "uuid"] }
 rhizodat-clickhouse = { path = "../rhizodat-clickhouse" }
 rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
 rhizodat-drevo = { path = "../rhizodat-drevo" }
+rhizodat-iceberg = { path = "../rhizodat-iceberg" }
 rhizodat-postgres = { path = "../rhizodat-postgres" }
 serde_json = "1"
 # A current-thread runtime drives the async adapters (and their connection tasks)
 # on the calling thread, so native commits keep the single-threaded property.
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 uuid = "1"
 
 [build-dependencies]

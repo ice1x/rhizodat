@@ -365,6 +365,60 @@ def test_two_native_stores_commit_through_a_journal(
         _cleanup_graph(bolt, label)
 
 
+def test_postgres_and_iceberg_commit_through_the_facade(
+    pg_dsn: str, iceberg_rest_dsn: str, make_schema: Callable[[], str], faker: Faker
+) -> None:
+    import pyarrow as pa
+    from pyiceberg.schema import Schema
+    from pyiceberg.types import LongType, NestedField, StringType, UUIDType
+
+    from rhizodat.adapters.iceberg import IcebergStore as PyIcebergStore
+
+    pg_schema, journal_schema = make_schema(), make_schema()
+    _create(pg_dsn, pg_schema, "CREATE TABLE orders (sku text, dat_txn uuid, dat_tx_time bigint)")
+    lake = PyIcebergStore(iceberg_rest_dsn, name="reader")
+    namespace = f"dat_native_{uuid.uuid4().hex[:12]}"
+    table = f"{namespace}.sales"
+    lake.catalog.create_namespace(namespace)
+    lake.catalog.create_table(
+        table,
+        Schema(
+            NestedField(1, "sku", StringType(), required=True),
+            NestedField(2, "qty", LongType()),
+            NestedField(3, "dat_txn", UUIDType()),
+            NestedField(4, "dat_tx_time", LongType()),
+        ),
+    )
+    skus = [faker.bothify("SKU-####") for _ in range(3)]
+    stores = {
+        "pg": native.PostgresStore(pg_dsn, "pg", pg_schema),
+        "lake": native.IcebergStore(iceberg_rest_dsn, "lake"),
+    }
+    try:
+        with Rhizodat(stores=stores, journal=native.PostgresJournal(pg_dsn, journal_schema)) as r:
+
+            @r.transactional
+            def sell(uow: object) -> None:
+                uow.store("pg").insert("orders", ["sku"], [[s] for s in skus])  # type: ignore[attr-defined]
+                uow.store("lake").append(  # type: ignore[attr-defined]
+                    table, pa.table({"sku": skus, "qty": [1, 2, 3]})
+                )
+
+            outcome = sell()
+
+        assert isinstance(outcome, Committed)
+        assert sorted(_rows(pg_dsn, pg_schema, "SELECT sku FROM orders")) == sorted(
+            (s,) for s in skus
+        )
+        sales = lake.execute(table).all()
+        assert sorted(r["sku"] for r in sales) == sorted(skus)
+        assert {r["dat_txn"] for r in sales} == {outcome.dat_txn}
+    finally:
+        lake.catalog.drop_table(table)
+        lake.catalog.drop_namespace(namespace)
+        lake.close()
+
+
 # drevo read-back helpers (kept local so the Docker-free tests do not import them)
 
 

@@ -64,6 +64,7 @@ create_exception!(
 mod clickhouse;
 mod coordinator;
 mod drevo;
+mod iceberg;
 mod native;
 mod postgres;
 mod rows;
@@ -412,6 +413,8 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<drevo::DrevoUnit>()?;
     m.add_class::<clickhouse::ClickHouseStore>()?;
     m.add_class::<clickhouse::ClickHouseUnit>()?;
+    m.add_class::<iceberg::IcebergStore>()?;
+    m.add_class::<iceberg::IcebergUnit>()?;
     m.add_function(wrap_pyfunction!(id_generator, m)?)?;
     m.add_function(wrap_pyfunction!(new_id, m)?)?;
     m.add_function(wrap_pyfunction!(is_uuid7, m)?)?;

@@ -34,6 +34,7 @@ use uuid::Uuid;
 
 use crate::clickhouse::{ClickHouseStore, ClickHouseUnit};
 use crate::drevo::{DrevoJournal, DrevoStore, DrevoUnit};
+use crate::iceberg::{IcebergStore, IcebergUnit};
 use crate::native::{ConnectError, NativeStore};
 use crate::postgres::{PostgresJournal, PostgresStore, PostgresUnit};
 use crate::{AbortedError, Failure, InDoubtError, InvalidUnitOfWork, journal_record_dict, op_err};
@@ -298,6 +299,9 @@ fn native_store(branch: &Bound<'_, PyAny>) -> Option<Arc<dyn NativeStore>> {
     if let Ok(store) = branch.cast::<ClickHouseStore>() {
         return Some(store.borrow().native());
     }
+    if let Ok(store) = branch.cast::<IcebergStore>() {
+        return Some(store.borrow().native());
+    }
     None
 }
 
@@ -371,6 +375,11 @@ impl Coordinator {
                 participants = participants.with(store.name(), store.participant());
                 slots.push(Slot::Native(store));
             } else if let Ok(unit) = bound.cast::<DrevoUnit>() {
+                let store = unit.borrow().pending();
+                any_native = true;
+                participants = participants.with(store.name(), store.participant());
+                slots.push(Slot::Native(store));
+            } else if let Ok(unit) = bound.cast::<IcebergUnit>() {
                 let store = unit.borrow().pending();
                 any_native = true;
                 participants = participants.with(store.name(), store.participant());
