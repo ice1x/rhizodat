@@ -3359,6 +3359,9 @@ dependencies = [
 name = "rhizodat-py"
 version = "0.0.0"
 dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
  "async-trait",
  "futures",
  "pyo3",
@@ -3366,6 +3369,7 @@ dependencies = [
  "rhizodat-clickhouse",
  "rhizodat-core",
  "rhizodat-drevo",
+ "rhizodat-iceberg",
  "rhizodat-postgres",
  "serde_json",
  "tokio",

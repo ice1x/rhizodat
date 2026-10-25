@@ -1,12 +1,14 @@
 """Running a Unit of Work on the native core (``rhizodat_native``), opt-in.
 
 When ``Rhizodat`` is built with native store objects (``PostgresStore``,
-``DrevoStore``, ``ClickHouseStore`` from ``rhizodat_native``) and a native
-journal (or none), its Units of Work commit through ``rhizodat_native.Coordinator``
+``DrevoStore``, ``ClickHouseStore``, ``IcebergStore`` from ``rhizodat_native``)
+and a native journal (or none), its Units of Work commit through
+``rhizodat_native.Coordinator``
 instead of the Python coordinator: the whole protocol runs in Rust with no
 Python callbacks on the path. A Unit of Work buffers its data on each store's
 native unit — ``uow.store(name).insert(table, columns, rows)`` for a tabular
-store, ``uow.store(name).run(cypher, params)`` for drevo — and the commit writes
+store, ``uow.store(name).run(cypher, params)`` for drevo,
+``uow.store(name).append(table, arrow_data)`` for Iceberg — and the commit writes
 it inside the meta-transaction.
 
 This is the first step of the facade on the native core (plan step 5):
@@ -50,7 +52,7 @@ def native_module() -> ModuleType | None:
 
 def store_classes(native: ModuleType) -> tuple[type, ...]:
     """The native store types a facade may be configured with."""
-    return (native.PostgresStore, native.DrevoStore, native.ClickHouseStore)
+    return (native.PostgresStore, native.DrevoStore, native.ClickHouseStore, native.IcebergStore)
 
 
 def journal_classes(native: ModuleType) -> tuple[type, ...]:
@@ -90,7 +92,7 @@ class NativeUnitOfWork:
 
     def store(self, name: str) -> Any:  # noqa: ANN401 - the store's native unit type
         """This Unit of Work's native unit in store ``name``: buffer its data on it
-        (``insert`` for a tabular store, ``run`` for drevo)."""
+        (``insert`` for a tabular store, ``run`` for drevo, ``append`` for Iceberg)."""
         self._check_open()
         unit = self._units.get(name)
         if unit is None:

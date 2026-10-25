@@ -244,9 +244,21 @@ Steps:
    `execute` and migrations are not on this path yet. `tests/core/test_native_facade.py`
    writes through the facade to one PostgreSQL store, one ClickHouse store, and a
    PostgreSQL + drevo meta-transaction through a journal.
-   Next: Iceberg behind this surface (Arrow for its batches), then the rest of the
-   facade on the core (repositories, parts, reads — Arrow for full results) and the C
-   ABI for Go.
+   ✔ Iceberg behind the same surface (`rhizodat_native.IcebergStore`, REST
+   catalog): the first Arrow across the boundary. `store.unit().append(table, data)`
+   takes any object with `__arrow_c_stream__` (or Arrow IPC stream bytes); stage
+   writes Parquet files and the participant appends them after the decision, so an
+   Iceberg unit and a PostgreSQL store commit together through the PostgreSQL
+   journal, and the facade takes the native Iceberg store like the others. The data
+   crosses as an Arrow IPC stream (one copy, safe Rust): importing the C stream
+   directly needs `unsafe` (forbidden in the workspace) or an Arrow binding for
+   pyo3 0.30 at iceberg-rust's Arrow 58, which does not exist yet. The store
+   connects inside each commit's runtime (the REST client is bound to the runtime
+   that made it), so it is built without I/O. `tests/core/test_native_iceberg.py`
+   writes, casts, reuses a unit, aborts on a missing table or unfit rows, and
+   rolls back PostgreSQL when Iceberg fails.
+   Next: the rest of the facade on the core (repositories, parts, reads — Arrow for
+   full results) and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
