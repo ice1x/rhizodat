@@ -25,6 +25,7 @@ from faker import Faker
 
 from rhizodat import Rhizodat
 from rhizodat.core.coordinator import Aborted, Committed, CommittedPending, InDoubt
+from rhizodat.core.mapping import MappingError
 from rhizodat.core.native_uow import NativeUnitOfWork
 from rhizodat.core.unit_of_work import UnitOfWorkClosed
 
@@ -139,9 +140,9 @@ def test_the_store_unit_is_created_once_and_reused() -> None:
     assert uow.store("s") is uow.store("s")
 
 
-def test_repositories_raise_on_the_native_unit_of_work() -> None:
+def test_a_native_unit_of_work_made_outside_the_facade_has_no_repositories() -> None:
     uow = _unit_of_work(_FakeCoordinator())
-    with pytest.raises(NotImplementedError, match="native"):
+    with pytest.raises(RuntimeError, match="no repositories"):
         uow.repository(int)
 
 
@@ -213,12 +214,12 @@ def test_native_and_python_stores_cannot_mix() -> None:
         Rhizodat(stores={"pg": store, "other": "postgresql:///x"})
 
 
-def test_repositories_are_not_on_the_native_path_yet() -> None:
+def test_the_native_facade_offers_repositories_of_entity_types() -> None:
     store = native.PostgresStore(_LITERAL_DSN, "pg", "public")
     with Rhizodat(stores={"pg": store}) as r:
         assert r.store_names == ("pg",)
         assert r.store("pg") is store
-        with pytest.raises(NotImplementedError, match="native"):
+        with pytest.raises(MappingError, match="not an @entity"):
             r.repository(int)
 
 

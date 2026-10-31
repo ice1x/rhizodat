@@ -60,6 +60,7 @@ __all__ = [
     "PostgresJournal",
     "PostgresParticipant",
     "PostgresStore",
+    "part_columns",
     "postgres_schema",
 ]
 
@@ -171,6 +172,12 @@ def _column_type(annotation: object) -> str:
         bytes: "bytea",
     }
     return natives.get(annotation, "jsonb")
+
+
+def part_columns(part: Part) -> list[tuple[str, str]]:
+    """``(field, PostgreSQL type)`` of each field of ``part``, in order: the columns
+    of its table after the service columns (shared with the native core)."""
+    return [(f, _column_type(part.types.get(f))) for f in part.fields]
 
 
 # Imports: portable column types as PostgreSQL types.

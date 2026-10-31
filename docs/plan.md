@@ -273,8 +273,13 @@ Steps:
    `PostgresParts` and applied in order inside the branch's transaction at stage,
    and committed reads (`read_part` as of a time, `part_history`, `part_versions`,
    `expired_parts`). The first piece of repositories on the core.
-   Next: parts across the boundary (`rhizodat_native`) and repositories on the
-   native facade for PostgreSQL, then parts in the other stores, reads with Arrow
+   ✔ Repositories on the native facade, parts in PostgreSQL: `rhizodat_native`
+   carries `PartSpec`, the store's committed reads and the unit's buffered part
+   writes (values both ways: `datetime`, `date`, `Decimal`, `UUID`, bytes, nested
+   lists and dicts); `rhizodat.core.native_parts` puts them behind `PartStore` /
+   `PartBranch`, so `r.repository(T)` and `uow.repository(T)` run the same
+   repository logic on the core, and either facade reads the other's versions.
+   Next: parts in the other stores (drevo, ClickHouse, Iceberg), reads with Arrow
    for full results, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
