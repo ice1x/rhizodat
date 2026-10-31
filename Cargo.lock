@@ -3327,6 +3327,7 @@ dependencies = [
  "arrow-array",
  "arrow-cast",
  "arrow-schema",
+ "arrow-select",
  "async-trait",
  "futures",
  "iceberg",
