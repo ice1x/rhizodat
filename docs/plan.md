@@ -279,8 +279,15 @@ Steps:
    lists and dicts); `rhizodat.core.native_parts` puts them behind `PartStore` /
    `PartBranch`, so `r.repository(T)` and `uow.repository(T)` run the same
    repository logic on the core, and either facade reads the other's versions.
-   Next: parts in the other stores (drevo, ClickHouse, Iceberg), reads with Arrow
-   for full results, and the C ABI for Go.
+   ✔ Entity parts in drevo on the core (`rhizodat_drevo::parts`): the reference's
+   layout (one node per version labelled after the part, `title` as `dat_title`,
+   fields native / UUID string / tagged JSON, reference edges to `DatEntity`
+   anchors removed with their last version), writes buffered in `DrevoParts` and
+   run in order inside the branch's transaction at stage, and committed reads in
+   auto-commit mode, on Bolt and embedded.
+   Next: drevo parts across the boundary (the native facade's repositories over
+   drevo), parts in ClickHouse and Iceberg, reads with Arrow for full results, and
+   the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

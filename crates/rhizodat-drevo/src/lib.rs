@@ -68,6 +68,8 @@ pub const ADAPTER: Adapter = Adapter {
     query_help: Some("Cypher with $name parameters"),
 };
 
+pub mod parts;
+
 mod bolt;
 #[cfg(feature = "embedded")]
 mod embedded;
@@ -467,6 +469,7 @@ impl DrevoStore {
             tx: Some(tx),
             gid: None,
             writes: DrevoWrites::new(),
+            parts: parts::DrevoParts::new(),
         })
     }
 
@@ -484,6 +487,7 @@ pub struct DrevoBranch {
     tx: Option<Box<dyn Tx>>,
     gid: Option<String>,
     writes: DrevoWrites,
+    parts: parts::DrevoParts,
 }
 
 fn gone() -> BoxError {
@@ -544,6 +548,7 @@ impl Branch for DrevoBranch {
             params.extend(stamp());
             self.run(&cypher, params).await?;
         }
+        self.apply_parts(dat_txn, dat_tx_time).await?;
         Ok(None)
     }
 
