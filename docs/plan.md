@@ -296,8 +296,14 @@ Steps:
    applies them like the reference (erase first, skip a payload whose marker is
    there). Before this, the Rust decoder dropped the flag, so a Rust participant
    finishing a Python payload would have inserted the ids instead of erasing.
-   Next: parts in ClickHouse and Iceberg, reads with Arrow for full results, and
-   the C ABI for Go.
+   ✔ Entity parts in ClickHouse on the core (`rhizodat_clickhouse::parts`): the
+   reference's part tables (`MergeTree` ordered by `(dat_id, dat_tx_time)`,
+   `Nullable` native columns or tagged JSON in `String`), versions buffered in
+   `ClickHouseParts` (the last write per entity wins) and staged into the journal
+   payload as row batches, erases first, applied after the decision; committed
+   reads as of a time.
+   Next: ClickHouse parts across the boundary, parts in Iceberg, reads with Arrow
+   for full results, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
