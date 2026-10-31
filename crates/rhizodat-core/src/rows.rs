@@ -234,6 +234,23 @@ fn decode(value: &Json) -> Result<RowValue, RowsError> {
     })
 }
 
+/// One value as tagged JSON text, like a payload's values (for JSON columns:
+/// the port of `rhizodat.core.rows.encode_value`).
+#[must_use]
+pub fn encode_value(value: &RowValue) -> String {
+    encode(value).to_string()
+}
+
+/// The inverse of [`encode_value`].
+///
+/// # Errors
+///
+/// [`RowsError`] for malformed JSON, an unknown tag or a plain object.
+pub fn decode_value(text: &str) -> Result<RowValue, RowsError> {
+    let json: Json = serde_json::from_str(text).map_err(invalid)?;
+    decode(&json)
+}
+
 /// The batches in a journal payload.
 ///
 /// # Errors
@@ -313,6 +330,26 @@ mod tests {
         );
         let back = decode_batches(&raw).unwrap();
         assert!(matches!(back[0].rows[0][0], RowValue::Float(f) if f.is_nan()));
+    }
+
+    #[test]
+    fn one_value_is_spelled_like_the_python_reference() {
+        // `json.dumps(rhizodat.core.rows.encode_value(...), separators=(",", ":"))`
+        let python = r#"{"$":"map","v":[["a",[1,2.5,null]],["id",{"$":"uuid","v":"00000000-0000-0000-0000-000000000001"}],["d",{"$":"decimal","v":"12.3400"}],["b",{"$":"bytes","v":"AP8="}],["day",{"$":"date","v":"2026-10-31"}]]}"#;
+        let value = RowValue::Map(vec![
+            (
+                "a".into(),
+                RowValue::List(vec![RowValue::Int(1), RowValue::Float(2.5), RowValue::Null]),
+            ),
+            ("id".into(), RowValue::Uuid(Uuid::from_u128(1))),
+            ("d".into(), RowValue::Decimal("12.3400".into())),
+            ("b".into(), RowValue::Bytes(vec![0, 255])),
+            ("day".into(), RowValue::Date("2026-10-31".into())),
+        ]);
+        assert_eq!(encode_value(&value), python);
+        assert_eq!(decode_value(python).unwrap(), value);
+        assert!(decode_value(r#"{"plain":"object"}"#).is_err());
+        assert!(decode_value("not json").is_err());
     }
 
     #[test]
