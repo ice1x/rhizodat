@@ -44,6 +44,10 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, NoTls, Row};
 use uuid::Uuid;
 
+pub mod parts;
+
+use parts::{PostgresParts, apply_parts};
+
 /// Columns rhizodat sets on every data row: the meta-transaction and its time.
 /// A Unit of Work's own rows must leave them out; `stage` appends them.
 const RESERVED: [&str; 2] = ["dat_txn", "dat_tx_time"];
@@ -557,6 +561,7 @@ impl PostgresStore {
             client: Some(client),
             gid: None,
             rows: PostgresRows::new(),
+            parts: PostgresParts::new(),
         })
     }
 
@@ -574,6 +579,7 @@ pub struct PostgresBranch {
     client: Option<Client>,
     gid: Option<String>,
     rows: PostgresRows,
+    parts: PostgresParts,
 }
 
 fn gone() -> BoxError {
@@ -593,6 +599,11 @@ impl PostgresBranch {
     /// Replace the branch's buffered rows (written at [`stage`](Self::stage)).
     pub fn load(&mut self, rows: PostgresRows) {
         self.rows = rows;
+    }
+
+    /// Replace the branch's buffered part writes (applied at [`stage`](Self::stage)).
+    pub fn load_parts(&mut self, parts: PostgresParts) {
+        self.parts = parts;
     }
 
     /// Buffer `rows` (one value per column of `columns`) for `table`, to be
@@ -637,6 +648,7 @@ impl Branch for PostgresBranch {
             )
             .await?;
         apply_rows(client, &self.rows, dat_txn, dat_tx_time).await?;
+        apply_parts(client, &self.parts, dat_txn, dat_tx_time).await?;
         Ok(None)
     }
 

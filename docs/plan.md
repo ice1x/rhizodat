@@ -267,8 +267,15 @@ Steps:
    before the decision (rolled back) and after it (rolled forward, idempotently)
    with a PostgreSQL branch left prepared, and sweeps an orphaned prepared gid
    through the facade.
-   Next: the rest of the facade on the core (repositories, parts, reads — Arrow for
-   full results) and the C ABI for Go.
+   ✔ Entity parts in PostgreSQL on the core (`rhizodat_postgres::parts`): the
+   reference's part tables (same DDL, service columns and tagged JSON for `jsonb`
+   fields, so either implementation reads the other's versions), writes buffered in
+   `PostgresParts` and applied in order inside the branch's transaction at stage,
+   and committed reads (`read_part` as of a time, `part_history`, `part_versions`,
+   `expired_parts`). The first piece of repositories on the core.
+   Next: parts across the boundary (`rhizodat_native`) and repositories on the
+   native facade for PostgreSQL, then parts in the other stores, reads with Arrow
+   for full results, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
