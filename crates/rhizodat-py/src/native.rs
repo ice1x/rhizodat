@@ -142,6 +142,7 @@ impl NativeStore for Drevo {
 pub(crate) struct DrevoPending {
     pub store: Arc<rhizodat_drevo::DrevoStore>,
     pub writes: rhizodat_drevo::DrevoWrites,
+    pub parts: rhizodat_drevo::parts::DrevoParts,
 }
 
 #[async_trait]
@@ -158,6 +159,7 @@ impl NativeStore for DrevoPending {
         match self.store.branch().await {
             Ok(mut branch) => {
                 branch.load(self.writes.clone());
+                branch.load_parts(self.parts.clone());
                 Ok(Box::new(branch))
             }
             Err(error) => Err(ConnectError {

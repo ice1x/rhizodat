@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rhizodat_core::journal::Journal;
-use rhizodat_core::rows::RowValue;
 use rhizodat_postgres::parts::{
     ColumnType, PartSpec as CoreSpec, PartVersion, PendingVersion, PostgresParts as CoreParts,
 };
@@ -22,7 +21,7 @@ use rhizodat_postgres::{
 use uuid::Uuid;
 
 use crate::native::{NativeStore, Postgres, PostgresPending};
-use crate::rows::{py_value, row_value};
+use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
 
 /// One PostgreSQL database as a rhizodat store, for a native Unit of Work.
@@ -196,19 +195,6 @@ impl PartSpec {
     }
 }
 
-/// The fields of `values` (in `spec`'s column order) as a dict.
-fn fields_dict<'py>(
-    py: Python<'py>,
-    spec: &CoreSpec,
-    values: &[RowValue],
-) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    for (field, value) in spec.fields().zip(values) {
-        dict.set_item(field, py_value(py, value)?)?;
-    }
-    Ok(dict)
-}
-
 /// A committed version as `{dat_txn, dat_tx_time, created, deleted, values}`.
 fn version_dict<'py>(
     py: Python<'py>,
@@ -220,7 +206,7 @@ fn version_dict<'py>(
     dict.set_item("dat_tx_time", version.dat_tx_time)?;
     dict.set_item("created", version.created)?;
     dict.set_item("deleted", version.deleted)?;
-    dict.set_item("values", fields_dict(py, spec, &version.values)?)?;
+    dict.set_item("values", fields_dict(py, spec.fields(), &version.values)?)?;
     Ok(dict)
 }
 
@@ -341,7 +327,7 @@ fn pending_dict<'py>(
     let dict = PyDict::new(py);
     dict.set_item("created", version.created)?;
     dict.set_item("deleted", version.deleted)?;
-    dict.set_item("values", fields_dict(py, spec, &version.values)?)?;
+    dict.set_item("values", fields_dict(py, spec.fields(), &version.values)?)?;
     Ok(dict)
 }
 

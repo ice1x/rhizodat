@@ -127,3 +127,16 @@ pub(crate) fn py_value<'py>(py: Python<'py>, value: &RowValue) -> PyResult<Bound
         }
     })
 }
+
+/// A part's field values (in field order) as a dict by field name.
+pub(crate) fn fields_dict<'py, 'a>(
+    py: Python<'py>,
+    fields: impl Iterator<Item = &'a str>,
+    values: &[RowValue],
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (field, value) in fields.zip(values) {
+        dict.set_item(field, py_value(py, value)?)?;
+    }
+    Ok(dict)
+}
