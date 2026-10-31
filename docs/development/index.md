@@ -126,6 +126,13 @@ tabular store, `uow.store(name).run(cypher, params)` for drevo,
 `uow.store(name).append(table, arrow_data)` for Iceberg), and
 `transactional`'s retry loop drives it unchanged. Every store must be a native
 store object and the journal a native journal or none (mixing native and Python
-stores, or a DSN-string journal, is refused). Repositories, parts, `execute` and
-migrations are not on the native path yet — use the Python facade (DSN strings or
+stores, or a DSN-string journal, is refused). `r.recovery(...)` runs the core's
+recovery worker (`rhizodat_native.Recovery(journal, stores)`) with the same
+settings and `RecoveryReport` as the Python one: stale undecided records are
+presumed aborted and rolled back, committed ones finished and marked `DONE`,
+prepared gids without a decision rolled back; a participant that still fails is
+reported (`unfinished`, then `stuck`) and retried by a later run.
+`tests/core/test_native_recovery.py` crashes a child process (`os._exit`)
+before and after the decision with PostgreSQL prepared, then recovers it.
+Repositories, parts, `execute` and migrations are not on the native path yet — use the Python facade (DSN strings or
 Python adapter stores) for those.

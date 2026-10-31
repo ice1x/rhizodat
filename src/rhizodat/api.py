@@ -23,6 +23,7 @@ from rhizodat.core.errors import Capacity
 from rhizodat.core.identity import new_id
 from rhizodat.core.journal import Journal, open_journal
 from rhizodat.core.native_uow import (
+    NativeRecovery,
     NativeUnitOfWork,
     journal_classes,
     native_module,
@@ -331,9 +332,16 @@ class Rhizodat:
         return decorate(fn) if fn is not None else decorate
 
     def recovery(self, **kwargs: Any) -> Recovery:  # noqa: ANN401 - Recovery settings
-        self._require_python("recovery")
         if self.journal is None:
             raise ValueError("recovery needs the journal: pass journal=<dsn>")
+        if self._native:
+            # Same settings and report as the Python Recovery, run by the core.
+            return cast(
+                "Recovery",
+                NativeRecovery(
+                    self._native_mod, self.journal, list(self._stores.values()), **kwargs
+                ),
+            )
         return Recovery(
             journal=self.journal,
             participants={name: s.participant() for name, s in self._stores.items()},

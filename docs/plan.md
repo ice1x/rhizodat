@@ -257,6 +257,16 @@ Steps:
    that made it), so it is built without I/O. `tests/core/test_native_iceberg.py`
    writes, casts, reuses a unit, aborts on a missing table or unfit rows, and
    rolls back PostgreSQL when Iceberg fails.
+   ✔ Recovery on the core (`rhizodat_native.Recovery(journal, stores)`): the core's
+   recovery worker over a native journal and the participants of native stores (or
+   Python objects with the participant methods), rebuilt for each run on its own
+   current-thread runtime; the native facade's `recovery()` returns the same
+   `RecoveryReport` as the Python one. A participant's failure is reported and
+   retried by a later run; a failing wall clock or journal fails the run.
+   `tests/core/test_native_recovery.py` kills a child coordinator (`os._exit`)
+   before the decision (rolled back) and after it (rolled forward, idempotently)
+   with a PostgreSQL branch left prepared, and sweeps an orphaned prepared gid
+   through the facade.
    Next: the rest of the facade on the core (repositories, parts, reads — Arrow for
    full results) and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
