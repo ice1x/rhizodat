@@ -327,7 +327,11 @@ async fn count(
         .await
 }
 
-/// Insert every batch and then the marker, skipping what is already there.
+/// Erase, insert every batch and then the marker, skipping what is already
+/// there (the port of the reference's `ClickHouseStore.apply`).
+///
+/// An erase batch names entities (`rows` are their `dat_id`s) whose versions
+/// older than this meta-transaction are deleted, before any insert.
 async fn apply(
     client: &Client,
     gid: &str,
@@ -335,7 +339,33 @@ async fn apply(
     dat_txn: Uuid,
     dat_tx_time: i64,
 ) -> Result<(), BoxError> {
+    if count(client, "dat_applied", dat_txn).await? > 0 {
+        return Ok(());
+    }
+    for batch in batches.iter().filter(|b| b.erase) {
+        let ids: Vec<Uuid> = batch
+            .rows
+            .iter()
+            .map(|row| match row.first() {
+                Some(RowValue::Uuid(id)) => Ok(*id),
+                other => Err(format!("an erase batch names {other:?}, not a dat_id")),
+            })
+            .collect::<Result<_, _>>()?;
+        client
+            .query(&format!(
+                "DELETE FROM {} WHERE dat_id IN ? AND dat_tx_time < ?",
+                quote(&batch.table)
+            ))
+            .bind(ids)
+            .bind(dat_tx_time)
+            .with_setting("lightweight_deletes_sync", "2")
+            .execute()
+            .await?;
+    }
     for (i, batch) in batches.iter().enumerate() {
+        if batch.erase {
+            continue;
+        }
         let present = count(client, &batch.table, dat_txn).await?;
         if present >= batch.rows.len() as u64 {
             continue;
@@ -504,6 +534,7 @@ impl Branch for ClickHouseBranch {
                 table: table.clone(),
                 columns: all,
                 rows,
+                erase: false,
             };
             json_each_row(&batch)?; // refuse what the server cannot take, before prepare
             batches.push(batch);
@@ -628,6 +659,7 @@ mod tests {
                 RowValue::Map(vec![("k".into(), RowValue::List(vec![RowValue::Int(1)]))]),
                 RowValue::Bytes(b"ok".to_vec()),
             ]],
+            erase: false,
         };
         assert_eq!(
             json_each_row(&batch).unwrap(),

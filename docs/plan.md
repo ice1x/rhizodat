@@ -290,6 +290,12 @@ Steps:
    so the native facade's repositories hold a type in drevo, or split it across
    PostgreSQL and drevo under a PostgreSQL journal; either facade reads the
    other's versions.
+   ✔ Erase batches in the core's row payload: `rhizodat_core::rows::Batch` carries
+   the reference's `erase` flag (its rows name entities whose older versions are
+   deleted), pinned by `conformance/rows.json`, and the Rust ClickHouse adapter
+   applies them like the reference (erase first, skip a payload whose marker is
+   there). Before this, the Rust decoder dropped the flag, so a Rust participant
+   finishing a Python payload would have inserted the ids instead of erasing.
    Next: parts in ClickHouse and Iceberg, reads with Arrow for full results, and
    the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance

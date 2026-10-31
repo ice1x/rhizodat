@@ -62,6 +62,9 @@ pub struct Batch {
     pub columns: Vec<String>,
     /// Rows, each with one value per column.
     pub rows: Vec<Vec<RowValue>>,
+    /// Not rows to insert but entities to erase: `rows` are their `dat_id`s
+    /// (spelled `"erase": true`, and left out of insert batches).
+    pub erase: bool,
 }
 
 /// A payload that is not a row payload, or rows that cannot become one.
@@ -135,7 +138,11 @@ pub fn encode_batches(batches: &[Batch]) -> Result<Vec<u8>, RowsError> {
             }
             rows.push(Json::Array(row.iter().map(encode).collect()));
         }
-        out.push(json!({"table": b.table, "columns": b.columns, "rows": rows}));
+        let mut batch = json!({"table": b.table, "columns": b.columns, "rows": rows});
+        if b.erase {
+            batch["erase"] = Json::Bool(true);
+        }
+        out.push(batch);
     }
     let doc = json!({"v": VERSION, "batches": out});
     serde_json::to_vec(&doc).map_err(|e| RowsError(e.to_string()))
@@ -291,10 +298,16 @@ pub fn decode_batches(raw: &[u8]) -> Result<Vec<Batch>, RowsError> {
                     values.iter().map(decode).collect::<Result<Vec<_>, _>>()
                 })
                 .collect::<Result<_, _>>()?;
+            let erase = match b.get("erase") {
+                None => false,
+                Some(Json::Bool(flag)) => *flag,
+                Some(other) => return Err(invalid(format!("erase is not a boolean: {other}"))),
+            };
             Ok(Batch {
                 table: text(b.get("table").unwrap_or(&Json::Null), "the table")?,
                 columns,
                 rows,
+                erase,
             })
         })
         .collect()
@@ -310,6 +323,7 @@ mod tests {
             table: "t".into(),
             columns: vec!["a".into()],
             rows: vec![vec![]],
+            erase: false,
         };
         let err = encode_batches(&[batch]).unwrap_err();
         assert!(err.to_string().contains("0 values for 1 columns"), "{err}");
@@ -321,6 +335,7 @@ mod tests {
             table: "t".into(),
             columns: vec!["x".into()],
             rows: vec![vec![RowValue::Float(f64::NAN)]],
+            erase: false,
         };
         let raw = encode_batches(&[batch]).unwrap();
         assert!(
@@ -330,6 +345,32 @@ mod tests {
         );
         let back = decode_batches(&raw).unwrap();
         assert!(matches!(back[0].rows[0][0], RowValue::Float(f) if f.is_nan()));
+    }
+
+    #[test]
+    fn an_erase_batch_round_trips_spelled_like_the_reference() {
+        let id = Uuid::from_u128(0xaa);
+        let erase = Batch {
+            table: "issue".into(),
+            columns: vec!["dat_id".into()],
+            rows: vec![vec![RowValue::Uuid(id)]],
+            erase: true,
+        };
+        let raw = String::from_utf8(encode_batches(std::slice::from_ref(&erase)).unwrap()).unwrap();
+        assert!(raw.contains(r#""erase":true"#), "{raw}");
+        assert_eq!(decode_batches(raw.as_bytes()).unwrap(), vec![erase.clone()]);
+        let plain = Batch {
+            erase: false,
+            ..erase
+        };
+        let raw = String::from_utf8(encode_batches(std::slice::from_ref(&plain)).unwrap()).unwrap();
+        assert!(
+            !raw.contains("erase"),
+            "an insert batch leaves the flag out: {raw}"
+        );
+        let bad =
+            r#"{"v":1,"batches":[{"table":"t","columns":["dat_id"],"rows":[],"erase":"yes"}]}"#;
+        assert!(decode_batches(bad.as_bytes()).is_err());
     }
 
     #[test]

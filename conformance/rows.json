@@ -1,5 +1,5 @@
 {
-  "description": "Row batches in the journal payload of a one-phase branch (ClickHouse): versioned JSON, values JSON cannot carry exactly are tagged {\"$\": tag, \"v\": value} (uuid, decimal as text, bytes base64, date / datetime ISO 8601, float only when not finite, map for every object as [[key, value]]). cases: payload decodes to batches (each value described as {type, value}: float as Python repr, bytes as hex, datetime as ISO 8601 with its offset or naive), and encoding those batches decodes back to the same values; byte-exact spelling is not required. errors: payloads every decoder rejects.",
+  "description": "Row batches in the journal payload of a one-phase branch (ClickHouse): versioned JSON, values JSON cannot carry exactly are tagged {\"$\": tag, \"v\": value} (uuid, decimal as text, bytes base64, date / datetime ISO 8601, float only when not finite, map for every object as [[key, value]]). a batch with \"erase\": true lists entities to erase (rows are their dat_id), and the flag is left out of insert batches. cases: payload decodes to batches (each value described as {type, value}: float as Python repr, bytes as hex, datetime as ISO 8601 with its offset or naive), and encoding those batches decodes back to the same values; byte-exact spelling is not required. errors: payloads every decoder rejects.",
   "cases": [
     {
       "name": "scalars",
@@ -298,6 +298,56 @@
             "z"
           ],
           "rows": []
+        }
+      ]
+    },
+    {
+      "name": "erase",
+      "payload": "{\"v\":1,\"batches\":[{\"table\":\"issue\",\"columns\":[\"dat_id\"],\"rows\":[[{\"$\":\"uuid\",\"v\":\"01920000-0000-7000-8000-0000000000aa\"}]],\"erase\":true},{\"table\":\"issue\",\"columns\":[\"dat_id\",\"title\",\"dat_txn\",\"dat_tx_time\"],\"rows\":[[{\"$\":\"uuid\",\"v\":\"01920000-0000-7000-8000-0000000000bb\"},\"new\",{\"$\":\"uuid\",\"v\":\"01920000-0000-7000-8000-0000000000cc\"},9]]}]}",
+      "batches": [
+        {
+          "table": "issue",
+          "columns": [
+            "dat_id"
+          ],
+          "rows": [
+            [
+              {
+                "type": "uuid",
+                "value": "01920000-0000-7000-8000-0000000000aa"
+              }
+            ]
+          ],
+          "erase": true
+        },
+        {
+          "table": "issue",
+          "columns": [
+            "dat_id",
+            "title",
+            "dat_txn",
+            "dat_tx_time"
+          ],
+          "rows": [
+            [
+              {
+                "type": "uuid",
+                "value": "01920000-0000-7000-8000-0000000000bb"
+              },
+              {
+                "type": "str",
+                "value": "new"
+              },
+              {
+                "type": "uuid",
+                "value": "01920000-0000-7000-8000-0000000000cc"
+              },
+              {
+                "type": "int",
+                "value": 9
+              }
+            ]
+          ]
         }
       ]
     }

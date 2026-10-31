@@ -308,6 +308,7 @@ def batches_described(batches: list[Batch]) -> list[dict[str, Any]]:
             "columns": list(b.columns),
             "rows": [[described(v) for v in row] for row in b.rows],
         }
+        | ({"erase": True} if b.erase else {})
         for b in batches
     ]
 
@@ -316,7 +317,12 @@ def batches_described(batches: list[Batch]) -> list[dict[str, Any]]:
 def test_rows(case: dict[str, Any]) -> None:
     assert batches_described(decode_batches(case["payload"].encode())) == case["batches"]
     natives = [
-        Batch(b["table"], tuple(b["columns"]), [[native(v) for v in r] for r in b["rows"]])
+        Batch(
+            b["table"],
+            tuple(b["columns"]),
+            [[native(v) for v in r] for r in b["rows"]],
+            erase=b.get("erase", False),
+        )
         for b in case["batches"]
     ]
     assert batches_described(decode_batches(encode_batches(natives))) == case["batches"]

@@ -541,12 +541,58 @@ async fn activity_left_unapplied_by_a_crash_is_inserted_by_recovery() {
     t.drop().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_erases_the_entities_a_python_payload_names() {
+    let db = db!();
+    db.ddl(
+        "CREATE TABLE issue (dat_id UUID, title String, dat_txn UUID, dat_tx_time Int64) \
+         ENGINE = MergeTree ORDER BY (dat_id, dat_tx_time)",
+    )
+    .await;
+    let (gone, kept, old, txn) = (new_id(), new_id(), new_id(), new_id());
+    db.ddl(&format!(
+        "INSERT INTO issue VALUES ('{gone}', 'old', '{old}', 5), ('{kept}', 'old', '{old}', 5)"
+    ))
+    .await;
+    // rhizodat.core.rows.encode_batches output: erase `gone`, add a version of `kept`.
+    let payload = format!(
+        r#"{{"v":1,"batches":[{{"table":"issue","columns":["dat_id"],"rows":[[{{"$":"uuid","v":"{gone}"}}]],"erase":true}},{{"table":"issue","columns":["dat_id","title","dat_txn","dat_tx_time"],"rows":[[{{"$":"uuid","v":"{kept}"}},"new",{{"$":"uuid","v":"{txn}"}},9]]}}]}}"#
+    );
+    let record = BranchRecord {
+        payload: Some(payload.into_bytes()),
+        ..BranchRecord::new("feed", gid_for(txn, "feed"), false)
+    };
+    let participant = db.store.participant();
+    for _ in 0..2 {
+        // Finishing twice changes nothing: the marker short-cuts the second.
+        participant.finish(&record, txn, 9).await.unwrap();
+        assert_eq!(
+            db.count(&format!(
+                "SELECT count() FROM issue WHERE dat_id = '{gone}'"
+            ))
+            .await,
+            0,
+            "the erased entity's versions are gone"
+        );
+        assert_eq!(
+            db.count(&format!(
+                "SELECT count() FROM issue WHERE dat_id = '{kept}'"
+            ))
+            .await,
+            2,
+            "the other entity keeps its old version and gains the new one"
+        );
+    }
+    db.drop().await;
+}
+
 #[test]
 fn payload_is_the_shared_row_format() {
     let batch = Batch {
         table: "activity".into(),
         columns: vec!["event".into()],
         rows: vec![vec![RowValue::Str("x".into())]],
+        erase: false,
     };
     let raw = String::from_utf8(encode_batches(&[batch]).unwrap()).unwrap();
     assert!(
