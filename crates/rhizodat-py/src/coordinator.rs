@@ -138,9 +138,9 @@ impl Branch for PyBranch {
 }
 
 /// The same Python object as the store's participant after the decision.
-struct PyParticipant {
-    obj: Py<PyAny>,
-    failure: Failure,
+pub(crate) struct PyParticipant {
+    pub obj: Py<PyAny>,
+    pub failure: Failure,
 }
 
 #[async_trait]
@@ -272,7 +272,7 @@ impl MemoryJournal {
 
 /// How the coordinator resolves its optional journal argument: either in-memory
 /// or in PostgreSQL.
-fn resolve_journal(journal: &Bound<'_, PyAny>) -> PyResult<Arc<dyn Journal>> {
+pub(crate) fn resolve_journal(journal: &Bound<'_, PyAny>) -> PyResult<Arc<dyn Journal>> {
     if let Ok(memory) = journal.cast::<MemoryJournal>() {
         return Ok(memory.borrow().as_journal());
     }
@@ -289,7 +289,7 @@ fn resolve_journal(journal: &Bound<'_, PyAny>) -> PyResult<Arc<dyn Journal>> {
 
 /// The native store a branch object stands for, or `None` for a Python object
 /// with the branch methods.
-fn native_store(branch: &Bound<'_, PyAny>) -> Option<Arc<dyn NativeStore>> {
+pub(crate) fn native_store(branch: &Bound<'_, PyAny>) -> Option<Arc<dyn NativeStore>> {
     if let Ok(store) = branch.cast::<PostgresStore>() {
         return Some(store.borrow().native());
     }

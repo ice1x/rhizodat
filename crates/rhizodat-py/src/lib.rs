@@ -67,6 +67,7 @@ mod drevo;
 mod iceberg;
 mod native;
 mod postgres;
+mod recovery;
 mod rows;
 
 /// A current-thread tokio runtime for one native call: it drives the async
@@ -415,6 +416,7 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<clickhouse::ClickHouseUnit>()?;
     m.add_class::<iceberg::IcebergStore>()?;
     m.add_class::<iceberg::IcebergUnit>()?;
+    m.add_class::<recovery::Recovery>()?;
     m.add_function(wrap_pyfunction!(id_generator, m)?)?;
     m.add_function(wrap_pyfunction!(new_id, m)?)?;
     m.add_function(wrap_pyfunction!(is_uuid7, m)?)?;

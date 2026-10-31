@@ -11,6 +11,10 @@ store, ``uow.store(name).run(cypher, params)`` for drevo,
 ``uow.store(name).append(table, arrow_data)`` for Iceberg — and the commit writes
 it inside the meta-transaction.
 
+Recovery runs on the core too: :class:`NativeRecovery` drives
+``rhizodat_native.Recovery`` over the native journal and stores, and reports like
+the Python :class:`~rhizodat.core.coordinator.Recovery`.
+
 This is the first step of the facade on the native core (plan step 5):
 repositories, parts, ``execute`` and migrations are not on this path yet; use the
 Python facade for those.
@@ -23,10 +27,17 @@ from collections.abc import Callable
 from types import ModuleType, TracebackType
 from typing import Any, Self
 
-from rhizodat.core.coordinator import Aborted, Committed, CommittedPending, InDoubt
+from rhizodat.core.coordinator import (
+    Aborted,
+    Committed,
+    CommittedPending,
+    InDoubt,
+    RecoveryReport,
+)
 from rhizodat.core.unit_of_work import UnitOfWorkClosed
 
 __all__ = [
+    "NativeRecovery",
     "NativeUnitOfWork",
     "journal_classes",
     "native_module",
@@ -166,3 +177,36 @@ def _outcome(dat_txn: uuid.UUID, result: Any) -> Outcome:  # noqa: ANN401 - coor
     if result["status"] == "committed":
         return Committed(dat_txn, dat_tx_time)
     return CommittedPending(dat_txn, dat_tx_time)
+
+
+class NativeRecovery:
+    """Recovery of a native facade: ``rhizodat_native.Recovery`` over its journal
+    and stores, reporting a :class:`~rhizodat.core.coordinator.RecoveryReport`."""
+
+    def __init__(
+        self,
+        native: ModuleType,
+        journal: Any,  # noqa: ANN401 - a native journal (an extension type)
+        stores: list[Any],
+        *,
+        stale_after_ms: int = 30_000,
+        alert_after_ms: int = 600_000,
+        wall_ms: Callable[[], int] | None = None,
+    ) -> None:
+        self._recovery = native.Recovery(
+            journal,
+            stores,
+            stale_after_ms=stale_after_ms,
+            alert_after_ms=alert_after_ms,
+            wall_ms=wall_ms,
+        )
+
+    def run_once(self, *, limit: int = 100) -> RecoveryReport:
+        report = self._recovery.run_once(limit=limit)
+        return RecoveryReport(
+            aborted=list(report["aborted"]),
+            finished=list(report["finished"]),
+            unfinished=list(report["unfinished"]),
+            stuck=list(report["stuck"]),
+            orphans=list(report["orphans"]),
+        )
