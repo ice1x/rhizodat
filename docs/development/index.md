@@ -136,10 +136,10 @@ reported (`unfinished`, then `stuck`) and retried by a later run.
 before and after the decision with PostgreSQL prepared, then recovers it.
 `r.repository(T)` and `uow.repository(T)` run the Python facade's repository
 logic with their parts on the core (`rhizodat.core.native_parts`): a native
-`PostgresStore` or `DrevoStore` reads committed versions, its unit buffers part
-writes that the commit applies inside the meta-transaction. The layout is the
+`PostgresStore`, `DrevoStore` or `ClickHouseStore` reads committed versions, its
+unit buffers part writes that the commit applies inside the meta-transaction
+(ClickHouse: in its journal payload, after the decision). The layout is the
 Python adapters', so either facade reads the other's versions
-(`tests/core/test_native_parts.py` and `test_native_parts_drevo.py` check both
-ways). Parts in ClickHouse and Iceberg, `execute` and migrations are not on the
-native path yet — use the Python facade (DSN strings or Python adapter stores)
-for those.
+(`tests/core/test_native_parts*.py` check both ways). Parts in Iceberg,
+`execute` and migrations are not on the native path yet — use the Python facade
+(DSN strings or Python adapter stores) for those.

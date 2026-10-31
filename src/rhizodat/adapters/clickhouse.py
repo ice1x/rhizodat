@@ -50,7 +50,13 @@ if TYPE_CHECKING:
     from rhizodat.ingest.schema import Column
     from rhizodat.migrations.format import Step
 
-__all__ = ["ADAPTER", "ClickHouseBranch", "ClickHouseParticipant", "ClickHouseStore"]
+__all__ = [
+    "ADAPTER",
+    "ClickHouseBranch",
+    "ClickHouseParticipant",
+    "ClickHouseStore",
+    "part_columns",
+]
 
 _TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
 _RESERVED = ("dat_txn", "dat_tx_time")
@@ -131,6 +137,13 @@ def _column_type(annotation: object) -> str | None:
         uuid.UUID: "UUID",
     }
     return natives.get(annotation)
+
+
+def part_columns(part: Part) -> list[tuple[str, str]]:
+    """``(field, ClickHouse type)`` of each field of ``part``, in order (``json`` for
+    tagged JSON in a ``String``): the columns of its table (shared with the native
+    core)."""
+    return [(f, _column_type(part.types.get(f)) or "json") for f in part.fields]
 
 
 class _PartTable:

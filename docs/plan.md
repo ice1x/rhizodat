@@ -302,8 +302,13 @@ Steps:
    `ClickHouseParts` (the last write per entity wins) and staged into the journal
    payload as row batches, erases first, applied after the decision; committed
    reads as of a time.
-   Next: ClickHouse parts across the boundary, parts in Iceberg, reads with Arrow
-   for full results, and the C ABI for Go.
+   ✔ ClickHouse parts across the boundary: `rhizodat_native.ClickHousePartSpec`,
+   the native `ClickHouseStore`'s committed part reads and the `ClickHouseUnit`'s
+   buffered part writes (staged into the journal payload, applied after the
+   decision), so the native facade's repositories hold a type in ClickHouse, or
+   split it with PostgreSQL; either facade reads the other's versions.
+   Next: parts in Iceberg, reads with Arrow for full results, and the C ABI for
+   Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
