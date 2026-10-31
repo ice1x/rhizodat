@@ -4,15 +4,16 @@ repository's part protocols.
 A native facade's repositories run the same logic as the Python facade's
 (:mod:`rhizodat.core.repository`); only the parts move to the core.
 :class:`NativePartStore` is a :class:`~rhizodat.core.parts.PartStore` (and
-``ScansParts``) over a native ``PostgresStore``: committed versions are read by
-the Rust adapter. :class:`NativePartBranch` is a
+``ScansParts``) over a native ``PostgresStore`` or ``DrevoStore``: committed
+versions are read by the Rust adapter. :class:`NativePartBranch` is a
 :class:`~rhizodat.core.parts.PartBranch` over a Unit of Work's native unit: writes
 are buffered on the unit and applied inside the meta-transaction when it commits;
 a read sees the unit's own writes first, then the committed versions.
 
-The tables are the Python adapter's (same DDL and ``jsonb`` encoding), so either
-facade reads the other's versions. Parts live in PostgreSQL only on this path so
-far; the other native stores keep theirs on the Python facade.
+The layout is the Python adapters' (PostgreSQL tables with the same DDL and
+``jsonb`` encoding; drevo nodes with the same properties and reference anchors),
+so either facade reads the other's versions. Parts live in PostgreSQL and drevo
+on this path so far; ClickHouse and Iceberg keep theirs on the Python facade.
 """
 
 import uuid
@@ -20,15 +21,19 @@ from collections.abc import Mapping
 from types import ModuleType
 from typing import Any
 
-from rhizodat.adapters.postgres import part_columns
+from rhizodat.adapters import drevo, postgres
 from rhizodat.core.parts import Part, Version
 
 __all__ = ["NativePartBranch", "NativePartStore", "part_spec"]
 
 
-def part_spec(native: ModuleType, part: Part) -> Any:  # noqa: ANN401 - rhizodat_native.PartSpec
-    """``part`` as a ``rhizodat_native.PartSpec``, typed like the Python adapter's table."""
-    return native.PartSpec(part.type_name, part.table, part_columns(part))
+def part_spec(native: ModuleType, part: Part, store: Any = None) -> Any:  # noqa: ANN401 - specs
+    """``part`` as the spec of ``store``'s kind: a ``rhizodat_native.PartSpec`` typed like
+    the PostgreSQL adapter's table (the default), or a ``DrevoPartSpec`` stored like
+    the drevo adapter's nodes."""
+    if isinstance(store, native.DrevoStore):
+        return native.DrevoPartSpec(part.type_name, part.table, drevo.part_fields(part))
+    return native.PartSpec(part.type_name, part.table, postgres.part_columns(part))
 
 
 def _version(raw: Mapping[str, Any], dat_txn: uuid.UUID | None = None) -> Version:
@@ -42,13 +47,13 @@ def _version(raw: Mapping[str, Any], dat_txn: uuid.UUID | None = None) -> Versio
 
 
 class NativePartStore:
-    """Committed parts in a native ``PostgresStore``."""
+    """Committed parts in a native ``PostgresStore`` or ``DrevoStore``."""
 
     def __init__(self, native: ModuleType, store: Any) -> None:  # noqa: ANN401 - native store
-        if not isinstance(store, native.PostgresStore):
+        if not isinstance(store, native.PostgresStore | native.DrevoStore):
             raise NotImplementedError(
                 f"entity parts in a {type(store).__name__} are not on the native core path"
-                " yet (PostgreSQL only); use the Python facade for this type"
+                " yet (PostgreSQL and drevo only); use the Python facade for this type"
             )
         self._native = native
         self._store = store
@@ -57,7 +62,7 @@ class NativePartStore:
     def spec(self, part: Part) -> Any:  # noqa: ANN401 - rhizodat_native.PartSpec
         spec = self._specs.get(part)
         if spec is None:
-            spec = self._specs[part] = part_spec(self._native, part)
+            spec = self._specs[part] = part_spec(self._native, part, self._store)
         return spec
 
     def install_part(self, part: Part) -> None:

@@ -285,8 +285,12 @@ Steps:
    anchors removed with their last version), writes buffered in `DrevoParts` and
    run in order inside the branch's transaction at stage, and committed reads in
    auto-commit mode, on Bolt and embedded.
-   Next: drevo parts across the boundary (the native facade's repositories over
-   drevo), parts in ClickHouse and Iceberg, reads with Arrow for full results, and
+   ✔ drevo parts across the boundary: `rhizodat_native.DrevoPartSpec`, the native
+   `DrevoStore`'s committed part reads and the `DrevoUnit`'s buffered part writes,
+   so the native facade's repositories hold a type in drevo, or split it across
+   PostgreSQL and drevo under a PostgreSQL journal; either facade reads the
+   other's versions.
+   Next: parts in ClickHouse and Iceberg, reads with Arrow for full results, and
    the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.

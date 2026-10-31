@@ -69,6 +69,7 @@ __all__ = [
     "DrevoParticipant",
     "DrevoStore",
     "graph_location",
+    "part_fields",
 ]
 
 _MARKER = "CREATE (:DatApplied {dat_txn: $dat_txn, dat_tx_time: $dat_tx_time})"
@@ -293,6 +294,12 @@ def _field_kind(annotation: object) -> str:
     if annotation is Ref or origin is Ref or annotation is uuid.UUID:
         return "uuid"
     return "native" if annotation in _NATIVE else "json"
+
+
+def part_fields(part: Part) -> list[tuple[str, str, bool]]:
+    """``(field, kind, is a reference)`` of each field of ``part``, in order: how its
+    versions store them (shared with the native core)."""
+    return [(f, _field_kind(part.types.get(f)), f in part.refs) for f in part.fields]
 
 
 def _targets(value: Any) -> list[str]:  # noqa: ANN401 - any stored value
