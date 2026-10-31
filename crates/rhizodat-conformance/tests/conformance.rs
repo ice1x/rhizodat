@@ -435,6 +435,7 @@ fn same_batches(got: &[Batch], want: &[Batch]) -> bool {
     got.len() == want.len()
         && got.iter().zip(want).all(|(g, w)| {
             g.table == w.table
+                && g.erase == w.erase
                 && g.columns == w.columns
                 && g.rows.len() == w.rows.len()
                 && g.rows
@@ -467,6 +468,7 @@ fn rows() {
                     .iter()
                     .map(|r| r.as_array().unwrap().iter().map(row_value).collect())
                     .collect(),
+                erase: b["erase"].as_bool().unwrap_or(false),
             })
             .collect();
         let got = decode_batches(text(&case["payload"]).as_bytes())
