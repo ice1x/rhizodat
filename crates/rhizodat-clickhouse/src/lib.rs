@@ -40,6 +40,8 @@ use rhizodat_core::store::{BoxError, Branch, Participant};
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
+pub mod parts;
+
 /// The ClickHouse store kind: `clickhouse://host:8123/db` (one phase; cannot
 /// hold the journal).
 pub const ADAPTER: Adapter = Adapter {
@@ -284,6 +286,7 @@ impl ClickHouseStore {
             client: self.client.clone(),
             max_rows_per_table: self.max_rows_per_table,
             buffer: BTreeMap::new(),
+            parts: parts::ClickHouseParts::new(),
             staged: None,
         }
     }
@@ -435,6 +438,7 @@ pub struct ClickHouseBranch {
     client: Client,
     max_rows_per_table: usize,
     buffer: BTreeMap<String, (Vec<String>, Vec<Vec<RowValue>>)>,
+    parts: parts::ClickHouseParts,
     staged: Option<(Uuid, Vec<Batch>, i64)>,
 }
 
@@ -498,7 +502,8 @@ impl Branch for ClickHouseBranch {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<Option<Vec<u8>>, BoxError> {
-        let mut batches = Vec::with_capacity(self.buffer.len());
+        // Entity parts first, like the reference: erases, then versions.
+        let mut batches = self.part_batches(dat_txn, dat_tx_time)?;
         for (table, (cols, rows)) in &self.buffer {
             if rows.len() > self.max_rows_per_table {
                 return Err(refuse(format!(
@@ -567,6 +572,7 @@ impl Branch for ClickHouseBranch {
 
     async fn rollback(&mut self) -> Result<(), BoxError> {
         self.buffer.clear();
+        self.parts = parts::ClickHouseParts::new();
         self.staged = None;
         Ok(())
     }
