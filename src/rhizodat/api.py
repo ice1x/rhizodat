@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from rhizodat.core.journal import AppliedMigration
+    from rhizodat.core.native_parts import NativePartStore
+    from rhizodat.core.parts import PartStore
     from rhizodat.core.repository import EntityRepository, Repository, _Kind
     from rhizodat.migrations import Migration, MigrationReport
 
@@ -211,6 +213,7 @@ class Rhizodat:
         self.clock = HybridLogicalClock()
         self.min_free = None
         self._coordinator = native.Coordinator(journal)
+        self._native_parts: dict[str, NativePartStore] = {}
 
     @property
     def store_names(self) -> tuple[str, ...]:
@@ -244,7 +247,11 @@ class Rhizodat:
         """
         if self._native:
             native = NativeUnitOfWork(
-                new_id(), self._native_uow_store, self._coordinator, self._native_mod
+                new_id(),
+                self._native_uow_store,
+                self._coordinator,
+                self._native_mod,
+                repositories=self._uow_repository,
             )
             return cast("UnitOfWork", native)
         return UnitOfWork(
@@ -272,7 +279,6 @@ class Rhizodat:
 
     def repository[T](self, entity_type: type[T]) -> "EntityRepository[T]":
         """CRUD for one entity type: committed reads, one Unit of Work per write."""
-        self._require_python("repositories")
         from rhizodat.core.repository import EntityRepository
 
         return EntityRepository(self, entity_type, self._kind(entity_type))
@@ -286,7 +292,7 @@ class Rhizodat:
         if kind is None:
             kind = _Kind(entity_type, self.soft_delete_window)
             for name, part in kind.parts.items():
-                store = self.store(name)
+                store = self._part_store(name)
                 if not isinstance(store, PartStore):
                     raise TypeError(
                         f"store {name!r} cannot hold entity parts of"
@@ -296,10 +302,31 @@ class Rhizodat:
             self._kinds[entity_type] = kind
         return kind
 
+    def _part_store(self, name: str) -> "PartStore":
+        """Store ``name``'s committed parts: the store itself on the Python path, its
+        :class:`~rhizodat.core.native_parts.NativePartStore` on the native one."""
+        if not self._native:
+            return cast("PartStore", self.store(name))
+        parts = self._native_parts.get(name)
+        if parts is None:
+            from rhizodat.core.native_parts import NativePartStore
+
+            parts = self._native_parts[name] = NativePartStore(self._native_mod, self.store(name))
+        return parts
+
     def _uow_repository(self, uow: UnitOfWork, entity_type: type) -> "Repository[Any]":
         from rhizodat.core.repository import Repository
 
-        return Repository(uow, self._kind(entity_type), lambda: self.clock.now().encode())
+        now = lambda: self.clock.now().encode()  # noqa: E731 - a one-line clock
+        if not self._native:
+            return Repository(uow, self._kind(entity_type), now)
+        from rhizodat.core.native_parts import NativePartBranch
+
+        def branch(name: str) -> NativePartBranch:
+            parts = cast("NativePartStore", self._part_store(name))
+            return NativePartBranch(uow.store(name), parts, uow.dat_txn)
+
+        return Repository(uow, self._kind(entity_type), now, branches=branch)
 
     @overload
     def transactional[**P, T](

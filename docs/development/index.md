@@ -134,5 +134,11 @@ prepared gids without a decision rolled back; a participant that still fails is
 reported (`unfinished`, then `stuck`) and retried by a later run.
 `tests/core/test_native_recovery.py` crashes a child process (`os._exit`)
 before and after the decision with PostgreSQL prepared, then recovers it.
-Repositories, parts, `execute` and migrations are not on the native path yet — use the Python facade (DSN strings or
-Python adapter stores) for those.
+`r.repository(T)` and `uow.repository(T)` run the Python facade's repository
+logic with their parts on the core (`rhizodat.core.native_parts`): a native
+`PostgresStore` reads committed versions, a `PostgresUnit` buffers part writes
+that its commit applies inside the meta-transaction. The tables are the Python
+adapter's, so either facade reads the other's versions
+(`tests/core/test_native_parts.py` checks both ways). Parts in the other native
+stores, `execute` and migrations are not on the native path yet — use the Python
+facade (DSN strings or Python adapter stores) for those.

@@ -170,10 +170,19 @@ class _Kind:
 class Repository[T]:
     """Entity reads and writes inside one Unit of Work."""
 
-    def __init__(self, uow: "UnitOfWork", kind: _Kind, now: Callable[[], int]) -> None:
+    def __init__(
+        self,
+        uow: "UnitOfWork",
+        kind: _Kind,
+        now: Callable[[], int],
+        *,
+        branches: Callable[[str], PartBranch] | None = None,
+    ) -> None:
         self._uow = uow
         self._kind = kind
         self._now = now
+        self._branches = branches
+        """The Unit of Work's part branch of a store; ``None``: ``uow.store(name)``."""
         self.created: dict[uuid.UUID, int | None] = {}
         """Creation time of each entity this repository wrote; ``None``: created now."""
 
@@ -246,7 +255,7 @@ class Repository[T]:
     # --- internals -----------------------------------------------------------------------
 
     def _branch(self, store: str) -> PartBranch:
-        branch = self._uow.store(store)
+        branch = self._branches(store) if self._branches is not None else self._uow.store(store)
         if not isinstance(branch, PartBranch):
             raise TypeError(f"store {store!r} cannot hold entity parts (no PartBranch)")
         return branch
@@ -361,7 +370,7 @@ class EntityRepository[T]:
             [query] = embedder.embed([query])
         wanted = as_vector(query, dimensions, f"the query for {name}.{field}")
         store = self._kind.mapping.store_of(field)
-        scanner = self._dat.store(store)
+        scanner = self._store(store)
         if not isinstance(scanner, ScansParts):
             raise TypeError(
                 f"store {store!r} ({type(scanner).__name__}) cannot be searched: its adapter"
@@ -485,7 +494,7 @@ class EntityRepository[T]:
     # --- internals -----------------------------------------------------------------------
 
     def _store(self, name: str) -> PartStore:
-        return cast("PartStore", self._dat.store(name))
+        return self._dat._part_store(name)
 
     def _run(
         self, work: Callable[[Repository[T]], Any]

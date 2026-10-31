@@ -409,6 +409,7 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<postgres::PostgresStore>()?;
     m.add_class::<postgres::PostgresJournal>()?;
     m.add_class::<postgres::PostgresUnit>()?;
+    m.add_class::<postgres::PartSpec>()?;
     m.add_class::<drevo::DrevoStore>()?;
     m.add_class::<drevo::DrevoJournal>()?;
     m.add_class::<drevo::DrevoUnit>()?;

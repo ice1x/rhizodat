@@ -15,9 +15,9 @@ Recovery runs on the core too: :class:`NativeRecovery` drives
 ``rhizodat_native.Recovery`` over the native journal and stores, and reports like
 the Python :class:`~rhizodat.core.coordinator.Recovery`.
 
-This is the first step of the facade on the native core (plan step 5):
-repositories, parts, ``execute`` and migrations are not on this path yet; use the
-Python facade for those.
+Repositories run on this path too, with their parts in native PostgreSQL stores
+(:mod:`rhizodat.core.native_parts`). ``execute``, migrations and parts in the
+other stores are not on it yet; use the Python facade for those.
 """
 
 import functools
@@ -88,8 +88,12 @@ class NativeUnitOfWork:
         stores: Callable[[str], Any],
         coordinator: Any,  # noqa: ANN401 - rhizodat_native.Coordinator (an extension type)
         native: ModuleType,
+        *,
+        repositories: "Callable[[Any, type], Any] | None" = None,
     ) -> None:
         self.dat_txn = dat_txn
+        self._repositories = repositories
+        self._repos: dict[type, Any] = {}
         self.outcome: Outcome | None = None
         self._stores = stores
         self._coordinator = coordinator
@@ -110,11 +114,16 @@ class NativeUnitOfWork:
             unit = self._units[name] = self._stores(name).unit()
         return unit
 
-    def repository(self, entity_type: type) -> Any:  # noqa: ANN401 - never returns (raises)
-        raise NotImplementedError(
-            "repositories are not on the native core path yet; buffer data on the"
-            " store's unit (uow.store(name).insert / .run) or use the Python facade"
-        )
+    def repository(self, entity_type: type) -> Any:  # noqa: ANN401 - Repository[entity_type]
+        """CRUD for ``entity_type`` inside this Unit of Work: its parts are buffered
+        on the stores' native units (PostgreSQL only on this path so far)."""
+        self._check_open()
+        if self._repositories is None:
+            raise RuntimeError("this Unit of Work has no repositories (made outside Rhizodat)")
+        repo = self._repos.get(entity_type)
+        if repo is None:
+            repo = self._repos[entity_type] = self._repositories(self, entity_type)
+        return repo
 
     def commit(self) -> Outcome:
         self._check_open()

@@ -63,6 +63,7 @@ impl NativeStore for Postgres {
 pub(crate) struct PostgresPending {
     pub store: Arc<rhizodat_postgres::PostgresStore>,
     pub rows: rhizodat_postgres::PostgresRows,
+    pub parts: rhizodat_postgres::parts::PostgresParts,
 }
 
 #[async_trait]
@@ -79,6 +80,7 @@ impl NativeStore for PostgresPending {
         match self.store.branch().await {
             Ok(mut branch) => {
                 branch.load(self.rows.clone());
+                branch.load_parts(self.parts.clone());
                 Ok(Box::new(branch))
             }
             Err(error) => Err(ConnectError {
