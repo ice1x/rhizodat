@@ -28,9 +28,11 @@ use rhizodat_core::gid::gid_for;
 use rhizodat_core::identity::IdGenerator;
 use rhizodat_core::journal::{BranchRecord, Journal, State};
 use rhizodat_core::recovery::Recovery;
+use rhizodat_core::rows::RowValue;
 use rhizodat_core::staged::{StagedTable, decode_staged, encode_staged};
 use rhizodat_core::store::{Branch, Participant, Participants};
 use rhizodat_core::timer::TokioTimer;
+use rhizodat_iceberg::parts::{FieldKind, IcebergPartSpec, IcebergParts, PartVersion};
 use rhizodat_iceberg::{IcebergBranch, IcebergStore, is_retryable};
 use rhizodat_postgres::{PostgresJournal, PostgresStore};
 use uuid::Uuid;
@@ -1122,5 +1124,205 @@ async fn an_erase_and_new_versions_commit_as_one_snapshot() {
         .await
         .unwrap();
     assert_eq!(lake.snapshots("issue").await.len(), before + 1);
+    lake.drop().await;
+}
+
+// --- entity parts ----------------------------------------------------------------------
+
+fn task_spec(lake: &Lake) -> IcebergPartSpec {
+    IcebergPartSpec::new(
+        "it.Task",
+        &lake.table("it_task"),
+        vec![
+            ("summary".into(), FieldKind::String),
+            ("points".into(), FieldKind::Long),
+        ],
+    )
+    .unwrap()
+}
+
+/// Commit `parts` in one branch at `ts`, one-phase.
+async fn commit_parts(lake: &Lake, parts: IcebergParts, ts: i64) -> Uuid {
+    let txn = new_id();
+    let mut branch = lake.store.branch();
+    branch.load_parts(parts);
+    branch.stage(txn, ts).await.unwrap();
+    branch.commit_one_phase().await.unwrap();
+    txn
+}
+
+fn text(v: &str) -> RowValue {
+    RowValue::Str(v.to_owned())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn part_versions_read_as_of_their_time() {
+    each(async |lake| {
+        let spec = task_spec(lake);
+        lake.store.install_part(&spec).await.unwrap();
+        lake.store.install_part(&spec).await.unwrap(); // idempotent
+        let id = new_id();
+        let mut first = IcebergParts::new();
+        first
+            .write(&spec, id, &[("summary".into(), text("draft"))], None, false)
+            .unwrap();
+        let t1 = commit_parts(lake, first, 100).await;
+        let mut second = IcebergParts::new();
+        second
+            .write(
+                &spec,
+                id,
+                &[
+                    ("summary".into(), text("final")),
+                    ("points".into(), RowValue::Int(5)),
+                ],
+                Some(100),
+                false,
+            )
+            .unwrap();
+        let t2 = commit_parts(lake, second, 200).await;
+        let v1 = PartVersion {
+            dat_txn: t1,
+            dat_tx_time: Some(100),
+            created: Some(100),
+            deleted: false,
+            values: vec![text("draft"), RowValue::Null],
+        };
+        let v2 = PartVersion {
+            dat_txn: t2,
+            dat_tx_time: Some(200),
+            created: Some(100),
+            deleted: false,
+            values: vec![text("final"), RowValue::Int(5)],
+        };
+        let store = &lake.store;
+        assert_eq!(
+            store.read_part(&spec, id, None).await.unwrap(),
+            Some(v2.clone())
+        );
+        assert_eq!(
+            store.read_part(&spec, id, Some(199)).await.unwrap(),
+            Some(v1.clone())
+        );
+        assert_eq!(store.read_part(&spec, id, Some(99)).await.unwrap(), None);
+        assert_eq!(
+            store.part_history(&spec, id).await.unwrap(),
+            vec![v1.clone(), v2]
+        );
+        assert_eq!(
+            store.part_versions(&spec, Some(150)).await.unwrap(),
+            vec![(id, v1)]
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_part_field_kind_round_trips() {
+    each(async |lake| {
+        let spec = IcebergPartSpec::new(
+            "erp.Item",
+            &lake.table("erp_item"),
+            [
+                ("name", FieldKind::String),
+                ("ok", FieldKind::Boolean),
+                ("qty", FieldKind::Long),
+                ("weight", FieldKind::Double),
+                ("raw", FieldKind::Binary),
+                ("at", FieldKind::Timestamptz),
+                ("day", FieldKind::Date),
+                ("owner", FieldKind::Id),
+                ("tags", FieldKind::Json),
+                ("nothing", FieldKind::Json),
+            ]
+            .into_iter()
+            .map(|(n, k)| (n.to_owned(), k))
+            .collect(),
+        )
+        .unwrap();
+        lake.store.install_part(&spec).await.unwrap();
+        let (id, owner) = (new_id(), new_id());
+        let values = vec![
+            text("Ада Лавлейс"),
+            RowValue::Bool(true),
+            RowValue::Int(i64::MIN),
+            RowValue::Float(0.1),
+            RowValue::Bytes(vec![0, 255]),
+            RowValue::DateTime("2026-10-31T13:14:15.123456+00:00".into()),
+            RowValue::Date("2026-10-31".into()),
+            RowValue::Uuid(owner),
+            RowValue::Map(vec![("price".into(), RowValue::Decimal("12.3400".into()))]),
+            RowValue::Null,
+        ];
+        let named: Vec<(String, RowValue)> = spec
+            .fields()
+            .map(str::to_owned)
+            .zip(values.iter().cloned())
+            .collect();
+        let mut parts = IcebergParts::new();
+        parts.write(&spec, id, &named, None, false).unwrap();
+        commit_parts(lake, parts, 7).await;
+        let read = lake
+            .store
+            .read_part(&spec, id, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.values, values);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn part_erases_ride_the_payload_and_soft_deletes_expire() {
+    let _turn = REST.lock().await;
+    let Some(lake) = Lake::rest().await else {
+        return;
+    };
+    let spec = task_spec(&lake);
+    lake.store.install_part(&spec).await.unwrap();
+    let (kept, gone, again) = (new_id(), new_id(), new_id());
+    let mut parts = IcebergParts::new();
+    for id in [kept, gone, again] {
+        parts
+            .write(&spec, id, &[("summary".into(), text("x"))], None, false)
+            .unwrap();
+    }
+    commit_parts(&lake, parts, 10).await;
+    let mut parts = IcebergParts::new();
+    parts.write(&spec, kept, &[], Some(10), true).unwrap();
+    commit_parts(&lake, parts, 20).await;
+    assert_eq!(
+        lake.store.expired_parts(&spec, 21, 10).await.unwrap(),
+        vec![kept]
+    );
+    assert_eq!(
+        lake.store.expired_parts(&spec, 20, 10).await.unwrap(),
+        Vec::<Uuid>::new()
+    );
+
+    // One Unit of Work erases `gone` and erases then rewrites `again`.
+    let mut parts = IcebergParts::new();
+    parts.erase(&spec, gone);
+    parts.erase(&spec, again);
+    parts
+        .write(
+            &spec,
+            again,
+            &[("summary".into(), text("anew"))],
+            None,
+            false,
+        )
+        .unwrap();
+    commit_parts(&lake, parts, 30).await;
+    let store = &lake.store;
+    assert_eq!(
+        store.part_history(&spec, gone).await.unwrap(),
+        Vec::<PartVersion>::new()
+    );
+    let history = store.part_history(&spec, again).await.unwrap();
+    assert_eq!(history.len(), 1, "only the rewrite is left");
+    assert_eq!(history[0].values[0], text("anew"));
+    assert_eq!(store.part_history(&spec, kept).await.unwrap().len(), 2);
     lake.drop().await;
 }
