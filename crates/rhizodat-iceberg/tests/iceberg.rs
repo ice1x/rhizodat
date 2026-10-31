@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::{
-    Array, ArrayRef, Decimal128Array, FixedSizeBinaryArray, Int64Array, RecordBatch, StringArray,
-    TimestampMicrosecondArray,
+    Array, ArrayRef, BooleanArray, Decimal128Array, FixedSizeBinaryArray, Int64Array, RecordBatch,
+    StringArray, TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
 use iceberg::io::LocalFsStorageFactory;
@@ -28,7 +28,7 @@ use rhizodat_core::gid::gid_for;
 use rhizodat_core::identity::IdGenerator;
 use rhizodat_core::journal::{BranchRecord, Journal, State};
 use rhizodat_core::recovery::Recovery;
-use rhizodat_core::staged::{decode_staged, encode_staged};
+use rhizodat_core::staged::{StagedTable, decode_staged, encode_staged};
 use rhizodat_core::store::{Branch, Participant, Participants};
 use rhizodat_core::timer::TokioTimer;
 use rhizodat_iceberg::{IcebergBranch, IcebergStore, is_retryable};
@@ -607,9 +607,9 @@ async fn finish_commits_from_the_journal_payload() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_entity_part_erase_is_refused_not_skipped() {
-    // The Python adapter writes `erase` for hard-deleted entity parts; this adapter
-    // cannot erase yet, so it fails (recovery retries) rather than lose the delete.
+async fn an_erase_outside_a_rest_catalog_is_refused_not_skipped() {
+    // An erase is committed through the REST catalog protocol; on any other
+    // catalog it fails rather than lose the delete.
     let lake = Lake::memory().await;
     let (txn, _, payload) = staged(&lake, 1).await;
     let mut tables = decode_staged(Some(&payload)).unwrap();
@@ -617,7 +617,8 @@ async fn an_entity_part_erase_is_refused_not_skipped() {
     let rec = record("lake", txn, Some(encode_staged(&tables)));
     let participant = lake.store.participant();
     let err = participant.finish(&rec, txn, TS).await.unwrap_err();
-    assert!(err.to_string().contains("erasing entity parts"), "{err}");
+    assert!(err.to_string().contains("needs a REST catalog"), "{err}");
+    assert!(!is_retryable(err.as_ref()));
     assert_eq!(lake.snapshots("sales").await, Vec::<Option<String>>::new());
     lake.drop().await;
 }
@@ -940,4 +941,186 @@ async fn sales_left_uncommitted_by_a_crash_are_committed_by_recovery() {
     );
     assert_eq!(erp.counts().await, (1, 2));
     erp.drop().await;
+}
+
+// --- erase (copy-on-write) -------------------------------------------------------------
+
+/// The Python reference's entity part table: ids and transactions as text.
+fn part_schema() -> Schema {
+    Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "dat_id", Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::required(2, "dat_created", Type::Primitive(PrimitiveType::Long)).into(),
+            NestedField::required(3, "dat_deleted", Type::Primitive(PrimitiveType::Boolean)).into(),
+            NestedField::optional(4, "title", Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::required(5, "dat_txn", Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::required(6, "dat_tx_time", Type::Primitive(PrimitiveType::Long)).into(),
+        ])
+        .build()
+        .unwrap()
+}
+
+fn versions(ids: &[Uuid], title: &str, created: i64) -> RecordBatch {
+    let schema = ArrowSchema::new(vec![
+        Field::new("dat_id", DataType::Utf8, false),
+        Field::new("dat_created", DataType::Int64, false),
+        Field::new("dat_deleted", DataType::Boolean, false),
+        Field::new("title", DataType::Utf8, true),
+    ]);
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from_iter_values(
+            ids.iter().map(ToString::to_string),
+        )),
+        Arc::new(Int64Array::from_iter_values(ids.iter().map(|_| created))),
+        Arc::new(BooleanArray::from(vec![false; ids.len()])),
+        Arc::new(StringArray::from_iter_values(ids.iter().map(|_| title))),
+    ];
+    RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+}
+
+/// Commit versions of `ids` at `ts` through a branch; the transaction.
+async fn commit_versions(lake: &Lake, ids: &[Uuid], title: &str, ts: i64) -> Uuid {
+    let txn = new_id();
+    let mut branch = lake.store.branch();
+    branch
+        .append(&lake.table("issue"), versions(ids, title, ts))
+        .unwrap();
+    branch.stage(txn, ts).await.unwrap();
+    branch.commit_one_phase().await.unwrap();
+    txn
+}
+
+/// `(dat_id, title, dat_tx_time)` of every row of `issue`, sorted.
+async fn issue_rows(lake: &Lake) -> Vec<(String, String, i64)> {
+    let mut out = Vec::new();
+    for b in lake.store.scan(&lake.table("issue")).await.unwrap() {
+        let ids = b
+            .column_by_name("dat_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let titles = b
+            .column_by_name("title")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let times = b
+            .column_by_name("dat_tx_time")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for i in 0..b.num_rows() {
+            out.push((
+                ids.value(i).to_owned(),
+                titles.value(i).to_owned(),
+                times.value(i),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
+async fn current_operation(lake: &Lake, name: &str) -> String {
+    let table = lake.catalog().load_table(&lake.ident(name)).await.unwrap();
+    table
+        .metadata()
+        .current_snapshot()
+        .unwrap()
+        .summary()
+        .operation
+        .as_str()
+        .to_owned()
+}
+
+fn erase_payload(lake: &Lake, files: Vec<String>, ids: &[Uuid]) -> Vec<u8> {
+    encode_staged(&[StagedTable {
+        table: lake.table("issue"),
+        files,
+        data_files: None,
+        erase: ids.iter().map(ToString::to_string).collect(),
+    }])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_erase_rewrites_only_the_older_versions_of_its_entities() {
+    let _turn = REST.lock().await;
+    let Some(lake) = Lake::rest().await else {
+        return;
+    };
+    lake.create("issue", part_schema()).await;
+    let (a, b, c) = (new_id(), new_id(), new_id());
+    commit_versions(&lake, &[a, b, c], "v1", 10).await;
+    commit_versions(&lake, &[b], "v2", 20).await;
+
+    // Erase a and b as of 15: b's later version (20) stays, c is untouched.
+    let txn = new_id();
+    let record = record("lake", txn, Some(erase_payload(&lake, Vec::new(), &[a, b])));
+    let participant = lake.store.participant();
+    participant.finish(&record, txn, 15).await.unwrap();
+    let expected = vec![
+        (b.to_string(), "v2".to_owned(), 20),
+        (c.to_string(), "v1".to_owned(), 10),
+    ];
+    let mut expected_sorted = expected.clone();
+    expected_sorted.sort();
+    assert_eq!(issue_rows(&lake).await, expected_sorted);
+    assert_eq!(current_operation(&lake, "issue").await, "overwrite");
+    let snapshots = lake.snapshots("issue").await;
+    assert_eq!(snapshots.last().unwrap(), &Some(txn.to_string()));
+    assert!(participant.is_applied(&record, txn).await.unwrap());
+
+    // Finishing again changes nothing: the snapshot is tagged with the transaction.
+    participant.finish(&record, txn, 15).await.unwrap();
+    assert_eq!(lake.snapshots("issue").await, snapshots);
+    assert_eq!(issue_rows(&lake).await, expected_sorted);
+    lake.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_erase_and_new_versions_commit_as_one_snapshot() {
+    let _turn = REST.lock().await;
+    let Some(lake) = Lake::rest().await else {
+        return;
+    };
+    lake.create("issue", part_schema()).await;
+    let (c, d) = (new_id(), new_id());
+    commit_versions(&lake, &[c], "v1", 10).await;
+    let before = lake.snapshots("issue").await.len();
+
+    // A branch stages d's version; its payload also erases c.
+    let txn = new_id();
+    let mut branch = lake.store.branch();
+    branch
+        .append(&lake.table("issue"), versions(&[d], "new", 30))
+        .unwrap();
+    let staged = branch.stage(txn, 30).await.unwrap().unwrap();
+    let mut tables = decode_staged(Some(&staged)).unwrap();
+    tables[0].erase = vec![c.to_string()];
+    let record = record("lake", txn, Some(encode_staged(&tables)));
+    lake.store
+        .participant()
+        .finish(&record, txn, 30)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        issue_rows(&lake).await,
+        vec![(d.to_string(), "new".to_owned(), 30)]
+    );
+    assert_eq!(
+        lake.snapshots("issue").await.len(),
+        before + 1,
+        "one snapshot"
+    );
+    lake.store
+        .participant()
+        .finish(&record, txn, 30)
+        .await
+        .unwrap();
+    assert_eq!(lake.snapshots("issue").await.len(), before + 1);
+    lake.drop().await;
 }

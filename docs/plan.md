@@ -307,8 +307,15 @@ Steps:
    buffered part writes (staged into the journal payload, applied after the
    decision), so the native facade's repositories hold a type in ClickHouse, or
    split it with PostgreSQL; either facade reads the other's versions.
-   Next: parts in Iceberg, reads with Arrow for full results, and the C ABI for
-   Go.
+   ✔ Copy-on-write erase in the Rust Iceberg participant: iceberg-rust 0.10 has
+   no delete action and keeps `TableCommit` private, so the participant rewrites
+   the data files holding an erased entity's older versions, writes the manifests
+   and manifest list of one `overwrite` snapshot (with the branch's staged files)
+   and commits it through the REST catalog protocol on condition that `main` has
+   not moved. A payload the Python reference wrote is finished by native recovery
+   and read back by pyiceberg (`tests/core/test_native_iceberg_erase.py`).
+   Next: Iceberg parts on the core and across the boundary, reads with Arrow for
+   full results, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

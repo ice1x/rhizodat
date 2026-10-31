@@ -26,10 +26,16 @@
 //! orphan-file maintenance. Files are never deleted while a snapshot may
 //! reference them.
 //!
+//! A payload may also erase entities (the reference's hard delete of entity
+//! parts): their versions older than the meta-transaction are removed
+//! copy-on-write, and the rewrites and the staged files are committed as one
+//! `overwrite` snapshot through the REST catalog protocol (`erase` module:
+//! iceberg-rust has no delete action yet).
+//!
 //! Tables written through rhizodat need `dat_txn` (`uuid` or `string`) and
-//! `dat_tx_time` (`long`) columns. Only appends to unpartitioned tables are
-//! supported for now; catalogs: `iceberg+rest://` over S3, or any
-//! [`Catalog`] passed to [`IcebergStore::with_catalog`].
+//! `dat_tx_time` (`long`) columns. Only unpartitioned tables are supported for
+//! now; catalogs: `iceberg+rest://` over S3, or any [`Catalog`] passed to
+//! [`IcebergStore::with_catalog`] (appends only: erases need REST).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
@@ -69,6 +75,8 @@ use rhizodat_core::staged::{StagedTable, decode_staged, encode_staged};
 use rhizodat_core::store::{BoxError, Branch, Participant};
 use serde_json::Value as Json;
 use uuid::Uuid;
+
+mod erase;
 
 /// The Iceberg store kind: a REST catalog (`iceberg+rest://host/warehouse`);
 /// `iceberg+sql://` and `iceberg+glue://` are recognised for the Python
@@ -231,6 +239,9 @@ fn ident(table: &str) -> Result<TableIdent, BoxError> {
 /// The catalog as the branch and the participant need it.
 struct Lake {
     catalog: Arc<dyn Catalog>,
+    /// The REST endpoint for the commits iceberg-rust cannot make (erases);
+    /// `None` for other catalogs.
+    rest: Option<erase::Rest>,
 }
 
 impl Lake {
@@ -264,7 +275,18 @@ impl Lake {
 
     async fn applied(&self, staged: &StagedTable, dat_txn: Uuid) -> Result<bool, BoxError> {
         let table = self.load(&staged.table).await?;
-        Ok(Self::tagged(&table, dat_txn) || Self::referenced(&table, &staged.files).await?)
+        if Self::tagged(&table, dat_txn) {
+            return Ok(true);
+        }
+        if !staged.files.is_empty() && !Self::referenced(&table, &staged.files).await? {
+            return Ok(false);
+        }
+        // An erase that matched nothing leaves no snapshot. Without the tag it
+        // counts as applied only when no other transaction's version of the
+        // entities is left: a later write reads as "not applied", and finishing
+        // again is harmless (the reference's rule).
+        Ok(staged.erase.is_empty()
+            || !erase::versions_besides(&table, &staged.erase, dat_txn).await?)
     }
 
     async fn delete_files(&self, staged: &StagedTable) -> Result<(), BoxError> {
@@ -281,22 +303,45 @@ impl Lake {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<(), BoxError> {
-        if let Some(staged) = tables.iter().find(|t| !t.erase.is_empty()) {
-            return Err(refuse(format!(
-                "{}: erasing entity parts is not supported by this adapter yet",
-                staged.table
-            )));
-        }
         for staged in tables {
             let table = self.load(&staged.table).await?;
-            if Self::tagged(&table, dat_txn) || Self::referenced(&table, &staged.files).await? {
-                continue;
-            }
-            let files = data_files(&table, staged).await?;
             let properties = HashMap::from([
                 (TXN_PROPERTY.to_owned(), dat_txn.to_string()),
                 (TIME_PROPERTY.to_owned(), dat_tx_time.to_string()),
             ]);
+            if !staged.erase.is_empty() {
+                // Erase, then add the staged files: one snapshot, committed by hand.
+                if Self::tagged(&table, dat_txn) {
+                    continue;
+                }
+                let rest = self.rest.as_ref().ok_or_else(|| {
+                    refuse(format!(
+                        "{}: erasing entities needs a REST catalog (iceberg+rest://)",
+                        staged.table
+                    ))
+                })?;
+                let added =
+                    if staged.files.is_empty() || Self::referenced(&table, &staged.files).await? {
+                        Vec::new()
+                    } else {
+                        data_files(&table, staged).await?
+                    };
+                erase::overwrite(
+                    rest,
+                    &table,
+                    &staged.erase,
+                    dat_tx_time,
+                    added,
+                    dat_txn,
+                    properties,
+                )
+                .await?;
+                continue;
+            }
+            if Self::tagged(&table, dat_txn) || Self::referenced(&table, &staged.files).await? {
+                continue;
+            }
+            let files = data_files(&table, staged).await?;
             let tx = Transaction::new(&table);
             let tx = tx
                 .fast_append()
@@ -376,19 +421,24 @@ impl IcebergStore {
     /// [`IcebergError`] for an unsupported DSN, or the catalog's error.
     pub async fn connect(dsn: &str, name: &str) -> Result<Self, BoxError> {
         let props = catalog_properties(dsn)?;
+        let rest = erase::Rest::new(&props);
         let catalog = RestCatalogBuilder::default()
             .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
                 customized_credential_load: None,
             }))
             .load(name, props)
             .await?;
-        Ok(Self::with_catalog(name, Arc::new(catalog)))
+        Ok(Self::new(name, Arc::new(catalog), Some(rest)))
     }
 
     /// A store named `name` over any iceberg-rust catalog.
     #[must_use]
     pub fn with_catalog(name: &str, catalog: Arc<dyn Catalog>) -> Self {
-        let lake = Arc::new(Lake { catalog });
+        Self::new(name, catalog, None)
+    }
+
+    fn new(name: &str, catalog: Arc<dyn Catalog>, rest: Option<erase::Rest>) -> Self {
+        let lake = Arc::new(Lake { catalog, rest });
         let participant = Arc::new(IcebergParticipant { lake: lake.clone() });
         Self {
             name: name.to_owned(),
