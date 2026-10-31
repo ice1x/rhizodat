@@ -22,9 +22,11 @@ use rhizodat_core::gid::gid_for;
 use rhizodat_core::identity::IdGenerator;
 use rhizodat_core::journal::{BranchRecord, Journal, JournalError, State};
 use rhizodat_core::recovery::{Recovery, RecoveryReport};
+use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
 use rhizodat_core::timer::TokioTimer;
-use rhizodat_drevo::{DrevoBranch, DrevoJournal, DrevoStore, HeuristicOutcome, params};
+use rhizodat_drevo::parts::{DrevoPartSpec, DrevoParts, FieldKind, PartVersion};
+use rhizodat_drevo::{DrevoBranch, DrevoJournal, DrevoStore, HeuristicOutcome, Value, params};
 use rhizodat_postgres::{PostgresJournal, PostgresStore};
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
@@ -752,4 +754,285 @@ async fn a_crash_after_the_decision_is_rolled_forward_elsewhere(target: Target) 
     );
     assert_eq!(t.recover().await.finished, Vec::<Uuid>::new());
     t.drop().await;
+}
+
+// --- entity parts ----------------------------------------------------------------------
+
+on_both!(
+    parts_read_as_of_their_time_like_the_reference,
+    references_link_anchors_and_an_erase_removes_orphans,
+    soft_deletes_expire_and_a_rolled_back_branch_leaves_nothing,
+);
+
+fn issue_spec(g: &Graph) -> DrevoPartSpec {
+    DrevoPartSpec::new(
+        "tracker.Issue",
+        &g.tag,
+        vec![
+            ("title".into(), FieldKind::Native, false),
+            ("points".into(), FieldKind::Native, false),
+            ("labels".into(), FieldKind::Json, false),
+            ("reporter".into(), FieldKind::Uuid, true),
+        ],
+    )
+    .unwrap()
+}
+
+/// Commit `parts` in one branch at `ts`, one-phase.
+async fn commit_parts(g: &mut Graph, parts: DrevoParts, ts: i64) -> Uuid {
+    let txn = g.txn();
+    let mut branch = g.store.branch().await.unwrap();
+    branch.load_parts(parts);
+    branch.stage(txn, ts).await.unwrap();
+    branch.commit_one_phase().await.unwrap();
+    txn
+}
+
+async fn drop_anchors(g: &Graph, ids: &[Uuid]) {
+    let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    g.store
+        .write(
+            "MATCH (a:DatEntity) WHERE a.dat_id IN $ids DETACH DELETE a",
+            params![("ids", ids)],
+        )
+        .await
+        .unwrap();
+}
+
+async fn parts_read_as_of_their_time_like_the_reference(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
+    let spec = issue_spec(&g);
+    g.store.install_part(&spec).await.unwrap();
+    g.store.install_part(&spec).await.unwrap(); // idempotent
+    let (id, reporter) = (new_id(), new_id());
+    let labels = RowValue::List(vec![RowValue::Str("ui".into()), RowValue::Int(2)]);
+    let mut first = DrevoParts::new();
+    first
+        .write(
+            &spec,
+            id,
+            &[
+                ("title".into(), RowValue::Str("Ада".into())),
+                ("labels".into(), labels.clone()),
+                ("reporter".into(), RowValue::Uuid(reporter)),
+            ],
+            None,
+            false,
+        )
+        .unwrap();
+    let t1 = commit_parts(&mut g, first, 100).await;
+    let mut second = DrevoParts::new();
+    second
+        .write(
+            &spec,
+            id,
+            &[
+                ("title".into(), RowValue::Str("final".into())),
+                ("points".into(), RowValue::Int(5)),
+            ],
+            Some(100),
+            false,
+        )
+        .unwrap();
+    let t2 = commit_parts(&mut g, second, 200).await;
+
+    let v1 = PartVersion {
+        dat_txn: t1,
+        dat_tx_time: Some(100),
+        created: Some(100),
+        deleted: false,
+        values: vec![
+            RowValue::Str("Ада".into()),
+            RowValue::Null,
+            labels,
+            RowValue::Uuid(reporter),
+        ],
+    };
+    let v2 = PartVersion {
+        dat_txn: t2,
+        dat_tx_time: Some(200),
+        created: Some(100),
+        deleted: false,
+        values: vec![
+            RowValue::Str("final".into()),
+            RowValue::Int(5),
+            RowValue::Null,
+            RowValue::Null,
+        ],
+    };
+    assert_eq!(
+        g.store.read_part(&spec, id, None).await.unwrap(),
+        Some(v2.clone())
+    );
+    assert_eq!(
+        g.store.read_part(&spec, id, Some(199)).await.unwrap(),
+        Some(v1.clone())
+    );
+    assert_eq!(g.store.read_part(&spec, id, Some(99)).await.unwrap(), None);
+    assert_eq!(
+        g.store.part_history(&spec, id).await.unwrap(),
+        vec![v1.clone(), v2.clone()]
+    );
+    assert_eq!(
+        g.store.part_versions(&spec, Some(150)).await.unwrap(),
+        vec![(id, v1)]
+    );
+    // Stored like the reference: `title` as `dat_title`, JSON as tagged text.
+    let raw = g
+        .store
+        .read(
+            &format!(
+                "MATCH (v:{} {{dat_txn: $t}}) RETURN v.dat_title AS t, v.labels AS l, v.title AS x",
+                g.tag
+            ),
+            params![("t", t1.to_string())],
+        )
+        .await
+        .unwrap();
+    assert_eq!(raw[0].str("t").unwrap(), "Ада");
+    assert_eq!(raw[0].str("l").unwrap(), r#"["ui",2]"#);
+    assert_eq!(raw[0].value("x"), &Value::Null);
+    drop_anchors(&g, &[reporter]).await;
+    g.drop().await;
+}
+
+async fn references_link_anchors_and_an_erase_removes_orphans(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
+    let spec = issue_spec(&g);
+    g.store.install_part(&spec).await.unwrap();
+    let (a, b, reporter) = (new_id(), new_id(), new_id());
+    let mut parts = DrevoParts::new();
+    for id in [a, b] {
+        parts
+            .write(
+                &spec,
+                id,
+                &[("reporter".into(), RowValue::Uuid(reporter))],
+                None,
+                false,
+            )
+            .unwrap();
+    }
+    commit_parts(&mut g, parts, 10).await;
+    let edges = |id: Uuid| {
+        let g = &g;
+        async move {
+            g.store
+                .read(
+                    &format!(
+                        "MATCH (v:{} {{dat_id: $id}})-[:reporter]->(x:DatEntity {{dat_id: $r}}) \
+                         RETURN count(x) AS n",
+                        g.tag
+                    ),
+                    params![("id", id.to_string()), ("r", reporter.to_string())],
+                )
+                .await
+                .unwrap()[0]
+                .int("n")
+                .unwrap()
+        }
+    };
+    assert_eq!((edges(a).await, edges(b).await), (1, 1));
+    let mut parts = DrevoParts::new();
+    parts.erase(&spec, a);
+    commit_parts(&mut g, parts, 20).await;
+    assert_eq!(
+        g.store.part_history(&spec, a).await.unwrap(),
+        Vec::<PartVersion>::new()
+    );
+    let anchors = |g: &Graph| {
+        let r = reporter.to_string();
+        let store = g.store.clone();
+        async move {
+            store
+                .read(
+                    "MATCH (x:DatEntity {dat_id: $r}) RETURN count(x) AS n",
+                    params![("r", r)],
+                )
+                .await
+                .unwrap()[0]
+                .int("n")
+                .unwrap()
+        }
+    };
+    assert_eq!(anchors(&g).await, 1, "b still points to the anchor");
+    let mut parts = DrevoParts::new();
+    parts.erase(&spec, b);
+    commit_parts(&mut g, parts, 30).await;
+    assert_eq!(
+        anchors(&g).await,
+        0,
+        "the orphaned anchor went with the last version"
+    );
+    g.drop().await;
+}
+
+async fn soft_deletes_expire_and_a_rolled_back_branch_leaves_nothing(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
+    let spec = issue_spec(&g);
+    g.store.install_part(&spec).await.unwrap();
+    let (kept, gone) = (new_id(), new_id());
+    let mut parts = DrevoParts::new();
+    for id in [kept, gone] {
+        parts
+            .write(
+                &spec,
+                id,
+                &[("points".into(), RowValue::Int(1))],
+                None,
+                false,
+            )
+            .unwrap();
+    }
+    commit_parts(&mut g, parts, 10).await;
+    let mut parts = DrevoParts::new();
+    parts.write(&spec, gone, &[], Some(10), true).unwrap();
+    commit_parts(&mut g, parts, 20).await;
+    assert_eq!(
+        g.store.expired_parts(&spec, 21, 10).await.unwrap(),
+        vec![gone]
+    );
+    assert_eq!(
+        g.store.expired_parts(&spec, 20, 10).await.unwrap(),
+        Vec::<Uuid>::new()
+    );
+    assert_eq!(
+        g.store.expired_parts(&spec, 21, 0).await.unwrap(),
+        Vec::<Uuid>::new()
+    );
+    assert!(
+        g.store
+            .read_part(&spec, gone, None)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted
+    );
+
+    let lost = new_id();
+    let mut parts = DrevoParts::new();
+    parts
+        .write(
+            &spec,
+            lost,
+            &[("points".into(), RowValue::Int(2))],
+            None,
+            false,
+        )
+        .unwrap();
+    let mut branch = g.store.branch().await.unwrap();
+    branch.load_parts(parts);
+    branch.stage(g.txn(), 30).await.unwrap();
+    branch.rollback().await.unwrap();
+    assert_eq!(
+        g.store.part_history(&spec, lost).await.unwrap(),
+        Vec::<PartVersion>::new()
+    );
+    g.drop().await;
 }
