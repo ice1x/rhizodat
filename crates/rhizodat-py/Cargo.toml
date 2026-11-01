@@ -29,6 +29,7 @@ rhizodat-drevo = { path = "../rhizodat-drevo" }
 rhizodat-iceberg = { path = "../rhizodat-iceberg" }
 rhizodat-postgres = { path = "../rhizodat-postgres" }
 serde_json = "1"
+tokio-postgres = "0.7"
 # A current-thread runtime drives the async adapters (and their connection tasks)
 # on the calling thread, so native commits keep the single-threaded property.
 tokio = { version = "1", features = ["rt", "sync", "time"] }

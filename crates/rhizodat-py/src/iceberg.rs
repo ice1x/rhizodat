@@ -21,13 +21,14 @@ use std::sync::{Arc, Mutex};
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyFrozenSet};
 use rhizodat_iceberg::parts::{
     FieldKind, IcebergPartSpec as CoreSpec, IcebergParts, PartVersion, PendingVersion,
 };
 use rhizodat_iceberg::{IcebergBatches, IcebergStore as CoreStore, Scan, catalog_properties};
 use uuid::Uuid;
 
+use crate::migrations::kinds;
 use crate::native::{IcebergLake, IcebergPending, NativeStore};
 use crate::result::{ipc_bytes, py_result};
 use crate::rows::{fields_dict, row_value};
@@ -282,6 +283,23 @@ impl IcebergStore {
     }
 
     /// A Unit of Work's branch of this store, to buffer Arrow data and commit.
+    /// No migration step kinds yet: `iceberg` steps (declarative schema
+    /// operations) stay on the Python facade.
+    #[getter]
+    #[allow(clippy::unused_self)]
+    fn migration_kinds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyFrozenSet>> {
+        kinds(py, &[])
+    }
+
+    /// Refused: `iceberg` steps are not on the native core path yet.
+    #[allow(clippy::needless_pass_by_value, clippy::unused_self)]
+    fn run_migration_step(&self, kind: &str, _body: &Bound<'_, PyAny>) -> PyResult<()> {
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "{kind} migration steps are not on the native core path yet; run them with \
+             the Python facade (a DSN string or the Python Iceberg adapter)"
+        )))
+    }
+
     fn unit(&self) -> IcebergUnit {
         IcebergUnit {
             dsn: self.dsn.clone(),

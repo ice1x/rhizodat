@@ -291,6 +291,20 @@ fn write_body(out: &mut String, body: &Body) {
     }
 }
 
+/// One applied migration as a journal's history records it (the Python
+/// reference's `AppliedMigration`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppliedMigration {
+    /// The migration's id.
+    pub id: i64,
+    /// Its name.
+    pub name: String,
+    /// The checksum of its canonical form when it was applied.
+    pub checksum: String,
+    /// The HLC timestamp of the record: `as_of` reads compare against it.
+    pub dat_tx_time: i64,
+}
+
 /// The text the checksum is taken of: the JSON of
 /// `{"id", "name", "steps": [{"body", "kind", "store"}]}` with keys sorted, no
 /// whitespace, text as UTF-8 with only `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`

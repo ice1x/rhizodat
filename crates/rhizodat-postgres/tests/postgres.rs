@@ -22,6 +22,7 @@ use rhizodat_core::coordinator::{CommitError, Coordinator, Outcome};
 use rhizodat_core::gid::gid_for;
 use rhizodat_core::identity::IdGenerator;
 use rhizodat_core::journal::{BranchRecord, Journal, JournalError, State, encode_branches};
+use rhizodat_core::migrations::AppliedMigration;
 use rhizodat_core::recovery::Recovery;
 use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
@@ -930,5 +931,72 @@ async fn native_sql_binds_by_type_and_decodes_by_column() {
     assert!(err.to_string().contains("1 parameter"), "{err}");
     let err = query(&client, "SELECT * FROM nope", &[]).await.unwrap_err();
     assert!(err.to_string().contains("nope"), "{err}");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn the_journal_keeps_the_migration_history_and_a_store_runs_sql_steps() {
+    let Some(db) = Db::new().await else { return };
+    let journal = db.journal().await;
+    assert_eq!(journal.applied_migrations().await.unwrap(), []);
+    let first = AppliedMigration {
+        id: 1,
+        name: "orders".into(),
+        checksum: "a".repeat(64),
+        dat_tx_time: 10,
+    };
+    assert!(journal.record_migration(&first).await.unwrap());
+    assert!(
+        !journal.record_migration(&first).await.unwrap(),
+        "recorded once"
+    );
+    let second = AppliedMigration {
+        id: 2,
+        name: "lines".into(),
+        checksum: "b".repeat(64),
+        dat_tx_time: 20,
+    };
+    assert!(journal.record_migration(&second).await.unwrap());
+    assert_eq!(
+        journal.applied_migrations().await.unwrap(),
+        [first.clone(), second.clone()]
+    );
+    // The reference's table, readable by its name.
+    let rows = db
+        .admin
+        .query(
+            &format!(
+                "SELECT id, name FROM {}.dat_journal_migrations ORDER BY id",
+                db.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get::<_, String>(1), "orders");
+
+    let store = db.store("m").await;
+    store
+        .run_sql(&[
+            "CREATE TABLE IF NOT EXISTS orders (id bigint PRIMARY KEY)".into(),
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS sku text".into(),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(db.count("m", "orders").await, 0);
+    let err = store
+        .run_sql(&[
+            "CREATE TABLE IF NOT EXISTS lines (n bigint)".into(),
+            "SELECT nope".into(),
+        ])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("db error"), "{err}");
+    assert_eq!(
+        db.count("m", "lines").await,
+        -1,
+        "the step rolled back whole"
+    );
     db.drop().await;
 }
