@@ -333,10 +333,20 @@ Steps:
    with the whole result as one Arrow IPC stream and
    `rhizodat.core.native_result.from_ipc` makes the facade's `Result` of it, so
    `r.store(name).execute(...)` works on the native facade and `to_arrow()` is
-   the stream itself. Not yet: Iceberg row filters, `execute` on native
-   PostgreSQL and drevo stores (rows, not Arrow, from those drivers).
-   Next: `execute` on native PostgreSQL and drevo, migrations on the native
-   path, and the C ABI for Go.
+   the stream itself. Not yet: Iceberg row filters.
+   ✔ `execute` on the native PostgreSQL and drevo stores, rows across the
+   boundary (those drivers give rows, not Arrow): `rhizodat_postgres::query`
+   prepares the statement, binds `$1..$n` by the server's parameter types (an
+   integer to `int2` / `int4` / `int8` / `float8`, a string to text, `uuid`,
+   `json(b)`, …) and decodes each column by its type (`bool`, integers, floats,
+   text, `uuid`, `bytea`, `json(b)`, `timestamp(tz)`, `date`); a value or a
+   column type it cannot carry is refused with the cast that would
+   (`$1::text::numeric`, `price::text`), and a server error carries its SQLSTATE
+   and message. The drevo store's `execute` runs Cypher with named parameters
+   through the core's `write` (fenced while a branch is prepared). Both answer
+   through `rhizodat.core.native_result.from_rows`, so `r.store(name).execute`
+   now works on every native store.
+   Next: migrations on the native path, Iceberg row filters, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

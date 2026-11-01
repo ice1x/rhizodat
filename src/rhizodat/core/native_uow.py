@@ -16,11 +16,11 @@ Recovery runs on the core too: :class:`NativeRecovery` drives
 the Python :class:`~rhizodat.core.coordinator.Recovery`.
 
 Repositories run on this path too, with their parts in any native store
-(:mod:`rhizodat.core.native_parts`). ``r.store(name).execute(...)`` on a native
-ClickHouse or Iceberg store runs on the core and answers with a
-:class:`~rhizodat.core.result.Result` over one Arrow IPC stream
-(:mod:`rhizodat.core.native_result`). Migrations, and ``execute`` on native
-PostgreSQL and drevo stores, are not on it yet; use the Python facade for those.
+(:mod:`rhizodat.core.native_parts`). ``r.store(name).execute(...)`` on any native
+store runs on the core and answers with a :class:`~rhizodat.core.result.Result`
+(:mod:`rhizodat.core.native_result`): over one Arrow IPC stream from ClickHouse
+and Iceberg, over rows from PostgreSQL (``$n`` parameters, by position) and
+drevo. Migrations are not on it yet; use the Python facade for those.
 """
 
 import functools

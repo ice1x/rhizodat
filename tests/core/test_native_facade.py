@@ -8,7 +8,7 @@ callbacks on the path, exactly as the direct ``rhizodat_native.Coordinator``
 tests exercise it. A Unit of Work buffers its data on each store's native unit:
 ``uow.store(name).insert(table, columns, rows)`` for a tabular store,
 ``uow.store(name).run(cypher, params)`` for drevo. Repositories and parts are
-covered by ``test_native_parts*.py``, ``execute`` on ClickHouse and Iceberg by
+covered by ``test_native_parts*.py``, ``execute`` on every native store by
 ``test_native_execute.py``; migrations are not on this path yet.
 
 The Docker-free tests only build the facade (its native detection and the
