@@ -4,12 +4,14 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 
 pytestmark = pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required")
 
@@ -44,4 +46,4 @@ def test_wheel_installs_and_imports_in_a_clean_venv(wheel: Path, tmp_path: Path)
     assert [p["name"] for p in installed] == ["rhizodat"]
 
     code = "import rhizodat, rhizodat.core, rhizodat.adapters; print(rhizodat.__version__)"
-    assert run(python, "-c", code).strip() == "0.1.0.dev0"
+    assert run(python, "-c", code).strip() == VERSION
