@@ -353,10 +353,12 @@ Steps:
    memory; the native PostgreSQL store runs `sql` steps in one transaction
    (`run_sql`), ClickHouse one statement per request, drevo `cypher` steps in
    their own transactions; the core's `AppliedMigration` crosses as the
-   reference's dataclass. Iceberg steps (declarative schema operations) are
-   refused on the native store for now.
-   Next: Iceberg migration steps and row filters on the core, and the C ABI for
-   Go.
+   reference's dataclass. The native Iceberg store runs `iceberg` steps through
+   the Python adapter's declarative operations on a pyiceberg catalog: iceberg-rust
+   0.10 has `add_column` / `delete_column` but no column rename and no partition
+   spec update, so the step itself waits for the library (or a hand-built REST
+   table update like the erase's).
+   Next: Iceberg row filters on the core, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

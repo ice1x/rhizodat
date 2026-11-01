@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyFrozenSet};
+use pyo3::types::{IntoPyDict, PyBytes, PyDict, PyFrozenSet};
 use rhizodat_iceberg::parts::{
     FieldKind, IcebergPartSpec as CoreSpec, IcebergParts, PartVersion, PendingVersion,
 };
@@ -283,21 +283,50 @@ impl IcebergStore {
     }
 
     /// A Unit of Work's branch of this store, to buffer Arrow data and commit.
-    /// No migration step kinds yet: `iceberg` steps (declarative schema
-    /// operations) stay on the Python facade.
+    /// The migration step kinds this store runs (`Migrates.migration_kinds`).
     #[getter]
     #[allow(clippy::unused_self)]
     fn migration_kinds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyFrozenSet>> {
-        kinds(py, &[])
+        kinds(py, &["iceberg"])
     }
 
-    /// Refused: `iceberg` steps are not on the native core path yet.
-    #[allow(clippy::needless_pass_by_value, clippy::unused_self)]
-    fn run_migration_step(&self, kind: &str, _body: &Bound<'_, PyAny>) -> PyResult<()> {
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "{kind} migration steps are not on the native core path yet; run them with \
-             the Python facade (a DSN string or the Python Iceberg adapter)"
-        )))
+    /// An `iceberg` step: the Python adapter's declarative schema operations
+    /// (`rhizodat.adapters.iceberg_schema.run_operations`) against a pyiceberg
+    /// catalog on this store's DSN. The step itself stays Python for now:
+    /// iceberg-rust 0.10 has no column rename or partition update.
+    fn run_migration_step(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        body: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        if kind != "iceberg" {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "this store runs iceberg steps, not {kind}"
+            )));
+        }
+        let is_ops = body
+            .cast::<pyo3::types::PyList>()
+            .is_ok_and(|l| l.iter().all(|op| op.is_instance_of::<PyDict>()));
+        if !is_ops {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "an iceberg step is a list of operations (tables), got {}",
+                body.repr()?
+            )));
+        }
+        let store = py
+            .import("rhizodat.adapters.iceberg")?
+            .getattr("IcebergStore")?
+            .call(
+                (&*self.dsn,),
+                Some(&[("name", &*self.name)].into_py_dict(py)?),
+            )?;
+        let run = py
+            .import("rhizodat.adapters.iceberg_schema")?
+            .getattr("run_operations")?;
+        let result = run.call1((store.getattr("catalog")?, body));
+        store.call_method0("close")?;
+        result.map(|_| ())
     }
 
     fn unit(&self) -> IcebergUnit {
