@@ -11,6 +11,7 @@ Install the module with ``uv sync --group native`` (needs a Rust toolchain).
 
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
@@ -198,3 +199,144 @@ def test_clickhouse_execute_through_the_facade(clickhouse_dsn: str) -> None:
 
         write()
         assert [row["n"] for row in r.store("ch").execute("SELECT n FROM t ORDER BY n")] == [1, 2]
+
+
+# --- PostgreSQL -------------------------------------------------------------------------
+
+
+def test_postgres_execute_runs_sql_with_positional_params(
+    pg_dsn: str, pg_schema: str, faker: Faker
+) -> None:
+    store = native.PostgresStore(pg_dsn, "pg", pg_schema)
+    ddl = store.execute(
+        "CREATE TABLE people (id bigint, small int, name text, score double precision,"
+        " ok boolean, tag uuid, raw bytea, doc jsonb, at timestamptz, day date, price numeric)"
+    )
+    assert isinstance(ddl, Result)
+    assert (ddl.columns, ddl.all()) == ((), [])
+
+    name, tag = faker.name(), uuid.uuid4()
+    inserted = store.execute(
+        "INSERT INTO people VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb,"
+        " '2026-10-31T09:30:15.123456+00:00', '2026-10-31', 12.5)",
+        [1, 7, name, 0.5, True, tag, b"\x00\xff", '{"n": 1}'],
+    )
+    assert inserted.all() == []
+    store.execute("INSERT INTO people (id, name) VALUES ($1, $2)", (2, None))
+
+    result = store.execute(
+        "SELECT id, small, name, score, ok, tag, raw, doc, at, day FROM people"
+        " WHERE id = $1 OR name = $2 ORDER BY id",
+        [2, name],
+    )
+    assert result.columns == (
+        "id",
+        "small",
+        "name",
+        "score",
+        "ok",
+        "tag",
+        "raw",
+        "doc",
+        "at",
+        "day",
+    )
+    first, second = result.all()
+    assert first == {
+        "id": 1,
+        "small": 7,
+        "name": name,
+        "score": 0.5,
+        "ok": True,
+        "tag": tag,
+        "raw": b"\x00\xff",
+        "doc": {"n": 1},
+        "at": datetime(2026, 10, 31, 9, 30, 15, 123456, tzinfo=UTC),
+        "day": date(2026, 10, 31),
+    }
+    assert second["id"] == 2
+    assert all(second[c] is None for c in ("small", "name", "score", "ok", "tag", "raw", "doc"))
+
+    assert store.execute("SELECT count(*) AS n FROM people").one() == {"n": 2}
+    assert store.execute("SELECT current_schema() AS s").one() == {"s": pg_schema}
+    assert store.execute("SELECT price::text AS p FROM people WHERE id = 1").one() == {"p": "12.5"}
+    table = store.execute("SELECT id, name FROM people ORDER BY id").to_arrow()
+    assert table.column("id").to_pylist() == [1, 2]
+
+
+def test_postgres_execute_refuses_what_it_cannot_bind_or_decode(
+    pg_dsn: str, pg_schema: str
+) -> None:
+    store = native.PostgresStore(pg_dsn, "pg", pg_schema)
+    with pytest.raises(RuntimeError, match=r"(?i)numeric.*::text"):
+        store.execute("SELECT 1.5::numeric AS price")
+    with pytest.raises(native.InvalidUnitOfWork, match="cannot bind"):
+        store.execute("SELECT $1::text", [object()])
+    with pytest.raises(native.InvalidUnitOfWork, match=r"\$1"):
+        store.execute("SELECT $1::text", {"name": "x"})
+    with pytest.raises(RuntimeError, match=r"(?i)no_such_table|does not exist"):
+        store.execute("SELECT * FROM no_such_table")
+
+
+def test_postgres_execute_through_the_facade(pg_dsn: str, pg_schema: str) -> None:
+    with Rhizodat(stores={"pg": native.PostgresStore(pg_dsn, "pg", pg_schema)}) as r:
+        r.store("pg").execute("CREATE TABLE t (n bigint, dat_txn uuid, dat_tx_time bigint)")
+
+        @r.transactional
+        def write(uow: Any) -> None:
+            uow.store("pg").insert("t", ["n"], [[1], [2]])
+
+        write()
+        assert [row["n"] for row in r.store("pg").execute("SELECT n FROM t ORDER BY n")] == [1, 2]
+
+
+# --- drevo ------------------------------------------------------------------------------
+
+
+def test_drevo_execute_runs_cypher_with_params(drevo_bolt_dsn: str, faker: Faker) -> None:
+    label = f"Exec{uuid.uuid4().hex[:10]}"
+    store = native.DrevoStore(drevo_bolt_dsn, "graph")
+    try:
+        names = sorted({faker.first_name() for _ in range(3)})
+        created = store.execute(
+            f"UNWIND $names AS name CREATE (:{label} {{name: name, n: 1, ok: true, score: 0.5}})",
+            {"names": names},
+        )
+        assert isinstance(created, Result)
+        assert created.all() == []
+
+        result = store.execute(
+            f"MATCH (p:{label}) WHERE p.name <> $skip"
+            " RETURN p.name AS name, p.n AS n, p.ok AS ok, p.score AS score, [p.n, p.name] AS pair"
+            " ORDER BY name",
+            {"skip": names[1]},
+        )
+        assert result.columns == ("n", "name", "ok", "pair", "score")
+        assert result.all() == [
+            {"name": names[0], "n": 1, "ok": True, "score": 0.5, "pair": [1, names[0]]},
+            {"name": names[2], "n": 1, "ok": True, "score": 0.5, "pair": [1, names[2]]},
+        ]
+        assert store.execute(f"MATCH (p:{label}) RETURN count(p) AS c").one() == {"c": 3}
+        assert store.execute(f"MATCH (p:{label}) WHERE p.n > 5 RETURN p.name").all() == []
+        with pytest.raises(native.InvalidUnitOfWork, match="Cypher parameter"):
+            store.execute("RETURN $x", {"x": object()})
+        with pytest.raises(RuntimeError):
+            store.execute("THIS IS NOT CYPHER")
+    finally:
+        store.execute(f"MATCH (p:{label}) DETACH DELETE p")
+
+
+def test_drevo_execute_through_the_facade(drevo_bolt_dsn: str) -> None:
+    label = f"Exec{uuid.uuid4().hex[:10]}"
+    with Rhizodat(stores={"graph": native.DrevoStore(drevo_bolt_dsn, "graph")}) as r:
+        try:
+
+            @r.transactional
+            def write(uow: Any) -> None:
+                uow.store("graph").run(f"CREATE (:{label} {{n: 1}}), (:{label} {{n: 2}})")
+
+            write()
+            rows = r.store("graph").execute(f"MATCH (p:{label}) RETURN p.n AS n ORDER BY n")
+            assert [row["n"] for row in rows] == [1, 2]
+        finally:
+            r.store("graph").execute(f"MATCH (p:{label}) DETACH DELETE p")

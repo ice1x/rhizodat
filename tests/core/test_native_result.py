@@ -13,7 +13,7 @@ from faker import Faker
 
 pa = pytest.importorskip("pyarrow")
 
-from rhizodat.core.native_result import from_ipc  # noqa: E402
+from rhizodat.core.native_result import from_ipc, from_rows  # noqa: E402
 from rhizodat.core.result import Result, ResultConsumedError  # noqa: E402
 
 
@@ -66,3 +66,27 @@ def test_the_raw_object_is_kept() -> None:
 def test_not_a_stream_is_refused() -> None:
     with pytest.raises(pa.ArrowInvalid):
         from_ipc(b"not arrow")
+
+
+# --- from_rows: stores whose drivers give rows, not Arrow ------------------------------------
+
+
+def test_rows_become_dicts_by_column(faker: Faker) -> None:
+    names = [faker.name() for _ in range(2)]
+    result = from_rows(("id", "name"), [[1, names[0]], [2, names[1]]])
+    assert isinstance(result, Result)
+    assert result.columns == ("id", "name")
+    assert result.all() == [{"id": 1, "name": names[0]}, {"id": 2, "name": names[1]}]
+
+
+def test_rows_to_arrow_builds_a_table() -> None:
+    table = from_rows(("n", "ok"), [[1, True], [None, False]]).to_arrow()
+    assert table.column_names == ["n", "ok"]
+    assert table.column("n").to_pylist() == [1, None]
+
+
+def test_no_rows_keep_their_columns() -> None:
+    result = from_rows(("n",), [])
+    assert result.columns == ("n",)
+    assert result.all() == []
+    assert from_rows((), []).columns == ()

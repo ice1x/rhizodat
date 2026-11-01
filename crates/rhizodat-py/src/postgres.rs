@@ -12,17 +12,54 @@ use std::sync::{Arc, Mutex};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rhizodat_core::journal::Journal;
+use rhizodat_core::rows::RowValue;
 use rhizodat_postgres::parts::{
     ColumnType, PartSpec as CoreSpec, PartVersion, PendingVersion, PostgresParts as CoreParts,
 };
+use rhizodat_postgres::query::query;
 use rhizodat_postgres::{
     PostgresJournal as CoreJournal, PostgresRows as CoreRows, PostgresStore as CoreStore,
 };
 use uuid::Uuid;
 
 use crate::native::{NativeStore, Postgres, PostgresPending};
+use crate::result::rows_result;
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
+
+/// `execute`'s `params` as the statement's `$1..$n` values: a sequence, in
+/// order (the native path binds by position; a mapping names nothing here).
+fn positional_params(params: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<RowValue>> {
+    let Some(params) = params else {
+        return Ok(Vec::new());
+    };
+    if params.is_instance_of::<PyDict>() || params.hasattr("keys")? {
+        return Err(InvalidUnitOfWork::new_err(
+            "the native PostgreSQL store binds parameters by position: pass a sequence \
+             for $1..$n, not a mapping (use the Python adapter for %(name)s placeholders)",
+        ));
+    }
+    if params.is_instance_of::<pyo3::types::PyString>()
+        || params.is_instance_of::<pyo3::types::PyBytes>()
+    {
+        return Err(InvalidUnitOfWork::new_err(
+            "params must be a sequence of values for $1..$n",
+        ));
+    }
+    params
+        .try_iter()?
+        .enumerate()
+        .map(|(i, value)| {
+            row_value(&value?).map_err(|e| {
+                InvalidUnitOfWork::new_err(format!(
+                    "cannot bind ${}: {}",
+                    i + 1,
+                    e.value(params.py())
+                ))
+            })
+        })
+        .collect()
+}
 
 /// One PostgreSQL database as a rhizodat store, for a native Unit of Work.
 #[pyclass(module = "rhizodat_native")]
@@ -63,6 +100,32 @@ impl PostgresStore {
     }
 
     /// A Unit of Work's branch of this store, to buffer rows and then commit.
+    /// Run `sql` in autocommit mode outside any meta-transaction, as the Python
+    /// adapter's `execute`, with `params` (a sequence) bound to `$1..$n` by the
+    /// statement's parameter types. The result is a `rhizodat.core.result.Result`
+    /// of dicts; a column type the native path does not decode is refused with
+    /// the cast to use (`col::text`).
+    #[pyo3(signature = (sql, params = None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        sql: &str,
+        params: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let params = positional_params(params)?;
+        let (store, sql) = (self.0.clone(), sql.to_owned());
+        let result = py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(async {
+                    let client = store.connect().await?;
+                    query(&client, &sql, &params).await
+                })
+                .map_err(op_err)
+        })?;
+        rows_result(py, &result.columns, &result.rows)
+    }
+
     fn unit(&self) -> PostgresUnit {
         PostgresUnit {
             store: self.0.clone(),

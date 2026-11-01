@@ -26,6 +26,7 @@ use rhizodat_core::recovery::Recovery;
 use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
 use rhizodat_core::timer::TokioTimer;
+use rhizodat_postgres::query::{QueryResult, query};
 use rhizodat_postgres::{
     HeuristicOutcome, Isolation, PostgresBranch, PostgresJournal, PostgresRows, PostgresStore,
     is_retryable,
@@ -838,4 +839,96 @@ async fn a_crash_after_the_decision_is_rolled_forward_by_recovery_elsewhere() {
     );
     assert_eq!(erp.recover().await.finished, Vec::<Uuid>::new());
     erp.db.drop().await;
+}
+
+#[tokio::test]
+async fn native_sql_binds_by_type_and_decodes_by_column() {
+    let Some(db) = Db::new().await else { return };
+    let store = db.store("q").await;
+    let client = store.connect().await.unwrap();
+    let ddl = query(
+        &client,
+        "CREATE TABLE people (id bigint, small int, name text, ok boolean, tag uuid, \
+         raw bytea, doc jsonb, at timestamptz, day date, price numeric)",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(ddl, QueryResult::default());
+    let tag = new_id();
+    query(
+        &client,
+        "INSERT INTO people VALUES ($1, $2, $3, $4, $5, $6, $7, \
+         '2026-10-31T09:30:15.123456+00:00', '2026-10-31', 12.5)",
+        &[
+            RowValue::Int(1),
+            RowValue::Int(7),
+            RowValue::Str("ann".into()),
+            RowValue::Bool(true),
+            RowValue::Uuid(tag),
+            RowValue::Bytes(vec![0, 255]),
+            RowValue::Str(r#"{"n": 1}"#.into()),
+        ],
+    )
+    .await
+    .unwrap();
+    query(
+        &client,
+        "INSERT INTO people (id, name) VALUES ($1, $2)",
+        &[RowValue::Int(2), RowValue::Null],
+    )
+    .await
+    .unwrap();
+    let result = query(
+        &client,
+        "SELECT id, small, name, ok, tag, raw, doc, at, day FROM people \
+         WHERE id = $1 OR name = $2 ORDER BY id",
+        &[RowValue::Int(2), RowValue::Str("ann".into())],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result.columns,
+        [
+            "id", "small", "name", "ok", "tag", "raw", "doc", "at", "day"
+        ]
+    );
+    assert_eq!(
+        result.rows[0],
+        [
+            RowValue::Int(1),
+            RowValue::Int(7),
+            RowValue::Str("ann".into()),
+            RowValue::Bool(true),
+            RowValue::Uuid(tag),
+            RowValue::Bytes(vec![0, 255]),
+            RowValue::Map(vec![("n".into(), RowValue::Int(1))]),
+            RowValue::DateTime("2026-10-31T09:30:15.123456Z".into()),
+            RowValue::Date("2026-10-31".into()),
+        ]
+    );
+    assert_eq!(result.rows[1][0], RowValue::Int(2));
+    assert!(result.rows[1][1..7].iter().all(|v| *v == RowValue::Null));
+
+    let err = query(&client, "SELECT price FROM people", &[])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("price::text"), "{err}");
+    let text = query(
+        &client,
+        "SELECT price::text AS p FROM people WHERE id = 1",
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(text.rows, [[RowValue::Str("12.5".into())]]);
+    let err = query(&client, "SELECT $1::int8", &[RowValue::Str("x".into())])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot bind $1"), "{err}");
+    let err = query(&client, "SELECT $1::int8", &[]).await.unwrap_err();
+    assert!(err.to_string().contains("1 parameter"), "{err}");
+    let err = query(&client, "SELECT * FROM nope", &[]).await.unwrap_err();
+    assert!(err.to_string().contains("nope"), "{err}");
+    db.drop().await;
 }

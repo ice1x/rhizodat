@@ -6,11 +6,12 @@ the table's Python values (``to_pylist``), ``columns`` its names and ``to_arrow`
 the table itself, so a caller that wants Arrow pays for no second conversion.
 """
 
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from rhizodat.core.result import Result
 
-__all__ = ["empty", "from_ipc"]
+__all__ = ["empty", "from_ipc", "from_rows"]
 
 
 def from_ipc(data: bytes, *, raw: object = None) -> Result:
@@ -25,6 +26,14 @@ def from_ipc(data: bytes, *, raw: object = None) -> Result:
         raw=raw,
         arrow=lambda: table,
     )
+
+
+def from_rows(columns: Sequence[str], rows: Iterable[Sequence[Any]]) -> Result:
+    """``rows`` (values in ``columns`` order) as a ``Result`` of dicts: for the stores
+    whose drivers answer with rows, not Arrow (PostgreSQL, drevo); ``to_arrow`` then
+    builds the table from the rows."""
+    names = tuple(columns)
+    return Result((dict(zip(names, row, strict=True)) for row in rows), columns=names)
 
 
 def empty() -> Result:

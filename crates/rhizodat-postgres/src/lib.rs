@@ -45,6 +45,7 @@ use tokio_postgres::{Client, NoTls, Row};
 use uuid::Uuid;
 
 pub mod parts;
+pub mod query;
 
 use parts::{PostgresParts, apply_parts};
 

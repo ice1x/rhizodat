@@ -66,6 +66,25 @@ fn cypher_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     )))
 }
 
+/// A drevo [`Value`] as the Python value `cypher_value` reads it from.
+fn py_cypher<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match value {
+        Value::Null => py.None().into_bound(py),
+        Value::Bool(v) => PyBool::new(py, *v).to_owned().into_any(),
+        Value::Int(v) => v.into_pyobject(py)?.into_any(),
+        Value::Float(v) => PyFloat::new(py, *v).into_any(),
+        Value::Str(v) => PyString::new(py, v).into_any(),
+        Value::List(items) => PyList::new(
+            py,
+            items
+                .iter()
+                .map(|x| py_cypher(py, x))
+                .collect::<PyResult<Vec<_>>>()?,
+        )?
+        .into_any(),
+    })
+}
+
 /// A Python mapping of parameter names to values as drevo [`Params`].
 fn cypher_params(params: &Bound<'_, PyDict>) -> PyResult<Params> {
     let mut out: Params = Vec::with_capacity(params.len());
@@ -108,6 +127,46 @@ impl DrevoStore {
     }
 
     /// A Unit of Work's branch of this store, to buffer Cypher writes and commit.
+    /// Run `cypher` in its own transaction outside any meta-transaction, as the
+    /// Python adapter's `execute` (a write fails retryably while a branch of this
+    /// graph is prepared). The result is a `rhizodat.core.result.Result` of dicts,
+    /// columns in name order (the core's rows are maps).
+    #[pyo3(signature = (cypher, params = None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        cypher: &str,
+        params: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let params = params.map_or_else(|| Ok(Params::new()), cypher_params)?;
+        let (store, cypher) = (self.0.clone(), cypher.to_owned());
+        let rows = py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(store.write(&cypher, params))
+                .map_err(op_err)
+        })?;
+        let columns: Vec<String> = rows
+            .first()
+            .map(|r| r.0.keys().cloned().collect())
+            .unwrap_or_default();
+        let values = rows
+            .iter()
+            .map(|row| {
+                PyList::new(
+                    py,
+                    columns
+                        .iter()
+                        .map(|c| py_cypher(py, row.value(c)))
+                        .collect::<PyResult<Vec<_>>>()?,
+                )
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        py.import("rhizodat.core.native_result")?
+            .getattr("from_rows")?
+            .call1((PyList::new(py, &columns)?, PyList::new(py, values)?))
+    }
+
     fn unit(&self) -> DrevoUnit {
         DrevoUnit {
             store: self.0.clone(),

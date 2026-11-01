@@ -9,9 +9,11 @@ use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::SchemaRef;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyList};
+use rhizodat_core::rows::RowValue;
 
 use crate::op_err;
+use crate::rows::py_value;
 
 /// `batches` as the bytes of one Arrow IPC stream with `schema` (so an answer
 /// with no batches still carries its columns).
@@ -29,6 +31,29 @@ pub(crate) fn py_result<'py>(py: Python<'py>, stream: &[u8]) -> PyResult<Bound<'
     py.import("rhizodat.core.native_result")?
         .getattr("from_ipc")?
         .call1((PyBytes::new(py, stream),))
+}
+
+/// A `rhizodat.core.result.Result` over `rows` (values in `columns` order), for
+/// the stores whose drivers give rows, not Arrow.
+pub(crate) fn rows_result<'py>(
+    py: Python<'py>,
+    columns: &[String],
+    rows: &[Vec<RowValue>],
+) -> PyResult<Bound<'py, PyAny>> {
+    let rows = rows
+        .iter()
+        .map(|row| {
+            PyList::new(
+                py,
+                row.iter()
+                    .map(|v| py_value(py, v))
+                    .collect::<PyResult<Vec<_>>>()?,
+            )
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    py.import("rhizodat.core.native_result")?
+        .getattr("from_rows")?
+        .call1((PyList::new(py, columns)?, PyList::new(py, rows)?))
 }
 
 /// The `Result` of a statement that returns no rows.
