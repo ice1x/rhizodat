@@ -52,6 +52,20 @@ One `compose.yaml` runs every store the tests need, locally and in CI alike
 Compose is for development, tests and demos on one host. It is not the
 production deployment.
 
+## Releases
+
+1. ✔ **0.1.0a1, the proof of concept** (2026-11-01): the Python package with
+   the Rust core as `rhizodat[native]`, published from a `v*` tag by the
+   `Release` workflow (`rhizodat` sdist and wheel, `rhizodat-native` abi3 wheels
+   for Linux and macOS on x86_64 and arm64, a GitHub release, PyPI through
+   trusted publishing).
+2. **Feedback**: the "Feedback on the proof of concept" issue template; every
+   report becomes a plan item or a documented limit.
+3. **0.1.0, the MVP**: the v0.1 roadmap complete (bitemporal reads and the
+   integration scenarios of item 7), the feedback addressed, every store's
+   documented limits either lifted or stated in the adapter's page, and the
+   same suite green on both implementations in CI.
+
 ## Rust core
 
 The parts that must behave identically everywhere move to one Rust
@@ -363,7 +377,7 @@ Steps:
    0.10 has `add_column` / `delete_column` but no column rename and no partition
    spec update, so the step itself waits for the library (or a hand-built REST
    table update like the erase's).
-   Next: the C ABI for Go.
+   Next, after the MVP: the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

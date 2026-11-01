@@ -1,0 +1,39 @@
+name: Feedback on the proof of concept
+description: You tried rhizodat 0.1.0a1 — what worked, what did not, what is missing for you.
+title: "Feedback: "
+labels: ["feedback"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version and install
+      description: "`pip show rhizodat rhizodat-native`, or the commit."
+      placeholder: "rhizodat 0.1.0a1, rhizodat-native 0.1.0a1, Python 3.13, macOS"
+    validations:
+      required: true
+  - type: dropdown
+    id: stores
+    attributes:
+      label: Stores you used
+      multiple: true
+      options: [PostgreSQL, ClickHouse, drevo, Iceberg]
+  - type: textarea
+    id: scenario
+    attributes:
+      label: What you tried to build
+      description: The use case in a few lines — the data model and the writes/reads.
+    validations:
+      required: true
+  - type: textarea
+    id: worked
+    attributes:
+      label: What worked
+  - type: textarea
+    id: failed
+    attributes:
+      label: What did not work, or was confusing
+      description: Error text in a code block, please; the shortest script that shows it is ideal.
+  - type: textarea
+    id: missing
+    attributes:
+      label: What is missing before you would use it

@@ -7,8 +7,9 @@ pip install 'rhizodat[postgres,clickhouse,drevo,iceberg]'
 ```
 
 Each store's driver is an extra: install only those you use. `rhizodat[ingest]`
-adds file imports, `rhizodat[mcp]` the MCP server. Embedded drevo (`drevo:///`)
-needs `drevo-py`, which is not on PyPI yet and is built from source.
+adds file imports, `rhizodat[mcp]` the MCP server, `rhizodat[native]` the core in
+Rust (`rhizodat_native`, prebuilt wheels for Linux and macOS). Embedded drevo
+(`drevo:///`) needs `drevo-py`, which is not on PyPI yet and is built from source.
 
 ## Run the stores
 

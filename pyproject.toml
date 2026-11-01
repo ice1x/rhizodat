@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rhizodat"
-version = "0.1.0.dev0"
+version = "0.1.0a1"
 description = "Bitemporal polyglot data layer over PostgreSQL, ClickHouse, drevo and Apache Iceberg"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -38,6 +38,9 @@ ingest = ["pyarrow>=17", "rdflib>=7"]
 mcp = ["mcp>=2.3"]
 # rhizodat.testing: the adapter contract suite for adapter authors.
 testing = ["pytest>=8", "faker>=30"]
+# The core in Rust (rhizodat_native, built from crates/rhizodat-py): the package uses it
+# when installed, at the same version.
+native = ["rhizodat-native==0.1.0a1"]
 
 [project.scripts]
 rhizodat = "rhizodat.check:main"

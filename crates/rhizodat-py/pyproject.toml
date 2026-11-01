@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rhizodat-native"
-version = "0.0.0"
+version = "0.1.0a1"
 description = "The rhizodat core in Rust, for the rhizodat Python package"
 requires-python = ">=3.12"
 license = "Apache-2.0"
