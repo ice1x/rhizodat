@@ -33,7 +33,7 @@ use rhizodat_core::staged::{StagedTable, decode_staged, encode_staged};
 use rhizodat_core::store::{Branch, Participant, Participants};
 use rhizodat_core::timer::TokioTimer;
 use rhizodat_iceberg::parts::{FieldKind, IcebergPartSpec, IcebergParts, PartVersion};
-use rhizodat_iceberg::{IcebergBranch, IcebergStore, is_retryable};
+use rhizodat_iceberg::{IcebergBranch, IcebergStore, Scan, is_retryable};
 use rhizodat_postgres::{PostgresJournal, PostgresStore};
 use uuid::Uuid;
 
@@ -339,6 +339,106 @@ async fn one_phase_commit_adds_one_tagged_snapshot() {
                 .unwrap();
             assert!(times.iter().all(|t| t == Some(TS)));
         }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scan_takes_columns_a_limit_and_a_snapshot() {
+    each(async |lake| {
+        let table = lake.table("sales");
+        // An empty table still answers with its columns.
+        let empty = lake
+            .store
+            .scan_with(&table, &Scan::default())
+            .await
+            .unwrap();
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].num_rows(), 0);
+        let txn = empty[0]
+            .schema()
+            .field_with_name("dat_txn")
+            .unwrap()
+            .clone();
+        assert_eq!(txn.data_type(), &DataType::FixedSizeBinary(16));
+        assert_eq!(
+            txn.metadata()
+                .get("ARROW:extension:name")
+                .map(String::as_str),
+            Some("arrow.uuid")
+        );
+        assert_eq!(
+            empty[0]
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            [
+                "order_id",
+                "sku",
+                "qty",
+                "price",
+                "at",
+                "dat_txn",
+                "dat_tx_time"
+            ]
+        );
+        let narrow = Scan {
+            columns: Some(vec!["qty".to_owned()]),
+            ..Scan::default()
+        };
+        let empty = lake.store.scan_with(&table, &narrow).await.unwrap();
+        assert_eq!(empty[0].schema().fields().len(), 1);
+        assert_eq!(empty[0].schema().field(0).name(), "qty");
+
+        let (_, mut branch, _) = staged(lake, 3).await;
+        branch.commit_one_phase().await.unwrap();
+        let first = lake
+            .catalog()
+            .load_table(&lake.ident("sales"))
+            .await
+            .unwrap()
+            .metadata()
+            .current_snapshot()
+            .unwrap()
+            .snapshot_id();
+        let (_, mut branch, _) = staged(lake, 2).await;
+        branch.commit_one_phase().await.unwrap();
+
+        let rows =
+            |batches: &[RecordBatch]| batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+        assert_eq!(rows(&lake.store.scan(&table).await.unwrap()), 5);
+        let batches = lake.store.scan_with(&table, &narrow).await.unwrap();
+        assert_eq!(rows(&batches), 5);
+        assert!(batches.iter().all(|b| b.schema().fields().len() == 1));
+        let limited = Scan {
+            limit: Some(4),
+            ..Scan::default()
+        };
+        assert_eq!(
+            rows(&lake.store.scan_with(&table, &limited).await.unwrap()),
+            4
+        );
+        let none = Scan {
+            limit: Some(0),
+            ..Scan::default()
+        };
+        assert_eq!(rows(&lake.store.scan_with(&table, &none).await.unwrap()), 0);
+        let then = Scan {
+            snapshot_id: Some(first),
+            ..Scan::default()
+        };
+        assert_eq!(rows(&lake.store.scan_with(&table, &then).await.unwrap()), 3);
+
+        let unknown = Scan {
+            columns: Some(vec!["nope".to_owned()]),
+            ..Scan::default()
+        };
+        let err = lake.store.scan_with(&table, &unknown).await.unwrap_err();
+        assert!(err.to_string().contains("nope"), "{err}");
+        let err = lake.store.scan("sales").await.unwrap_err();
+        assert!(err.to_string().contains("namespace.table"), "{err}");
     })
     .await;
 }

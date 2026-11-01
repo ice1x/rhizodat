@@ -25,10 +25,11 @@ use pyo3::types::{PyBytes, PyDict};
 use rhizodat_iceberg::parts::{
     FieldKind, IcebergPartSpec as CoreSpec, IcebergParts, PartVersion, PendingVersion,
 };
-use rhizodat_iceberg::{IcebergBatches, IcebergStore as CoreStore, catalog_properties};
+use rhizodat_iceberg::{IcebergBatches, IcebergStore as CoreStore, Scan, catalog_properties};
 use uuid::Uuid;
 
 use crate::native::{IcebergLake, IcebergPending, NativeStore};
+use crate::result::{ipc_bytes, py_result};
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, op_err, runtime};
 
@@ -59,6 +60,43 @@ fn ipc_stream(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     sink.call_method0("getvalue")?
         .call_method0("to_pybytes")?
         .extract()
+}
+
+/// `execute`'s `params` as a scan: `selected_fields` (a sequence of names),
+/// `snapshot_id` and `limit`; a `row_filter` is refused (the core has none yet),
+/// as is any other key.
+fn scan_params(params: Option<&Bound<'_, PyDict>>) -> PyResult<Scan> {
+    let mut scan = Scan::default();
+    let Some(params) = params else {
+        return Ok(scan);
+    };
+    for (key, value) in params.iter() {
+        match key.extract::<String>()?.as_str() {
+            "selected_fields" => {
+                scan.columns = Some(
+                    value
+                        .try_iter()?
+                        .map(|f| f?.extract::<String>())
+                        .collect::<PyResult<Vec<_>>>()?,
+                );
+            }
+            "snapshot_id" => scan.snapshot_id = Some(value.extract()?),
+            "limit" => scan.limit = Some(value.extract()?),
+            "row_filter" => {
+                return Err(InvalidUnitOfWork::new_err(
+                    "row_filter is not on the native core path yet; scan with selected_fields, \
+                     snapshot_id and limit, or use the Python adapter for a filtered scan",
+                ));
+            }
+            other => {
+                return Err(InvalidUnitOfWork::new_err(format!(
+                    "unknown scan parameter {other:?}; the native store takes selected_fields, \
+                     snapshot_id and limit"
+                )));
+            }
+        }
+    }
+    Ok(scan)
 }
 
 /// The record batches of an Arrow IPC stream.
@@ -209,6 +247,32 @@ impl IcebergStore {
         self.read(py, async move |store| {
             store.expired_parts(&read, deleted_before, limit).await
         })
+    }
+
+    /// Scan `table` (`namespace.table`) outside any meta-transaction, as the
+    /// Python adapter's `execute`: `params` take `selected_fields`, `snapshot_id`
+    /// and `limit`. The rows come back as a `rhizodat.core.result.Result` built
+    /// from one Arrow IPC stream, so its `to_arrow` is the scan itself.
+    #[pyo3(signature = (table, params = None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        table: &str,
+        params: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if table.split('.').filter(|p| !p.is_empty()).count() < 2 {
+            return Err(InvalidUnitOfWork::new_err(format!(
+                "invalid table name {table:?}: namespace.table"
+            )));
+        }
+        let scan = scan_params(params)?;
+        let table = table.to_owned();
+        let batches = self.read(py, async move |store| store.scan_with(&table, &scan).await)?;
+        let schema = batches
+            .first()
+            .map(RecordBatch::schema)
+            .ok_or_else(|| op_err("the scan answered without a schema"))?;
+        py_result(py, &ipc_bytes(&schema, &batches)?)
     }
 
     /// The store name.

@@ -278,6 +278,63 @@ impl ClickHouseStore {
             .await
     }
 
+    /// Run `sql` outside any meta-transaction and return the server's answer in
+    /// `format` (`ArrowStream`, `JSONEachRow`, …), whole. `params` bind the
+    /// query's `{name:Type}` placeholders server-side: strings, integers,
+    /// floats, booleans and `null`.
+    ///
+    /// # Errors
+    ///
+    /// [`ClickHouseError`] for a parameter the server cannot take, else the
+    /// server's error.
+    pub async fn fetch(
+        &self,
+        sql: &str,
+        params: &[(String, Json)],
+        format: &str,
+    ) -> Result<Vec<u8>, BoxError> {
+        let bytes = self
+            .with_params(sql, params)?
+            .fetch_bytes(format)?
+            .collect()
+            .await?;
+        Ok(bytes.to_vec())
+    }
+
+    /// Run `sql` outside any meta-transaction for its effect (DDL, an insert),
+    /// with `params` as in [`fetch`](Self::fetch).
+    ///
+    /// # Errors
+    ///
+    /// As [`fetch`](Self::fetch).
+    pub async fn command(&self, sql: &str, params: &[(String, Json)]) -> Result<(), BoxError> {
+        self.with_params(sql, params)?.execute().await?;
+        Ok(())
+    }
+
+    fn with_params(
+        &self,
+        sql: &str,
+        params: &[(String, Json)],
+    ) -> Result<clickhouse::query::Query, ClickHouseError> {
+        let mut query = self.client.query(sql);
+        for (name, value) in params {
+            query = match value {
+                Json::Null => query.param(name, Option::<&str>::None),
+                Json::Bool(b) => query.param(name, b),
+                Json::Number(n) if n.is_f64() => query.param(name, n.as_f64()),
+                Json::Number(n) => query.param(name, n.as_i64()),
+                Json::String(s) => query.param(name, s),
+                other => {
+                    return Err(ClickHouseError(format!(
+                        "cannot bind {name:?}: {other} is not a string, a number, a boolean or null"
+                    )));
+                }
+            };
+        }
+        Ok(query)
+    }
+
     /// A new branch: an empty buffer of rows.
     #[must_use]
     pub fn branch(&self) -> ClickHouseBranch {

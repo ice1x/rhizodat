@@ -68,6 +68,7 @@ mod iceberg;
 mod native;
 mod postgres;
 mod recovery;
+mod result;
 mod rows;
 
 /// A current-thread tokio runtime for one native call: it drives the async

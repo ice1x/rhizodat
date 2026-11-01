@@ -586,6 +586,83 @@ async fn recovery_erases_the_entities_a_python_payload_names() {
     db.drop().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn native_sql_binds_params_and_answers_in_any_format() {
+    let db = db!();
+    db.store
+        .command(
+            "CREATE TABLE t (n Int64, name String, ok Bool) ENGINE = MergeTree ORDER BY n",
+            &[],
+        )
+        .await
+        .unwrap();
+    db.store
+        .command(
+            "INSERT INTO t VALUES ({a:Int64}, {an:String}, {ok:Bool}), (2, 'b', false), (3, 'c', true)",
+            &[
+                ("a".into(), serde_json::json!(1)),
+                ("an".into(), serde_json::json!("a")),
+                ("ok".into(), serde_json::json!(true)),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(db.count("SELECT count() FROM t").await, 3);
+
+    let raw = db
+        .store
+        .fetch(
+            "SELECT n, name FROM t WHERE n >= {low:Int64} AND name != {skip:String} \
+             AND ok = {ok:Bool} ORDER BY n",
+            &[
+                ("low".into(), serde_json::json!(1)),
+                ("skip".into(), serde_json::json!("b")),
+                ("ok".into(), serde_json::json!(true)),
+            ],
+            "JSONEachRow",
+        )
+        .await
+        .unwrap();
+    let lines: Vec<&str> = std::str::from_utf8(&raw).unwrap().lines().collect();
+    assert_eq!(lines, [r#"{"n":1,"name":"a"}"#, r#"{"n":3,"name":"c"}"#]);
+
+    // An Arrow IPC stream starts with the continuation marker.
+    let arrow = db
+        .store
+        .fetch("SELECT n FROM t", &[], "ArrowStream")
+        .await
+        .unwrap();
+    assert_eq!(&arrow[..4], &[0xFF, 0xFF, 0xFF, 0xFF]);
+    let none = db
+        .store
+        .fetch("SELECT n FROM t WHERE n < 0", &[], "ArrowStream")
+        .await
+        .unwrap();
+    assert_eq!(
+        &none[..4],
+        &[0xFF, 0xFF, 0xFF, 0xFF],
+        "an empty result still has a schema"
+    );
+
+    let err = db
+        .store
+        .fetch(
+            "SELECT {x:String}",
+            &[("x".into(), serde_json::json!([1]))],
+            "JSONEachRow",
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot bind \"x\""), "{err}");
+    let err = db
+        .store
+        .fetch("SELECT * FROM no_such_table", &[], "JSONEachRow")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("no_such_table"), "{err}");
+    db.drop().await;
+}
+
 #[test]
 fn payload_is_the_shared_row_format() {
     let batch = Batch {
