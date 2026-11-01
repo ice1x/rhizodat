@@ -22,6 +22,7 @@ use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyBytes, PyDict, PyFrozenSet};
+use rhizodat_iceberg::filter::parse_filter;
 use rhizodat_iceberg::parts::{
     FieldKind, IcebergPartSpec as CoreSpec, IcebergParts, PartVersion, PendingVersion,
 };
@@ -64,8 +65,8 @@ fn ipc_stream(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
 }
 
 /// `execute`'s `params` as a scan: `selected_fields` (a sequence of names),
-/// `snapshot_id` and `limit`; a `row_filter` is refused (the core has none yet),
-/// as is any other key.
+/// `snapshot_id`, `limit` and `row_filter` (pyiceberg's text syntax); any other
+/// key is refused.
 fn scan_params(params: Option<&Bound<'_, PyDict>>) -> PyResult<Scan> {
     let mut scan = Scan::default();
     let Some(params) = params else {
@@ -84,10 +85,14 @@ fn scan_params(params: Option<&Bound<'_, PyDict>>) -> PyResult<Scan> {
             "snapshot_id" => scan.snapshot_id = Some(value.extract()?),
             "limit" => scan.limit = Some(value.extract()?),
             "row_filter" => {
-                return Err(InvalidUnitOfWork::new_err(
-                    "row_filter is not on the native core path yet; scan with selected_fields, \
-                     snapshot_id and limit, or use the Python adapter for a filtered scan",
-                ));
+                let text: String = value.extract().map_err(|_| {
+                    InvalidUnitOfWork::new_err(
+                        "row_filter must be the filter's text (pyiceberg's syntax)",
+                    )
+                })?;
+                scan.filter = Some(parse_filter(&text).map_err(|e| {
+                    InvalidUnitOfWork::new_err(format!("row_filter {text:?}: {e}"))
+                })?);
             }
             other => {
                 return Err(InvalidUnitOfWork::new_err(format!(
@@ -251,8 +256,8 @@ impl IcebergStore {
     }
 
     /// Scan `table` (`namespace.table`) outside any meta-transaction, as the
-    /// Python adapter's `execute`: `params` take `selected_fields`, `snapshot_id`
-    /// and `limit`. The rows come back as a `rhizodat.core.result.Result` built
+    /// Python adapter's `execute`: `params` take `selected_fields`, `snapshot_id`,
+    /// `limit` and `row_filter`. The rows come back as a `rhizodat.core.result.Result` built
     /// from one Arrow IPC stream, so its `to_arrow` is the scan itself.
     #[pyo3(signature = (table, params = None))]
     fn execute<'py>(

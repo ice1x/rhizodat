@@ -89,6 +89,16 @@ def test_iceberg_execute_takes_the_scan_params(
         assert narrow.columns == ("sku",)
         assert len(narrow.all()) == 3
         assert len(lake.execute(sales, {"limit": 2}).all()) == 2
+        filtered = lake.execute(sales, {"row_filter": "qty >= 2", "selected_fields": ("sku",)})
+        assert filtered.columns == ("sku",)
+        assert sorted(r["sku"] for r in filtered.all()) == sorted(skus[1:])
+        by_sku = lake.execute(sales, {"row_filter": f"sku == '{skus[0]}' AND qty < 5"})
+        assert [r["qty"] for r in by_sku.all()] == [1]
+        several = lake.execute(
+            sales, {"row_filter": f"sku IN ('{skus[0]}', '{skus[2]}') OR qty = 2"}
+        )
+        assert len(several.all()) == 3
+        assert lake.execute(sales, {"row_filter": "qty IS NULL"}).all() == []
         assert lake.execute(sales, {"limit": 0}).all() == []
 
         first = PyIcebergStore(iceberg_rest_dsn, name="reader")
@@ -113,8 +123,10 @@ def test_iceberg_execute_of_an_empty_table_has_its_columns(
 
 def test_iceberg_execute_refuses_what_the_core_cannot_do(iceberg_rest_dsn: str) -> None:
     lake = native.IcebergStore(iceberg_rest_dsn, "lake")
-    with pytest.raises(native.InvalidUnitOfWork, match="row_filter"):
-        lake.execute("ns.t", {"row_filter": "qty > 1"})
+    with pytest.raises(native.InvalidUnitOfWork, match=r"row_filter.*a literal"):
+        lake.execute("ns.t", {"row_filter": "qty >"})
+    with pytest.raises(native.InvalidUnitOfWork, match="filter's text"):
+        lake.execute("ns.t", {"row_filter": 1})
     with pytest.raises(native.InvalidUnitOfWork, match="unknown"):
         lake.execute("ns.t", {"case_sensitive": False})
     with pytest.raises(native.InvalidUnitOfWork, match=r"namespace\.table"):

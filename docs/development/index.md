@@ -157,5 +157,6 @@ the native `PostgresJournal` keeps the history in the Python adapter's
 transaction, ClickHouse one statement per request, drevo `cypher` steps in their
 own transactions, and the native Iceberg store runs `iceberg` steps through the
 Python adapter's declarative operations (iceberg-rust 0.10 has no column rename
-or partition update). Iceberg row filters are not on the native path yet — use
-the Python facade (DSN strings or Python adapter stores) for those.
+or partition update). Iceberg scans take `row_filter` in pyiceberg's syntax too
+(`rhizodat_iceberg::filter`), so the native facade now covers the Python
+facade's whole surface except what each adapter documents as its own.
