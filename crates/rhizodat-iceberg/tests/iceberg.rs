@@ -32,6 +32,7 @@ use rhizodat_core::rows::RowValue;
 use rhizodat_core::staged::{StagedTable, decode_staged, encode_staged};
 use rhizodat_core::store::{Branch, Participant, Participants};
 use rhizodat_core::timer::TokioTimer;
+use rhizodat_iceberg::filter::parse_filter;
 use rhizodat_iceberg::parts::{FieldKind, IcebergPartSpec, IcebergParts, PartVersion};
 use rhizodat_iceberg::{IcebergBranch, IcebergStore, Scan, is_retryable};
 use rhizodat_postgres::{PostgresJournal, PostgresStore};
@@ -1425,4 +1426,33 @@ async fn part_erases_ride_the_payload_and_soft_deletes_expire() {
     assert_eq!(history[0].values[0], text("anew"));
     assert_eq!(store.part_history(&spec, kept).await.unwrap().len(), 2);
     lake.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scan_takes_a_pyiceberg_row_filter() {
+    each(async |lake| {
+        let table = lake.table("sales");
+        let (_, mut branch, _) = staged(lake, 4).await;
+        branch.commit_one_phase().await.unwrap();
+        let rows =
+            |batches: &[RecordBatch]| batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+        let filtered = Scan {
+            filter: Some(parse_filter("qty >= 2 AND sku IS NOT NULL").unwrap()),
+            ..Scan::default()
+        };
+        let all = rows(&lake.store.scan(&table).await.unwrap());
+        let some = rows(&lake.store.scan_with(&table, &filtered).await.unwrap());
+        assert!(some < all && some > 0, "{some} of {all}");
+        let none = Scan {
+            filter: Some(parse_filter("qty < 0").unwrap()),
+            ..Scan::default()
+        };
+        assert_eq!(rows(&lake.store.scan_with(&table, &none).await.unwrap()), 0);
+        let unknown = Scan {
+            filter: Some(parse_filter("nope == 1").unwrap()),
+            ..Scan::default()
+        };
+        assert!(lake.store.scan_with(&table, &unknown).await.is_err());
+    })
+    .await;
 }

@@ -333,7 +333,12 @@ Steps:
    with the whole result as one Arrow IPC stream and
    `rhizodat.core.native_result.from_ipc` makes the facade's `Result` of it, so
    `r.store(name).execute(...)` works on the native facade and `to_arrow()` is
-   the stream itself. Not yet: Iceberg row filters.
+   the stream itself. `row_filter` too: `rhizodat_iceberg::filter::parse_filter`
+   reads pyiceberg's filter syntax (comparisons either way round, `BETWEEN`,
+   `IS [NOT] NULL` / `NAN`, `[NOT] IN`, `[NOT] LIKE 'prefix%'`, `NOT` / `AND` /
+   `OR`, parentheses, quoted columns and strings) into an iceberg-rust
+   predicate, bound to the table's types by the scan; a filter that matches no
+   row still answers with the columns.
    ✔ `execute` on the native PostgreSQL and drevo stores, rows across the
    boundary (those drivers give rows, not Arrow): `rhizodat_postgres::query`
    prepares the statement, binds `$1..$n` by the server's parameter types (an
@@ -358,7 +363,7 @@ Steps:
    0.10 has `add_column` / `delete_column` but no column rename and no partition
    spec update, so the step itself waits for the library (or a hand-built REST
    table update like the erase's).
-   Next: Iceberg row filters on the core, and the C ABI for Go.
+   Next: the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

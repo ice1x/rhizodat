@@ -50,6 +50,7 @@ use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use iceberg::arrow::schema_to_arrow_schema;
+use iceberg::expr::Predicate;
 use iceberg::spec::{
     DataContentType, DataFile, DataFileBuilder, DataFileFormat, PrimitiveType, Schema, Type,
     deserialize_data_file_from_json, serialize_data_file_to_json,
@@ -77,6 +78,7 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 mod erase;
+pub mod filter;
 pub mod parts;
 
 /// The Iceberg store kind: a REST catalog (`iceberg+rest://host/warehouse`);
@@ -476,7 +478,7 @@ fn tag_uuids(schema: &Schema, batch: RecordBatch) -> Result<RecordBatch, BoxErro
 /// What [`IcebergStore::scan_with`] reads: the Python adapter's `execute`
 /// parameters that the core supports (`selected_fields`, `snapshot_id`,
 /// `limit`); there is no row filter yet.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scan {
     /// The columns to read, in this order (all, if `None`).
     pub columns: Option<Vec<String>>,
@@ -484,6 +486,9 @@ pub struct Scan {
     pub snapshot_id: Option<i64>,
     /// At most this many rows (all, if `None`).
     pub limit: Option<usize>,
+    /// The rows to read (all, if `None`): a predicate, or [`filter::parse_filter`]
+    /// of a pyiceberg row filter.
+    pub filter: Option<Predicate>,
 }
 
 /// One Iceberg catalog as a rhizodat store.
@@ -599,7 +604,7 @@ impl IcebergStore {
                 }
             }
         }
-        let batches = if scan.limit == Some(0) || table.metadata().current_snapshot().is_none() {
+        let empty = {
             let arrow = Arc::new(schema_to_arrow_schema(&schema)?);
             let arrow = match &scan.columns {
                 Some(columns) => Arc::new(
@@ -611,7 +616,11 @@ impl IcebergStore {
                 ),
                 None => arrow,
             };
-            vec![RecordBatch::new_empty(arrow)]
+            RecordBatch::new_empty(arrow)
+        };
+        let mut batches = if scan.limit == Some(0) || table.metadata().current_snapshot().is_none()
+        {
+            Vec::new()
         } else {
             let mut builder = table.scan();
             builder = match &scan.columns {
@@ -621,9 +630,16 @@ impl IcebergStore {
             if let Some(id) = scan.snapshot_id {
                 builder = builder.snapshot_id(id);
             }
+            if let Some(filter) = &scan.filter {
+                builder = builder.with_filter(filter.clone());
+            }
             let stream = builder.build()?.to_arrow().await?;
             take(stream, scan.limit).await?
         };
+        if batches.is_empty() {
+            // No rows (none, or none that match): the columns are still known.
+            batches.push(empty);
+        }
         batches.into_iter().map(|b| tag_uuids(&schema, b)).collect()
     }
 
