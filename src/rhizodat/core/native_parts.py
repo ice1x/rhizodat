@@ -4,17 +4,18 @@ repository's part protocols.
 A native facade's repositories run the same logic as the Python facade's
 (:mod:`rhizodat.core.repository`); only the parts move to the core.
 :class:`NativePartStore` is a :class:`~rhizodat.core.parts.PartStore` (and
-``ScansParts``) over a native ``PostgresStore``, ``DrevoStore`` or
-``ClickHouseStore``: committed versions are read by the Rust adapter. :class:`NativePartBranch` is a
+``ScansParts``) over any native store: committed versions are read by the Rust
+adapter. :class:`NativePartBranch` is a
 :class:`~rhizodat.core.parts.PartBranch` over a Unit of Work's native unit: writes
 are buffered on the unit and applied inside the meta-transaction when it commits;
 a read sees the unit's own writes first, then the committed versions.
 
 The layout is the Python adapters' (PostgreSQL and ClickHouse tables with the
 same DDL and JSON encoding; drevo nodes with the same properties and reference
-anchors), so either facade reads the other's versions. ClickHouse versions ride
-the journal payload and are applied after the decision, like the Python
-adapter's. Iceberg keeps its parts on the Python facade so far.
+anchors; Iceberg tables in the store's parts namespace), so either facade reads
+the other's versions. ClickHouse and Iceberg versions ride the journal payload
+and are applied after the decision, like the Python adapters' (an Iceberg erase
+copy-on-write, through the REST catalog).
 """
 
 import uuid
@@ -22,7 +23,8 @@ from collections.abc import Mapping
 from types import ModuleType
 from typing import Any
 
-from rhizodat.adapters import clickhouse, drevo, postgres
+from rhizodat.adapters import clickhouse, drevo, iceberg, postgres
+from rhizodat.core.native_uow import store_classes
 from rhizodat.core.parts import Part, Version
 
 __all__ = ["NativePartBranch", "NativePartStore", "part_spec"]
@@ -31,12 +33,16 @@ __all__ = ["NativePartBranch", "NativePartStore", "part_spec"]
 def part_spec(native: ModuleType, part: Part, store: Any = None) -> Any:  # noqa: ANN401 - specs
     """``part`` as the spec of ``store``'s kind: a ``rhizodat_native.PartSpec`` typed like
     the PostgreSQL adapter's table (the default), a ``DrevoPartSpec`` stored like the
-    drevo adapter's nodes, or a ``ClickHousePartSpec`` typed like its table."""
+    drevo adapter's nodes, or a ``ClickHousePartSpec`` / ``IcebergPartSpec`` typed like
+    that adapter's table."""
     if isinstance(store, native.DrevoStore):
         return native.DrevoPartSpec(part.type_name, part.table, drevo.part_fields(part))
     if isinstance(store, native.ClickHouseStore):
         columns = clickhouse.part_columns(part)
         return native.ClickHousePartSpec(part.type_name, part.table, columns)
+    if isinstance(store, native.IcebergStore):
+        table = f"{store.parts_namespace}.{part.table}"
+        return native.IcebergPartSpec(part.type_name, table, iceberg.part_fields(part))
     return native.PartSpec(part.type_name, part.table, postgres.part_columns(part))
 
 
@@ -51,17 +57,16 @@ def _version(raw: Mapping[str, Any], dat_txn: uuid.UUID | None = None) -> Versio
 
 
 class NativePartStore:
-    """Committed parts in a native ``PostgresStore``, ``DrevoStore`` or ``ClickHouseStore``."""
+    """Committed parts in a native store."""
 
     def __init__(self, native: ModuleType, store: Any) -> None:  # noqa: ANN401 - native store
-        if not isinstance(store, native.PostgresStore | native.DrevoStore | native.ClickHouseStore):
+        if not isinstance(store, store_classes(native)):
             raise NotImplementedError(
-                f"entity parts in a {type(store).__name__} are not on the native core path"
-                " yet (PostgreSQL, drevo and ClickHouse only); use the Python facade for this"
-                " type"
+                f"entity parts in a {type(store).__name__} are not on the native core path;"
+                " use the Python facade for this type"
             )
         self._native = native
-        self._store = store
+        self._store: Any = store
         self._specs: dict[Part, Any] = {}
 
     def spec(self, part: Part) -> Any:  # noqa: ANN401 - rhizodat_native.PartSpec

@@ -320,8 +320,12 @@ Steps:
    buffered in `IcebergParts` (the last write per entity wins) and staged as one
    more data file of the branch, erases in the payload (committed copy-on-write
    with the files), committed reads as of a time.
-   Next: Iceberg parts across the boundary, reads with Arrow for full results, and
-   the C ABI for Go.
+   ✔ Iceberg parts across the boundary: `rhizodat_native.IcebergPartSpec`, the
+   native `IcebergStore`'s committed part reads (and its `parts_namespace`, the
+   Python adapter's default `dat`) and the `IcebergUnit`'s buffered part writes,
+   so the native facade's repositories hold a type in any of the four stores, or
+   split it across them; either facade reads the other's versions.
+   Next: reads with Arrow for full results, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 

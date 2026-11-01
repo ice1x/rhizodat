@@ -21,11 +21,16 @@ use std::sync::{Arc, Mutex};
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
-use rhizodat_iceberg::{IcebergBatches, catalog_properties};
+use pyo3::types::{PyBytes, PyDict};
+use rhizodat_iceberg::parts::{
+    FieldKind, IcebergPartSpec as CoreSpec, IcebergParts, PartVersion, PendingVersion,
+};
+use rhizodat_iceberg::{IcebergBatches, IcebergStore as CoreStore, catalog_properties};
+use uuid::Uuid;
 
-use crate::InvalidUnitOfWork;
 use crate::native::{IcebergLake, IcebergPending, NativeStore};
+use crate::rows::{fields_dict, row_value};
+use crate::{InvalidUnitOfWork, op_err, runtime};
 
 /// `data` as the bytes of an Arrow IPC stream: the bytes themselves, or a
 /// Python object with `__arrow_c_stream__` written as a stream by pyarrow.
@@ -74,6 +79,7 @@ fn record_batches(stream: &[u8]) -> PyResult<Vec<RecordBatch>> {
 pub struct IcebergStore {
     dsn: Arc<str>,
     name: Arc<str>,
+    parts_namespace: Arc<str>,
 }
 
 impl IcebergStore {
@@ -83,19 +89,125 @@ impl IcebergStore {
         Arc::new(IcebergPending {
             lake: IcebergLake::new(self.dsn.clone(), self.name.clone()),
             batches: IcebergBatches::new(),
+            parts: IcebergParts::new(),
+        })
+    }
+
+    /// Run `read` against the catalog, connected for this call (a REST client is
+    /// bound to the runtime that made it).
+    fn read<T: Send>(
+        &self,
+        py: Python<'_>,
+        read: impl AsyncFnOnce(&CoreStore) -> Result<T, rhizodat_core::store::BoxError> + Send,
+    ) -> PyResult<T> {
+        let (dsn, name) = (self.dsn.clone(), self.name.clone());
+        py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(async {
+                    let store = CoreStore::connect(&dsn, &name).await?;
+                    read(&store).await
+                })
+                .map_err(op_err)
         })
     }
 }
 
 #[pymethods]
 impl IcebergStore {
-    /// A store named `name` over an `iceberg+rest://host:port/<warehouse>` DSN.
+    /// A store named `name` over an `iceberg+rest://host:port/<warehouse>` DSN;
+    /// entity parts live in `parts_namespace` (the Python adapter's default too).
     #[new]
-    fn new(dsn: &str, name: &str) -> PyResult<Self> {
+    #[pyo3(signature = (dsn, name, *, parts_namespace = "dat"))]
+    fn new(dsn: &str, name: &str, parts_namespace: &str) -> PyResult<Self> {
         catalog_properties(dsn).map_err(|e| InvalidUnitOfWork::new_err(e.to_string()))?;
         Ok(Self {
             dsn: dsn.into(),
             name: name.into(),
+            parts_namespace: parts_namespace.into(),
+        })
+    }
+
+    /// The namespace of the entity part tables.
+    #[getter]
+    fn parts_namespace(&self) -> &str {
+        &self.parts_namespace
+    }
+
+    /// Create the part's namespace and table if missing. Idempotent.
+    fn install_part(&self, py: Python<'_>, spec: &IcebergPartSpec) -> PyResult<()> {
+        let spec = spec.0.clone();
+        self.read(py, async move |store| store.install_part(&spec).await)
+    }
+
+    /// The latest committed version of `dat_id`'s part with
+    /// `dat_tx_time <= known_at` (any, if `None`), as a dict, or `None`.
+    #[pyo3(signature = (spec, dat_id, *, known_at = None))]
+    fn read_part<'py>(
+        &self,
+        py: Python<'py>,
+        spec: &IcebergPartSpec,
+        dat_id: Uuid,
+        known_at: Option<i64>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let core = spec.0.clone();
+        let read = core.clone();
+        let version = self.read(py, async move |store| {
+            store.read_part(&read, dat_id, known_at).await
+        })?;
+        version.map(|v| version_dict(py, &core, &v)).transpose()
+    }
+
+    /// Every committed version of `dat_id`'s part, oldest first.
+    fn part_history<'py>(
+        &self,
+        py: Python<'py>,
+        spec: &IcebergPartSpec,
+        dat_id: Uuid,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let core = spec.0.clone();
+        let read = core.clone();
+        let versions = self.read(py, async move |store| {
+            store.part_history(&read, dat_id).await
+        })?;
+        versions
+            .iter()
+            .map(|v| version_dict(py, &core, v))
+            .collect()
+    }
+
+    /// `(dat_id, version)` for every committed version of every entity with
+    /// `dat_tx_time <= known_at` (all, if `None`), oldest first.
+    #[pyo3(signature = (spec, *, known_at = None))]
+    fn part_versions<'py>(
+        &self,
+        py: Python<'py>,
+        spec: &IcebergPartSpec,
+        known_at: Option<i64>,
+    ) -> PyResult<Vec<(Uuid, Bound<'py, PyDict>)>> {
+        let core = spec.0.clone();
+        let read = core.clone();
+        let versions = self.read(py, async move |store| {
+            store.part_versions(&read, known_at).await
+        })?;
+        versions
+            .iter()
+            .map(|(id, v)| Ok((*id, version_dict(py, &core, v)?)))
+            .collect()
+    }
+
+    /// Entities whose latest version is a soft delete older than `deleted_before`.
+    #[pyo3(signature = (spec, *, deleted_before, limit))]
+    fn expired_parts(
+        &self,
+        py: Python<'_>,
+        spec: &IcebergPartSpec,
+        deleted_before: i64,
+        limit: i64,
+    ) -> PyResult<Vec<Uuid>> {
+        let read = spec.0.clone();
+        self.read(py, async move |store| {
+            store.expired_parts(&read, deleted_before, limit).await
         })
     }
 
@@ -111,6 +223,7 @@ impl IcebergStore {
             dsn: self.dsn.clone(),
             name: self.name.clone(),
             batches: Mutex::new(IcebergBatches::new()),
+            parts: Mutex::new(IcebergParts::new()),
         }
     }
 }
@@ -123,6 +236,7 @@ pub struct IcebergUnit {
     dsn: Arc<str>,
     name: Arc<str>,
     batches: Mutex<IcebergBatches>,
+    parts: Mutex<IcebergParts>,
 }
 
 impl IcebergUnit {
@@ -132,6 +246,11 @@ impl IcebergUnit {
             lake: IcebergLake::new(self.dsn.clone(), self.name.clone()),
             batches: self
                 .batches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            parts: self
+                .parts
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
@@ -161,4 +280,116 @@ impl IcebergUnit {
         *buffer = staged;
         Ok(())
     }
+
+    /// Set this unit's version of `dat_id`'s part (the last write wins): `values`
+    /// by field (missing ones are `NULL`), `created` the time of the first
+    /// version (`None`: this one).
+    #[pyo3(signature = (spec, dat_id, values, *, created, deleted = false))]
+    fn write_part(
+        &self,
+        spec: &IcebergPartSpec,
+        dat_id: Uuid,
+        values: &Bound<'_, PyDict>,
+        created: Option<i64>,
+        deleted: bool,
+    ) -> PyResult<()> {
+        let mut named = Vec::with_capacity(values.len());
+        for (key, value) in values {
+            named.push((key.extract::<String>()?, row_value(&value)?));
+        }
+        self.parts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write(&spec.0, dat_id, &named, created, deleted)
+            .map_err(|e| InvalidUnitOfWork::new_err(e.to_string()))
+    }
+
+    /// Buffer the erase of every earlier version of `dat_id`'s part.
+    fn erase_part(&self, spec: &IcebergPartSpec, dat_id: Uuid) {
+        self.parts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .erase(&spec.0, dat_id);
+    }
+
+    /// This unit's own version of `dat_id`'s part: `(False, None)` when it did
+    /// not touch it, `(True, None)` when it erased it (and wrote nothing since),
+    /// else `(True, {created, deleted, values})`.
+    fn own_part<'py>(
+        &self,
+        py: Python<'py>,
+        spec: &IcebergPartSpec,
+        dat_id: Uuid,
+    ) -> PyResult<(bool, Option<Bound<'py, PyDict>>)> {
+        let parts = self
+            .parts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(match parts.latest(spec.0.table(), dat_id) {
+            None => (false, None),
+            Some(None) => (true, None),
+            Some(Some(version)) => (true, Some(pending_dict(py, &spec.0, version)?)),
+        })
+    }
+}
+
+/// One Iceberg store's share of one entity type:
+/// `IcebergPartSpec(type_name, table, fields)` with `table` as `namespace.table`
+/// and `fields` the `(field, kind)` pairs in order: `string`, `boolean`, `long`,
+/// `double`, `binary`, `timestamptz`, `date`, `id` (a UUID as text) or `json`.
+#[pyclass(module = "rhizodat_native", frozen)]
+pub struct IcebergPartSpec(CoreSpec);
+
+#[pymethods]
+impl IcebergPartSpec {
+    #[new]
+    fn new(type_name: &str, table: &str, fields: Vec<(String, String)>) -> PyResult<Self> {
+        let fields = fields
+            .into_iter()
+            .map(|(name, kind)| Ok((name, kind.parse::<FieldKind>()?)))
+            .collect::<Result<Vec<_>, rhizodat_iceberg::IcebergError>>()
+            .map_err(|e| InvalidUnitOfWork::new_err(e.to_string()))?;
+        CoreSpec::new(type_name, table, fields)
+            .map(Self)
+            .map_err(|e| InvalidUnitOfWork::new_err(e.to_string()))
+    }
+
+    /// The table (`namespace.table`).
+    #[getter]
+    fn table(&self) -> &str {
+        self.0.table()
+    }
+
+    /// The fields, in order.
+    #[getter]
+    fn fields(&self) -> Vec<String> {
+        self.0.fields().map(str::to_owned).collect()
+    }
+}
+
+/// A committed version as `{dat_txn, dat_tx_time, created, deleted, values}`.
+fn version_dict<'py>(
+    py: Python<'py>,
+    spec: &CoreSpec,
+    version: &PartVersion,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("dat_txn", version.dat_txn)?;
+    dict.set_item("dat_tx_time", version.dat_tx_time)?;
+    dict.set_item("created", version.created)?;
+    dict.set_item("deleted", version.deleted)?;
+    dict.set_item("values", fields_dict(py, spec.fields(), &version.values)?)?;
+    Ok(dict)
+}
+
+fn pending_dict<'py>(
+    py: Python<'py>,
+    spec: &CoreSpec,
+    version: &PendingVersion,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("created", version.created)?;
+    dict.set_item("deleted", version.deleted)?;
+    dict.set_item("values", fields_dict(py, spec.fields(), &version.values)?)?;
+    Ok(dict)
 }
