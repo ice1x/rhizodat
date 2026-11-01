@@ -1,0 +1,113 @@
+name: Release
+
+# A tag `vX.Y.Z` (or a pre-release like `v0.1.0a1`) builds the `rhizodat` package and
+# the `rhizodat-native` wheels (abi3, one per platform), attaches them to a GitHub
+# release and publishes both to PyPI through trusted publishing (the `pypi`
+# environment; PyPI must list this workflow as the publisher of both projects).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    # rhizodat (pure Python: sdist + wheel) and the rhizodat-native sdist.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv build --out-dir dist
+      - run: uvx maturin sdist --manifest-path crates/rhizodat-py/Cargo.toml --out dist
+      - name: The tag is the package version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          test "v$version" = "${{ github.ref_name }}" || { echo "tag ${{ github.ref_name }} != v$version"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: dist/*
+
+  native:
+    # rhizodat-native wheels: abi3 (one wheel serves every CPython >= 3.12).
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64
+          - os: macos-latest
+            target: aarch64
+          - os: macos-15-intel
+            target: x86_64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          working-directory: crates/rhizodat-py
+          args: --release --locked --out ../../dist --interpreter python3.12
+          sccache: true
+      - name: The wheel imports from a clean environment
+        run: |
+          python -m venv smoke
+          smoke/bin/pip install --no-index --find-links dist rhizodat-native
+          smoke/bin/python -c "import rhizodat_native as n; print(n.__version__, n.new_id())"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  github-release:
+    needs: [package, native]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release with the distributions attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=(--generate-notes)
+          case "$TAG" in *a*|*b*|*rc*) flags+=(--prerelease);; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" dist/*
+
+  pypi:
+    needs: [package, native]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/rhizodat/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

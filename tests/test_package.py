@@ -89,3 +89,14 @@ def test_the_adapter_contract_kit_ships_as_an_extra() -> None:
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout
     assert out.strip() == "False"  # only the kit needs pytest
+
+
+def test_the_native_core_is_an_extra_pinned_to_the_package_version() -> None:
+    """``rhizodat[native]`` installs the Rust core's module at the same version."""
+    meta = importlib.metadata.metadata("rhizodat")
+    assert "native" in set(meta.get_all("Provides-Extra") or [])
+    pins = [r for r in meta.get_all("Requires-Dist") or [] if r.startswith("rhizodat-native")]
+    assert pins == [f"rhizodat-native=={meta['Version']}; extra == 'native'"]
+    native = pytest.importorskip("rhizodat_native")
+    assert importlib.metadata.version("rhizodat-native") == meta["Version"]
+    assert native.__version__.startswith(meta["Version"].split("a")[0])

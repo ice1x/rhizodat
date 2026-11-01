@@ -2312,7 +2312,7 @@ wheels = [
 
 [[package]]
 name = "rhizodat"
-version = "0.1.0.dev0"
+version = "0.1.0a1"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -2331,6 +2331,9 @@ ingest = [
 ]
 mcp = [
     { name = "mcp" },
+]
+native = [
+    { name = "rhizodat-native" },
 ]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
@@ -2380,8 +2383,9 @@ requires-dist = [
     { name = "pyiceberg", extras = ["pyarrow", "sql-sqlite"], marker = "extra == 'iceberg'", specifier = ">=0.12" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8" },
     { name = "rdflib", marker = "extra == 'ingest'", specifier = ">=7" },
+    { name = "rhizodat-native", marker = "extra == 'native'", directory = "crates/rhizodat-py" },
 ]
-provides-extras = ["postgres", "clickhouse", "drevo", "iceberg", "ingest", "mcp", "testing"]
+provides-extras = ["postgres", "clickhouse", "drevo", "iceberg", "ingest", "mcp", "testing", "native"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2410,7 +2414,7 @@ native = [{ name = "rhizodat-native", directory = "crates/rhizodat-py" }]
 
 [[package]]
 name = "rhizodat-native"
-version = "0.0.0"
+version = "0.1.0a1"
 source = { directory = "crates/rhizodat-py" }
 
 [[package]]
