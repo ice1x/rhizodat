@@ -77,6 +77,7 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 mod erase;
+pub mod parts;
 
 /// The Iceberg store kind: a REST catalog (`iceberg+rest://host/warehouse`);
 /// `iceberg+sql://` and `iceberg+glue://` are recognised for the Python
@@ -489,6 +490,7 @@ impl IcebergStore {
             staged: None,
             written: Vec::new(),
             commit_attempted: false,
+            parts: parts::IcebergParts::new(),
         }
     }
 
@@ -555,6 +557,7 @@ pub struct IcebergBranch {
     staged: Option<(Uuid, i64, Vec<StagedTable>)>,
     written: Vec<StagedTable>,
     commit_attempted: bool,
+    parts: parts::IcebergParts,
 }
 
 impl IcebergBranch {
@@ -721,12 +724,24 @@ impl Branch for IcebergBranch {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<Option<Vec<u8>>, BoxError> {
-        let mut tables = Vec::with_capacity(self.batches.buffer.len());
-        for (name, parts) in &self.batches.buffer {
-            let staged = self.write(name, parts, dat_txn, dat_tx_time).await?;
+        // Entity part versions first, then the Unit of Work's own appends.
+        let mut by_table: BTreeMap<String, Vec<RecordBatch>> = BTreeMap::new();
+        for (table, batch) in self.part_batches(dat_tx_time)? {
+            by_table.entry(table).or_default().push(batch);
+        }
+        for (table, batches) in &self.batches.buffer {
+            by_table
+                .entry(table.clone())
+                .or_default()
+                .extend(batches.iter().cloned());
+        }
+        let mut tables = Vec::with_capacity(by_table.len());
+        for (name, batches) in &by_table {
+            let staged = self.write(name, batches, dat_txn, dat_tx_time).await?;
             self.written.push(staged.clone());
             tables.push(staged);
         }
+        self.with_erases(&mut tables);
         let payload = encode_staged(&tables);
         self.staged = Some((dat_txn, dat_tx_time, tables));
         Ok(Some(payload))
@@ -749,6 +764,7 @@ impl Branch for IcebergBranch {
 
     async fn rollback(&mut self) -> Result<(), BoxError> {
         self.batches.buffer.clear();
+        self.parts = parts::IcebergParts::new();
         if self.written.is_empty() {
             return Ok(());
         }

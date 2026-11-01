@@ -314,8 +314,14 @@ Steps:
    and commits it through the REST catalog protocol on condition that `main` has
    not moved. A payload the Python reference wrote is finished by native recovery
    and read back by pyiceberg (`tests/core/test_native_iceberg_erase.py`).
-   Next: Iceberg parts on the core and across the boundary, reads with Arrow for
-   full results, and the C ABI for Go.
+   ✔ Entity parts in Iceberg on the core (`rhizodat_iceberg::parts`): the
+   reference's part tables in the parts namespace (ids and transactions as text,
+   native columns for the scalar kinds, tagged JSON for the rest), versions
+   buffered in `IcebergParts` (the last write per entity wins) and staged as one
+   more data file of the branch, erases in the payload (committed copy-on-write
+   with the files), committed reads as of a time.
+   Next: Iceberg parts across the boundary, reads with Arrow for full results, and
+   the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
