@@ -155,6 +155,7 @@ the native `PostgresJournal` keeps the history in the Python adapter's
 `<table>_migrations` table (either facade continues the other's history) and
 `MemoryJournal` in memory; the native PostgreSQL store runs `sql` steps in one
 transaction, ClickHouse one statement per request, drevo `cypher` steps in their
-own transactions. Iceberg migration steps and Iceberg row filters are not on the
-native path yet — use the Python facade (DSN strings or Python adapter stores) for
-those.
+own transactions, and the native Iceberg store runs `iceberg` steps through the
+Python adapter's declarative operations (iceberg-rust 0.10 has no column rename
+or partition update). Iceberg row filters are not on the native path yet — use
+the Python facade (DSN strings or Python adapter stores) for those.

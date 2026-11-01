@@ -6,7 +6,9 @@ native stores.
 PostgreSQL one, so either facade reads the other's history); the native
 ``PostgresStore`` and ``ClickHouseStore`` run ``sql`` steps and ``DrevoStore`` runs
 ``cypher`` steps, so ``r.migrate(...)`` and ``r.schema_versions()`` work on the native
-facade as on the Python one. Iceberg steps stay on the Python facade for now.
+facade as on the Python one; the native ``IcebergStore`` runs ``iceberg`` steps through the Python
+adapter's declarative operations (iceberg-rust 0.10 has no rename or partition
+update, so the step itself stays Python).
 Install the module with ``uv sync --group native`` (needs a Rust toolchain).
 """
 
@@ -49,9 +51,11 @@ def test_native_journals_and_stores_have_the_capabilities() -> None:
     assert graph.migration_kinds == frozenset({"cypher"})
     lake = native.IcebergStore("iceberg+rest://127.0.0.1:1/wh", "lake")
     assert isinstance(lake, Migrates)
-    assert lake.migration_kinds == frozenset()
-    with pytest.raises(NotImplementedError, match="Python facade"):
-        lake.run_migration_step("iceberg", {})
+    assert lake.migration_kinds == frozenset({"iceberg"})
+    with pytest.raises(ValueError, match="iceberg steps, not sql"):
+        lake.run_migration_step("sql", "SELECT 1")
+    with pytest.raises(ValueError, match="list of operations"):
+        lake.run_migration_step("iceberg", {"op": "create_namespace"})
 
 
 def test_a_memory_journal_keeps_the_history(faker: Faker) -> None:
@@ -213,3 +217,67 @@ def test_clickhouse_and_drevo_steps_run_on_the_native_stores(
             assert [h.id for h in r.schema_versions()] == [1]
         finally:
             r.store("graph").execute(f"MATCH (n:{label}) DETACH DELETE n")
+
+
+def test_iceberg_steps_run_on_the_native_store(
+    pg_dsn: str, journal_schema: str, iceberg_rest_dsn: str
+) -> None:
+    from rhizodat.adapters.iceberg import IcebergStore as PyIcebergStore
+
+    namespace = f"dat_mig_{uuid.uuid4().hex[:10]}"
+    table = f"{namespace}.tasks"
+    rename = {"op": "rename_column", "table": table, "from": "title", "to": "summary"}
+    widen = {"op": "add_column", "table": table, "name": "points", "type": "long"}
+    lake = native.IcebergStore(iceberg_rest_dsn, "lake")
+    with Rhizodat(
+        stores={"lake": lake}, journal=native.PostgresJournal(pg_dsn, journal_schema)
+    ) as r:
+        reader = PyIcebergStore(iceberg_rest_dsn, name="reader")
+        try:
+            migration = Migration.of(
+                1,
+                "tasks",
+                [
+                    Step(
+                        "lake",
+                        "iceberg",
+                        [
+                            {"op": "create_namespace", "namespace": namespace},
+                            {
+                                "op": "create_table",
+                                "table": table,
+                                "columns": [
+                                    {"name": "id", "type": "string", "required": True},
+                                    {"name": "title", "type": "string"},
+                                ],
+                            },
+                            {"op": "add_column", "table": table, "name": "points", "type": "int"},
+                            rename,
+                        ],
+                    )
+                ],
+            )
+            assert r.migrate([migration]).applied == (1,)
+            names = [f.name for f in reader.catalog.load_table(table).schema().fields]
+            assert names == ["id", "summary", "points"]
+            assert r.store("lake").execute(table).columns == ("id", "summary", "points")
+            # Idempotent: the same step runs again without complaint.
+            lake.run_migration_step("iceberg", migration.steps[0].body)
+            with pytest.raises(MigrationFailed, match="store 'lake'") as caught:
+                r.migrate(
+                    [
+                        migration,
+                        release(
+                            2,
+                            "lake",
+                            "iceberg",
+                            [widen],
+                        ),
+                    ]
+                )
+            assert "points is int" in str(caught.value)
+        finally:
+            for ident in reader.catalog.list_tables(namespace):
+                reader.catalog.drop_table(ident)
+            reader.catalog.drop_namespace(namespace)
+            reader.close()

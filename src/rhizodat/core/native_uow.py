@@ -22,8 +22,8 @@ store runs on the core and answers with a :class:`~rhizodat.core.result.Result`
 and Iceberg, over rows from PostgreSQL (``$n`` parameters, by position) and
 drevo. ``r.migrate(...)`` runs on it too: the native ``PostgresJournal`` and
 ``MemoryJournal`` keep the history, the native PostgreSQL and ClickHouse stores run
-``sql`` steps and the drevo store ``cypher`` steps (Iceberg steps still need the
-Python facade).
+``sql`` steps, the drevo store ``cypher`` steps and the Iceberg store ``iceberg``
+steps (through the Python adapter's declarative operations).
 """
 
 import functools
