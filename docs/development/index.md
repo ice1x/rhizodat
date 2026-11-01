@@ -140,6 +140,12 @@ store reads committed versions, its unit buffers part writes that the commit
 applies inside the meta-transaction (ClickHouse and Iceberg: in the journal
 payload, after the decision; an Iceberg erase copy-on-write through the REST
 catalog). The layout is the Python adapters', so either facade reads the other's
-versions (`tests/core/test_native_parts*.py` check both ways). `execute` and
-migrations are not on the native path yet — use the Python facade (DSN strings or
+versions (`tests/core/test_native_parts*.py` check both ways).
+`r.store(name).execute(...)` on a native ClickHouse store (native SQL with
+`{name:Type}` parameters) or Iceberg store (a scan with `selected_fields`,
+`snapshot_id`, `limit`) runs on the core: the full result crosses the boundary as
+one Arrow IPC stream and `rhizodat.core.native_result` makes the facade's `Result`
+of it, so `to_arrow()` is the stream itself (`tests/core/test_native_execute.py`).
+Migrations, `execute` on native PostgreSQL and drevo stores, and Iceberg row
+filters are not on the native path yet — use the Python facade (DSN strings or
 Python adapter stores) for those.

@@ -23,11 +23,45 @@ use rhizodat_clickhouse::parts::{
 use rhizodat_clickhouse::{ClickHouseBranch as CoreBranch, ClickHouseStore as CoreStore};
 use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{Branch, Participant};
+use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::native::{ClickHouse, NativeStore};
+use crate::result::{empty_result, py_result};
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, op_err, runtime};
+
+/// `execute`'s `params` as the server-side parameters of a query: the scalar
+/// values ClickHouse can take as `{name:Type}` (a UUID as its text).
+fn bind_params(params: &Bound<'_, PyDict>) -> PyResult<Vec<(String, Json)>> {
+    params
+        .iter()
+        .map(|(name, value)| {
+            let name: String = name.extract()?;
+            let value = row_value(&value).map_err(|e| {
+                InvalidUnitOfWork::new_err(format!(
+                    "cannot bind {name:?}: {}",
+                    e.value(params.py())
+                ))
+            })?;
+            let value = match value {
+                RowValue::Null => Json::Null,
+                RowValue::Bool(b) => Json::Bool(b),
+                RowValue::Int(i) => Json::from(i),
+                RowValue::Float(f) => Json::from(f),
+                RowValue::Str(s) => Json::String(s),
+                RowValue::Uuid(u) => Json::String(u.to_string()),
+                other => {
+                    return Err(InvalidUnitOfWork::new_err(format!(
+                        "cannot bind {name:?}: {other:?} is not a string, an integer, a float, \
+                         a boolean, a UUID or None"
+                    )));
+                }
+            };
+            Ok((name, value))
+        })
+        .collect()
+}
 
 /// One ClickHouse database as a rhizodat store, for a native Unit of Work.
 #[pyclass(module = "rhizodat_native")]
@@ -64,6 +98,46 @@ impl ClickHouseStore {
             let runtime = runtime().map_err(op_err)?;
             runtime.block_on(store.install()).map_err(op_err)
         })
+    }
+
+    /// Run native SQL outside any meta-transaction, as the Python adapter's
+    /// `execute`: `{name:Type}` placeholders bind `params` (strings, integers,
+    /// floats, booleans, UUIDs and `None`) server-side. A statement that returns
+    /// rows (`SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `EXISTS`, `EXPLAIN`) comes
+    /// back as a `rhizodat.core.result.Result` built from one Arrow IPC stream
+    /// (`FORMAT ArrowStream`); any other statement runs for its effect and
+    /// answers with an empty one.
+    #[pyo3(signature = (query, params = None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        query: &str,
+        params: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let params = params.map_or_else(|| Ok(Vec::new()), bind_params)?;
+        let first = query.split_whitespace().next().unwrap_or("").to_uppercase();
+        let returns_rows = matches!(
+            first.as_str(),
+            "SELECT" | "WITH" | "SHOW" | "DESCRIBE" | "DESC" | "EXISTS" | "EXPLAIN"
+        );
+        let store = self.0.clone();
+        let query = query.to_owned();
+        let stream = py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(async {
+                    if returns_rows {
+                        store.fetch(&query, &params, "ArrowStream").await.map(Some)
+                    } else {
+                        store.command(&query, &params).await.map(|()| None)
+                    }
+                })
+                .map_err(op_err)
+        })?;
+        match stream {
+            Some(stream) => py_result(py, &stream),
+            None => empty_result(py),
+        }
     }
 
     /// A Unit of Work's branch of this store, to buffer rows and then commit.

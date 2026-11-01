@@ -51,8 +51,8 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::spec::{
-    DataContentType, DataFile, DataFileBuilder, DataFileFormat, deserialize_data_file_from_json,
-    serialize_data_file_to_json,
+    DataContentType, DataFile, DataFileBuilder, DataFileFormat, PrimitiveType, Schema, Type,
+    deserialize_data_file_from_json, serialize_data_file_to_json,
 };
 use iceberg::table::Table;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
@@ -227,6 +227,26 @@ pub fn is_retryable(error: &(dyn Error + 'static)) -> bool {
     false
 }
 
+/// An error at a named table, with the catalog's error as its source (so
+/// [`is_retryable`] still sees it).
+#[derive(Debug)]
+struct AtTable {
+    table: String,
+    source: BoxError,
+}
+
+impl fmt::Display for AtTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.table, self.source)
+    }
+}
+
+impl Error for AtTable {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 fn ident(table: &str) -> Result<TableIdent, BoxError> {
     let parts: Vec<&str> = table.split('.').collect();
     if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
@@ -397,6 +417,75 @@ async fn data_files(table: &Table, staged: &StagedTable) -> Result<Vec<DataFile>
     Ok(out)
 }
 
+/// At most `limit` rows of `stream` (all, if `None`), whole batches where
+/// possible, the last one sliced.
+async fn take(
+    mut stream: iceberg::scan::ArrowRecordBatchStream,
+    limit: Option<usize>,
+) -> Result<Vec<RecordBatch>, BoxError> {
+    let mut batches = Vec::new();
+    let mut left = limit.unwrap_or(usize::MAX);
+    while let Some(batch) = stream.try_next().await? {
+        if batch.num_rows() <= left {
+            left -= batch.num_rows();
+            batches.push(batch);
+        } else {
+            batches.push(batch.slice(0, left));
+            left = 0;
+        }
+        if left == 0 {
+            break;
+        }
+    }
+    Ok(batches)
+}
+
+/// `batch` with its `uuid` columns (per `schema`) tagged as Arrow's `arrow.uuid`
+/// extension type: iceberg-rust reads them as plain 16-byte binaries, and the
+/// tag is what lets pyarrow (and the Python adapter's readers) see UUIDs.
+fn tag_uuids(schema: &Schema, batch: RecordBatch) -> Result<RecordBatch, BoxError> {
+    let arrow = batch.schema();
+    let mut changed = false;
+    let fields: Vec<Arc<arrow_schema::Field>> = arrow
+        .fields()
+        .iter()
+        .map(|f| {
+            let is_uuid = schema.field_by_name(f.name()).is_some_and(|n| {
+                matches!(n.field_type.as_ref(), Type::Primitive(PrimitiveType::Uuid))
+            });
+            if is_uuid && *f.data_type() == DataType::FixedSizeBinary(16) {
+                changed = true;
+                let mut metadata = f.metadata().clone();
+                metadata.insert("ARROW:extension:name".to_owned(), "arrow.uuid".to_owned());
+                Arc::new(f.as_ref().clone().with_metadata(metadata))
+            } else {
+                f.clone()
+            }
+        })
+        .collect();
+    if !changed {
+        return Ok(batch);
+    }
+    let tagged = arrow_schema::Schema::new_with_metadata(fields, arrow.metadata().clone());
+    Ok(RecordBatch::try_new(
+        Arc::new(tagged),
+        batch.columns().to_vec(),
+    )?)
+}
+
+/// What [`IcebergStore::scan_with`] reads: the Python adapter's `execute`
+/// parameters that the core supports (`selected_fields`, `snapshot_id`,
+/// `limit`); there is no row filter yet.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Scan {
+    /// The columns to read, in this order (all, if `None`).
+    pub columns: Option<Vec<String>>,
+    /// The snapshot to read (the current one, if `None`).
+    pub snapshot_id: Option<i64>,
+    /// At most this many rows (all, if `None`).
+    pub limit: Option<usize>,
+}
+
 /// One Iceberg catalog as a rhizodat store.
 #[derive(Clone)]
 pub struct IcebergStore {
@@ -466,18 +555,76 @@ impl IcebergStore {
     ///
     /// The catalog's or the scan's error.
     pub async fn scan(&self, table: &str) -> Result<Vec<RecordBatch>, BoxError> {
-        let table = self.lake.load(table).await?;
-        if table.metadata().current_snapshot().is_none() {
-            return Ok(Vec::new());
+        self.scan_with(table, &Scan::default()).await
+    }
+
+    /// The rows of `table` (`namespace.table`) that `scan` asks for: its columns
+    /// (all, by default) at its snapshot (the current one, by default), at most
+    /// its limit. A table without a snapshot answers with one empty batch, so the
+    /// columns are known either way.
+    ///
+    /// # Errors
+    ///
+    /// The catalog's or the scan's error, or a column the table does not have.
+    pub async fn scan_with(&self, table: &str, scan: &Scan) -> Result<Vec<RecordBatch>, BoxError> {
+        let table = self.lake.load(table).await.map_err(|source| AtTable {
+            table: table.to_owned(),
+            source,
+        })?;
+        let schema = match scan.snapshot_id {
+            Some(id) => {
+                let snapshot = table
+                    .metadata()
+                    .snapshot_by_id(id)
+                    .ok_or_else(|| refuse(format!("no snapshot {id}")))?;
+                table
+                    .metadata()
+                    .schema_by_id(
+                        snapshot
+                            .schema_id()
+                            .unwrap_or_else(|| table.metadata().current_schema_id()),
+                    )
+                    .ok_or_else(|| refuse(format!("snapshot {id} has no schema")))?
+                    .clone()
+            }
+            None => table.metadata().current_schema().clone(),
+        };
+        if let Some(columns) = &scan.columns {
+            for c in columns {
+                if schema.field_by_name(c).is_none() {
+                    return Err(refuse(format!(
+                        "{} has no column {c:?}",
+                        table.identifier()
+                    )));
+                }
+            }
         }
-        Ok(table
-            .scan()
-            .select_all()
-            .build()?
-            .to_arrow()
-            .await?
-            .try_collect()
-            .await?)
+        let batches = if scan.limit == Some(0) || table.metadata().current_snapshot().is_none() {
+            let arrow = Arc::new(schema_to_arrow_schema(&schema)?);
+            let arrow = match &scan.columns {
+                Some(columns) => Arc::new(
+                    arrow.project(&columns.iter().map(|c| arrow.index_of(c)).collect::<Result<
+                        Vec<_>,
+                        _,
+                    >>(
+                    )?)?,
+                ),
+                None => arrow,
+            };
+            vec![RecordBatch::new_empty(arrow)]
+        } else {
+            let mut builder = table.scan();
+            builder = match &scan.columns {
+                Some(columns) => builder.select(columns),
+                None => builder.select_all(),
+            };
+            if let Some(id) = scan.snapshot_id {
+                builder = builder.snapshot_id(id);
+            }
+            let stream = builder.build()?.to_arrow().await?;
+            take(stream, scan.limit).await?
+        };
+        batches.into_iter().map(|b| tag_uuids(&schema, b)).collect()
     }
 
     /// A new branch: an empty buffer of record batches.

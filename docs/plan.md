@@ -325,7 +325,18 @@ Steps:
    Python adapter's default `dat`) and the `IcebergUnit`'s buffered part writes,
    so the native facade's repositories hold a type in any of the four stores, or
    split it across them; either facade reads the other's versions.
-   Next: reads with Arrow for full results, and the C ABI for Go.
+   ✔ Reads with Arrow for full results: `execute` on the native ClickHouse store
+   (native SQL, `{name:Type}` parameters bound server-side, `FORMAT ArrowStream`
+   for statements that return rows) and on the native Iceberg store (a scan with
+   `selected_fields`, `snapshot_id` and `limit` — `rhizodat_iceberg::Scan`; UUID
+   columns tagged `arrow.uuid` so pyarrow reads them as UUIDs). The core answers
+   with the whole result as one Arrow IPC stream and
+   `rhizodat.core.native_result.from_ipc` makes the facade's `Result` of it, so
+   `r.store(name).execute(...)` works on the native facade and `to_arrow()` is
+   the stream itself. Not yet: Iceberg row filters, `execute` on native
+   PostgreSQL and drevo stores (rows, not Arrow, from those drivers).
+   Next: `execute` on native PostgreSQL and drevo, migrations on the native
+   path, and the C ABI for Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
