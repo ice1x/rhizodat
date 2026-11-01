@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyFrozenSet};
 use rhizodat_core::journal::Journal;
 use rhizodat_core::rows::RowValue;
 use rhizodat_postgres::parts::{
@@ -22,8 +22,18 @@ use rhizodat_postgres::{
 };
 use uuid::Uuid;
 
+use crate::migrations::{applied_from_py, applied_py, kinds, recorded_twice, statements};
 use crate::native::{NativeStore, Postgres, PostgresPending};
 use crate::result::rows_result;
+
+/// The driver's error with the server's message (`tokio_postgres::Error`
+/// displays as "db error" and keeps the message in its source).
+fn server_message(error: &tokio_postgres::Error) -> String {
+    match error.as_db_error() {
+        Some(db) => format!("{}: {}", db.code().code(), db.message()),
+        None => error.to_string(),
+    }
+}
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
 
@@ -124,6 +134,30 @@ impl PostgresStore {
                 .map_err(op_err)
         })?;
         rows_result(py, &result.columns, &result.rows)
+    }
+
+    /// The migration step kinds this store runs (`Migrates.migration_kinds`).
+    #[getter]
+    #[allow(clippy::unused_self)]
+    fn migration_kinds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyFrozenSet>> {
+        kinds(py, &["sql"])
+    }
+
+    /// A `sql` step: its statements in one transaction, like the Python adapter's.
+    fn run_migration_step(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        body: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let statements = statements(kind, "sql", body)?;
+        let store = self.0.clone();
+        py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(store.run_sql(&statements))
+                .map_err(|e| op_err(server_message(&e)))
+        })
     }
 
     fn unit(&self) -> PostgresUnit {
@@ -424,6 +458,37 @@ impl PostgresJournal {
 
     /// The record of `dat_txn` as a dict (`state`, `dat_txn`, `dat_tx_time`), or
     /// `None` when there is none.
+    /// The schema migrations recorded (the Python adapter's history table), by id,
+    /// as `rhizodat.core.journal.AppliedMigration`s.
+    fn applied_migrations<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        let journal = self.0.clone();
+        let applied = py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(journal.applied_migrations())
+                .map_err(op_err)
+        })?;
+        applied.iter().map(|a| applied_py(py, a)).collect()
+    }
+
+    /// Record `applied`; `rhizodat.core.journal.JournalConflict` if its id is
+    /// already recorded.
+    fn record_migration(&self, py: Python<'_>, applied: &Bound<'_, PyAny>) -> PyResult<()> {
+        let applied = applied_from_py(applied)?;
+        let journal = self.0.clone();
+        let recorded = py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(journal.record_migration(&applied))
+                .map_err(op_err)
+        })?;
+        if recorded {
+            Ok(())
+        } else {
+            Err(recorded_twice(py, applied.id))
+        }
+    }
+
     fn get<'py>(&self, py: Python<'py>, dat_txn: Uuid) -> PyResult<Option<Bound<'py, PyDict>>> {
         let journal = self.0.clone();
         let record = py.detach(|| {

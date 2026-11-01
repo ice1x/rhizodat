@@ -149,6 +149,12 @@ send the full result as one Arrow IPC stream, so `to_arrow()` is the stream
 itself; PostgreSQL (native SQL with `$1..$n` parameters, bound by position and
 checked against the statement's parameter types; `numeric` and other undecoded
 column types are refused with the `col::text` cast to use) and drevo (Cypher
-with named parameters) answer with rows. Migrations and Iceberg row filters are
-not on the native path yet — use the Python facade (DSN strings or Python adapter
-stores) for those.
+with named parameters) answer with rows. `r.migrate(...)` and
+`r.schema_versions()` run on the native facade too (`tests/core/test_native_migrations.py`):
+the native `PostgresJournal` keeps the history in the Python adapter's
+`<table>_migrations` table (either facade continues the other's history) and
+`MemoryJournal` in memory; the native PostgreSQL store runs `sql` steps in one
+transaction, ClickHouse one statement per request, drevo `cypher` steps in their
+own transactions. Iceberg migration steps and Iceberg row filters are not on the
+native path yet — use the Python facade (DSN strings or Python adapter stores) for
+those.

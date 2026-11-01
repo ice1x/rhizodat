@@ -270,13 +270,6 @@ class Rhizodat:
             self._installed.add(name)
         return store
 
-    def _require_python(self, feature: str) -> None:
-        if self._native:
-            raise NotImplementedError(
-                f"{feature} is not on the native core path yet; use the Python facade"
-                " (DSN strings or Python adapter stores) for it"
-            )
-
     def repository[T](self, entity_type: type[T]) -> "EntityRepository[T]":
         """CRUD for one entity type: committed reads, one Unit of Work per write."""
         from rhizodat.core.repository import EntityRepository
@@ -390,14 +383,12 @@ class Rhizodat:
         fails (earlier migrations stay applied; the next run repeats the failed one).
         ``dry_run`` only checks and reports what would run.
         """
-        self._require_python("migrations")
         from rhizodat.migrations.runner import migrate
 
         return migrate(self, source, to=to, dry_run=dry_run)
 
     def schema_versions(self, *, as_of: "datetime | None" = None) -> "list[AppliedMigration]":
         """The migrations applied (as known at ``as_of``, if given), by id."""
-        self._require_python("migrations")
         from rhizodat.migrations.runner import schema_versions
 
         return schema_versions(self, as_of=as_of)

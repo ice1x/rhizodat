@@ -65,6 +65,7 @@ mod clickhouse;
 mod coordinator;
 mod drevo;
 mod iceberg;
+mod migrations;
 mod native;
 mod postgres;
 mod recovery;

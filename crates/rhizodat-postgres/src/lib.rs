@@ -36,6 +36,7 @@ use rhizodat_core::journal::{
     BranchRecord, Journal, JournalError, JournalRecord, State, check_transition, decode_branches,
     encode_branches,
 };
+use rhizodat_core::migrations::AppliedMigration;
 use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::{BoxError, Branch, Participant};
 use tokio::sync::Mutex;
@@ -527,6 +528,21 @@ impl PostgresStore {
         self.connector.connect().await
     }
 
+    /// Run `statements` in one transaction, the reference's `sql` migration step
+    /// (PostgreSQL DDL is transactional, so a step applies whole or not at all).
+    ///
+    /// # Errors
+    ///
+    /// The driver's error; nothing of the step stays applied.
+    pub async fn run_sql(&self, statements: &[String]) -> Result<(), tokio_postgres::Error> {
+        let mut client = self.connect().await?;
+        let tx = client.transaction().await?;
+        for sql in statements {
+            tx.batch_execute(sql).await?;
+        }
+        tx.commit().await
+    }
+
     /// Create the service table `dat_applied` if it does not exist.
     ///
     /// # Errors
@@ -838,7 +854,9 @@ impl PostgresJournal {
                 "CREATE TABLE IF NOT EXISTS {t} (\
                  dat_txn uuid PRIMARY KEY, state text NOT NULL, dat_tx_time bigint, \
                  branches text NOT NULL, created_ms bigint NOT NULL, updated_ms bigint NOT NULL); \
-                 CREATE INDEX IF NOT EXISTS {t}_pending ON {t} (state, updated_ms)",
+                 CREATE INDEX IF NOT EXISTS {t}_pending ON {t} (state, updated_ms); \
+                 CREATE TABLE IF NOT EXISTS {t}_migrations (id bigint PRIMARY KEY, \
+                 name text NOT NULL, checksum text NOT NULL, dat_tx_time bigint NOT NULL)",
                 t = journal.table
             ))
             .await?;
@@ -850,6 +868,58 @@ impl PostgresJournal {
     pub fn with_wall(mut self, wall_ms: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.wall_ms = Box::new(wall_ms);
         self
+    }
+
+    /// The schema migrations recorded in `<table>_migrations` (the reference's
+    /// history table), by id.
+    ///
+    /// # Errors
+    ///
+    /// [`JournalError::Backend`] for the server's error.
+    pub async fn applied_migrations(&self) -> Result<Vec<AppliedMigration>, JournalError> {
+        let rows = self
+            .query(
+                &format!(
+                    "SELECT id, name, checksum, dat_tx_time FROM {}_migrations ORDER BY id",
+                    self.table
+                ),
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| AppliedMigration {
+                id: r.get(0),
+                name: r.get(1),
+                checksum: r.get(2),
+                dat_tx_time: r.get(3),
+            })
+            .collect())
+    }
+
+    /// Record `applied`: `Ok(true)`, or `Ok(false)` when its id is already recorded
+    /// (another runner got there first).
+    ///
+    /// # Errors
+    ///
+    /// [`JournalError::Backend`] for the server's error.
+    pub async fn record_migration(&self, applied: &AppliedMigration) -> Result<bool, JournalError> {
+        let rows = self
+            .query(
+                &format!(
+                    "INSERT INTO {}_migrations (id, name, checksum, dat_tx_time) \
+                     VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING RETURNING id",
+                    self.table
+                ),
+                &[
+                    &applied.id,
+                    &applied.name,
+                    &applied.checksum,
+                    &applied.dat_tx_time,
+                ],
+            )
+            .await?;
+        Ok(!rows.is_empty())
     }
 
     async fn batch(&self, sql: &str) -> Result<(), JournalError> {

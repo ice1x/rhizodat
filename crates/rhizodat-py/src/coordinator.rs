@@ -23,7 +23,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::executor::block_on;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
 use pyo3::prelude::*;
+use rhizodat_core::migrations::AppliedMigration;
+
+use crate::migrations::{applied_from_py, applied_py, recorded_twice};
 use pyo3::types::{PyBytes, PyDict};
 use rhizodat_core::clock::HybridLogicalClock;
 use rhizodat_core::coordinator::{CommitError, Coordinator as CoreCoordinator, Outcome};
@@ -236,7 +242,7 @@ fn commit_error(py: Python<'_>, error: CommitError, failure: &Failure) -> PyErr 
 
 /// The in-memory journal of the core, for Units of Work over several stores.
 #[pyclass(module = "rhizodat_native")]
-pub struct MemoryJournal(Arc<CoreJournal>);
+pub struct MemoryJournal(Arc<CoreJournal>, Mutex<BTreeMap<i64, AppliedMigration>>);
 
 impl MemoryJournal {
     /// The wrapped core journal as a trait object, for the coordinator.
@@ -249,7 +255,32 @@ impl MemoryJournal {
 impl MemoryJournal {
     #[new]
     fn new() -> Self {
-        Self(Arc::new(CoreJournal::new()))
+        Self(Arc::new(CoreJournal::new()), Mutex::new(BTreeMap::new()))
+    }
+
+    /// The schema migrations recorded in this journal, by id, as
+    /// `rhizodat.core.journal.AppliedMigration`s.
+    fn applied_migrations<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        let history = self
+            .1
+            .lock()
+            .map_err(|_| op_err("journal history poisoned"))?;
+        history.values().map(|a| applied_py(py, a)).collect()
+    }
+
+    /// Record `applied`; `rhizodat.core.journal.JournalConflict` if its id is
+    /// already recorded.
+    fn record_migration(&self, py: Python<'_>, applied: &Bound<'_, PyAny>) -> PyResult<()> {
+        let applied = applied_from_py(applied)?;
+        let mut history = self
+            .1
+            .lock()
+            .map_err(|_| op_err("journal history poisoned"))?;
+        if history.contains_key(&applied.id) {
+            return Err(recorded_twice(py, applied.id));
+        }
+        history.insert(applied.id, applied);
+        Ok(())
     }
 
     /// The record of `dat_txn` as a dict (`state`, `dat_txn`, `dat_tx_time`),

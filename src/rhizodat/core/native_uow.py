@@ -20,7 +20,10 @@ Repositories run on this path too, with their parts in any native store
 store runs on the core and answers with a :class:`~rhizodat.core.result.Result`
 (:mod:`rhizodat.core.native_result`): over one Arrow IPC stream from ClickHouse
 and Iceberg, over rows from PostgreSQL (``$n`` parameters, by position) and
-drevo. Migrations are not on it yet; use the Python facade for those.
+drevo. ``r.migrate(...)`` runs on it too: the native ``PostgresJournal`` and
+``MemoryJournal`` keep the history, the native PostgreSQL and ClickHouse stores run
+``sql`` steps and the drevo store ``cypher`` steps (Iceberg steps still need the
+Python facade).
 """
 
 import functools

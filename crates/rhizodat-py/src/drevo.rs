@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PyString};
 use rhizodat_core::journal::Journal;
 use rhizodat_drevo::parts::{
     DrevoPartSpec as CoreSpec, DrevoParts, FieldKind, PartVersion, PendingVersion,
@@ -21,6 +21,7 @@ use rhizodat_drevo::{
 };
 use uuid::Uuid;
 
+use crate::migrations::{kinds, statements};
 use crate::native::{Drevo, DrevoPending, NativeStore};
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
@@ -165,6 +166,36 @@ impl DrevoStore {
         py.import("rhizodat.core.native_result")?
             .getattr("from_rows")?
             .call1((PyList::new(py, &columns)?, PyList::new(py, values)?))
+    }
+
+    /// The migration step kinds this store runs (`Migrates.migration_kinds`).
+    #[getter]
+    #[allow(clippy::unused_self)]
+    fn migration_kinds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyFrozenSet>> {
+        kinds(py, &["cypher"])
+    }
+
+    /// A `cypher` step: each statement in its own transaction, like the Python
+    /// adapter's (index and procedure calls do not run inside a branch's).
+    fn run_migration_step(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        body: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let statements = statements(kind, "cypher", body)?;
+        let store = self.0.clone();
+        py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(async {
+                    for cypher in &statements {
+                        store.write(cypher, Params::new()).await?;
+                    }
+                    Ok::<(), rhizodat_core::store::BoxError>(())
+                })
+                .map_err(op_err)
+        })
     }
 
     fn unit(&self) -> DrevoUnit {

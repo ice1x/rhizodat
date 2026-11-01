@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyFrozenSet};
 use rhizodat_clickhouse::parts::{
     ChColumn, ClickHousePartSpec as CoreSpec, ClickHouseParts, PartVersion, PendingVersion,
 };
@@ -26,6 +26,7 @@ use rhizodat_core::store::{Branch, Participant};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::migrations::{kinds, statements};
 use crate::native::{ClickHouse, NativeStore};
 use crate::result::{empty_result, py_result};
 use crate::rows::{fields_dict, row_value};
@@ -141,6 +142,36 @@ impl ClickHouseStore {
     }
 
     /// A Unit of Work's branch of this store, to buffer rows and then commit.
+    /// The migration step kinds this store runs (`Migrates.migration_kinds`).
+    #[getter]
+    #[allow(clippy::unused_self)]
+    fn migration_kinds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyFrozenSet>> {
+        kinds(py, &["sql"])
+    }
+
+    /// A `sql` step: one statement per request, like the Python adapter's
+    /// (ClickHouse has no transactional DDL; use `IF NOT EXISTS` / `IF EXISTS`).
+    fn run_migration_step(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        body: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let statements = statements(kind, "sql", body)?;
+        let store = self.0.clone();
+        py.detach(|| {
+            let runtime = runtime().map_err(op_err)?;
+            runtime
+                .block_on(async {
+                    for sql in &statements {
+                        store.command(sql, &[]).await?;
+                    }
+                    Ok::<(), rhizodat_core::store::BoxError>(())
+                })
+                .map_err(op_err)
+        })
+    }
+
     fn unit(&self) -> ClickHouseUnit {
         ClickHouseUnit {
             store: self.0.clone(),

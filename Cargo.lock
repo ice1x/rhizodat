@@ -3379,6 +3379,7 @@ dependencies = [
  "rhizodat-postgres",
  "serde_json",
  "tokio",
+ "tokio-postgres",
  "uuid",
 ]
 

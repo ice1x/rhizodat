@@ -346,7 +346,17 @@ Steps:
    through the core's `write` (fenced while a branch is prepared). Both answer
    through `rhizodat.core.native_result.from_rows`, so `r.store(name).execute`
    now works on every native store.
-   Next: migrations on the native path, Iceberg row filters, and the C ABI for Go.
+   ✔ Migrations on the native path, with the Python runner unchanged: the
+   native `PostgresJournal` keeps the history in the reference's
+   `<table>_migrations` table (`applied_migrations` / `record_migration`, so
+   either facade continues the other's history) and `MemoryJournal` keeps it in
+   memory; the native PostgreSQL store runs `sql` steps in one transaction
+   (`run_sql`), ClickHouse one statement per request, drevo `cypher` steps in
+   their own transactions; the core's `AppliedMigration` crosses as the
+   reference's dataclass. Iceberg steps (declarative schema operations) are
+   refused on the native store for now.
+   Next: Iceberg migration steps and row filters on the core, and the C ABI for
+   Go.
 6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
    suite against both implementations.
 
