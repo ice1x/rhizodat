@@ -67,6 +67,7 @@ __all__ = [
     "IcebergParticipant",
     "IcebergStore",
     "catalog_properties",
+    "part_fields",
 ]
 
 _RESERVED = ("dat_txn", "dat_tx_time")
@@ -178,6 +179,13 @@ def _field_kind(annotation: object) -> str | None:
         dt.date: "date",
     }
     return natives.get(annotation)
+
+
+def part_fields(part: Part) -> list[tuple[str, str]]:
+    """``(field, kind)`` of each field of ``part``, in order (``id``: a uuid as text,
+    ``json``: tagged JSON text): the columns of its table (shared with the native
+    core)."""
+    return [(f, _field_kind(part.types.get(f)) or "json") for f in part.fields]
 
 
 class _PartTable:

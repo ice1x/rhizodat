@@ -135,11 +135,11 @@ reported (`unfinished`, then `stuck`) and retried by a later run.
 `tests/core/test_native_recovery.py` crashes a child process (`os._exit`)
 before and after the decision with PostgreSQL prepared, then recovers it.
 `r.repository(T)` and `uow.repository(T)` run the Python facade's repository
-logic with their parts on the core (`rhizodat.core.native_parts`): a native
-`PostgresStore`, `DrevoStore` or `ClickHouseStore` reads committed versions, its
-unit buffers part writes that the commit applies inside the meta-transaction
-(ClickHouse: in its journal payload, after the decision). The layout is the
-Python adapters', so either facade reads the other's versions
-(`tests/core/test_native_parts*.py` check both ways). Parts in Iceberg,
-`execute` and migrations are not on the native path yet — use the Python facade
-(DSN strings or Python adapter stores) for those.
+logic with their parts on the core (`rhizodat.core.native_parts`): every native
+store reads committed versions, its unit buffers part writes that the commit
+applies inside the meta-transaction (ClickHouse and Iceberg: in the journal
+payload, after the decision; an Iceberg erase copy-on-write through the REST
+catalog). The layout is the Python adapters', so either facade reads the other's
+versions (`tests/core/test_native_parts*.py` check both ways). `execute` and
+migrations are not on the native path yet — use the Python facade (DSN strings or
+Python adapter stores) for those.

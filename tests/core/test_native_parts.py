@@ -60,11 +60,6 @@ class PriceAgreement:
     price: Decimal
 
 
-@entity(stores={"lake": ["v"]}, name="t.Lake")
-class InLake:
-    v: int
-
-
 def spec(type_: type, store: str = "pg") -> object:
     from rhizodat.core.native_parts import part_spec
 
@@ -122,16 +117,11 @@ def test_a_write_names_only_the_parts_fields() -> None:
     assert unit.own_part(s, uuid.uuid4()) == (False, None)
 
 
-def test_parts_in_other_native_stores_are_not_on_the_native_path_yet() -> None:
-    stores = {
-        "pg": native.PostgresStore("postgresql://u:p@127.0.0.1:5432/db", "pg"),
-        "lake": native.IcebergStore("iceberg+rest://127.0.0.1:1/", "lake"),
-    }
-    with (
-        Rhizodat(stores=stores, journal=native.MemoryJournal()) as dat,
-        pytest.raises(NotImplementedError, match="IcebergStore"),
-    ):
-        dat.repository(InLake)
+def test_parts_need_a_native_store() -> None:
+    from rhizodat.core.native_parts import NativePartStore
+
+    with pytest.raises(NotImplementedError, match="object"):
+        NativePartStore(native, object())
 
 
 # --- against PostgreSQL -----------------------------------------------------------------

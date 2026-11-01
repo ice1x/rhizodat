@@ -198,7 +198,7 @@ impl IcebergLake {
         }
     }
 
-    async fn connect(&self) -> Result<&rhizodat_iceberg::IcebergStore, BoxError> {
+    pub(crate) async fn connect(&self) -> Result<&rhizodat_iceberg::IcebergStore, BoxError> {
         self.store
             .get_or_try_init(|| rhizodat_iceberg::IcebergStore::connect(&self.dsn, &self.name))
             .await
@@ -213,6 +213,7 @@ impl IcebergLake {
 pub(crate) struct IcebergPending {
     pub lake: IcebergLake,
     pub batches: rhizodat_iceberg::IcebergBatches,
+    pub parts: rhizodat_iceberg::parts::IcebergParts,
 }
 
 #[async_trait]
@@ -230,6 +231,7 @@ impl NativeStore for IcebergPending {
             Ok(store) => {
                 let mut branch = store.branch();
                 branch.load(self.batches.clone());
+                branch.load_parts(self.parts.clone());
                 Ok(Box::new(branch))
             }
             Err(error) => Err(ConnectError {
