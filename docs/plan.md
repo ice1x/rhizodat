@@ -13,7 +13,7 @@
    ✔ Iceberg branch: data files written at stage, their paths in the journal,
    one tagged snapshot per table after the decision, roll-forward by recovery,
    staged files deleted on abort.
-5. Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
+5. ✔ Bitemporal reads (`as_of`, `known_at`, `history`), with the storage format of
    entity parts and repository persistence.
    ✔ Repository CRUD, versions, `as_of` in transaction time, hard and soft
    delete; parts in PostgreSQL, ClickHouse, drevo and Iceberg; the parts
@@ -88,10 +88,12 @@ production deployment.
    trusted publishing).
 2. **Feedback**: the "Feedback on the proof of concept" issue template; every
    report becomes a plan item or a documented limit.
-3. **0.1.0, the MVP**: the v0.1 roadmap complete (bitemporal reads and the
-   integration scenarios of item 7), the feedback addressed, every store's
-   documented limits either lifted or stated in the adapter's page, and the
-   same suite green on both implementations in CI.
+3. **0.1.0, the MVP**: ✔ the v0.1 roadmap complete (bitemporal reads and the
+   integration scenarios of item 7), ✔ every store's documented limits stated
+   in [the stores page](adapters/stores.md), ✔ the same suite green on both
+   implementations in CI; the feedback addressed (none received yet, 2026-11-07).
+   The release itself: version `0.1.0`, the changelog, the `v0.1.0` tag, the
+   PyPI upload of the release assets.
 
 ## Rust core
 
@@ -405,8 +407,12 @@ Steps:
    spec update, so the step itself waits for the library (or a hand-built REST
    table update like the erase's).
    Next, after the MVP: the C ABI for Go.
-6. **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check`, and the conformance
-   suite against both implementations.
+6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
+   stable and the MSRV, against the compose stores), and the conformance
+   suite against both implementations: the Rust vectors in `cargo test`, the
+   Python reference in every `test` job, and the native module's run of the
+   same vectors (`tests/conformance/test_native_vectors.py`) in
+   `drevo-embedded`, together with the full suite on both facades.
 
 Order: after step 4 of the v0.1 roadmap (or at least after the Iceberg driver
 check), so the port carries a finished protocol, including the non-2PC
