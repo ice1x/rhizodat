@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rhizodat"
-version = "0.1.0a1"
+version = "0.1.0"
 description = "Bitemporal polyglot data layer over PostgreSQL, ClickHouse, drevo and Apache Iceberg"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "ice1x" }]
 keywords = ["database", "transactions", "bitemporal", "postgresql", "clickhouse", "iceberg", "graph"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
@@ -40,7 +40,7 @@ mcp = ["mcp>=2.3"]
 testing = ["pytest>=8", "faker>=30"]
 # The core in Rust (rhizodat_native, built from crates/rhizodat-py): the package uses it
 # when installed, at the same version.
-native = ["rhizodat-native==0.1.0a1"]
+native = ["rhizodat-native==0.1.0"]
 
 [project.scripts]
 rhizodat = "rhizodat.check:main"
