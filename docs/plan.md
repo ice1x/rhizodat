@@ -22,7 +22,13 @@
 6. ✔ Migrations: one TOML format for every store, the history in the journal
    with transaction time, `rhizodat migrate`.
 7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
-   bug tracker.
+   bug tracker. Each is an end-to-end workflow in `tests/scenarios/`, run on
+   the Python facade and on the native one.
+   ✔ CBT journal (`test_cbt_journal.py`): a thought record across PostgreSQL,
+   ClickHouse and drevo, migrated schema, reframe as a new version, the review
+   `as_of` before it, mood lift aggregated in ClickHouse, recurring distortions
+   found in the graph, withdraw and restore, and an entry written on one facade
+   read and reframed on the other.
 
 Out of scope for v0.1: async API, savepoints / nested transactions, cross-store
 query planning.
