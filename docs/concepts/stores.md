@@ -7,6 +7,9 @@
 | Apache Iceberg | table scan | ✔ atomic snapshot commit | ✖ optimistic commit | stage data files → commit snapshot after the decision, retried |
 | ClickHouse | SQL | ✖ | ✖ | insert after the decision with a dedup token, retried |
 
+What each store carries on either facade, and where it stops, is in
+[The shipped stores and their limits](../adapters/stores.md).
+
 Iceberg's atomicity comes from the format plus its catalog: a commit swaps the
 table's metadata pointer to a new snapshot. drevo's 2PC is exposed in
 `drevo-py` (`prepare(gid)`, `commit_prepared`, `rollback_prepared`,
