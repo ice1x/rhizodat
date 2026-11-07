@@ -21,9 +21,10 @@
    `known_at` reads.
 6. ✔ Migrations: one TOML format for every store, the history in the journal
    with transaction time, `rhizodat migrate`.
-7. Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
+7. ✔ Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
    bug tracker. Each is an end-to-end workflow in `tests/scenarios/`, run on
-   the Python facade and on the native one.
+   the Python facade and on the native one, and closed with the same data
+   worked from both facades in turn.
    ✔ CBT journal (`test_cbt_journal.py`): a thought record across PostgreSQL,
    ClickHouse and drevo, migrated schema, reframe as a new version, the review
    `as_of` before it, mood lift aggregated in ClickHouse, recurring distortions
@@ -35,6 +36,20 @@
    versions, close / reopen with `as_of` reads, reopened bugs scanned in the
    lake with a row filter, a withdrawn report, and the same tracker worked from
    both facades in turn.
+   ✔ ERP (`test_erp.py`): customers and orders across PostgreSQL and ClickHouse
+   (money in integer cents, since a `Decimal` is a string there); a price
+   agreement with valid time, a rebate that holds for its own days while the
+   price known before it stays readable (`as_of` + `known_at`); orders placed in
+   one transaction priced by the agreement holding on each delivery day; revenue
+   per SKU in native ClickHouse over the latest versions, cancelled orders out.
+   ✔ IT task manager (`test_task_manager.py`): tasks in PostgreSQL, "blocked by"
+   edges in drevo; a Cypher migration step; a sprint planned in one
+   transaction; what a task blocks asked of the graph and confirmed against the
+   latest versions; a finished task releasing its dependents; archive / restore.
+   ✔ Story editor (`test_story_editor.py`): chapter text in PostgreSQL, the
+   cast in drevo, words and revision in an Iceberg lake; a revision as a new
+   version with the first draft readable `as_of`; where a character appears
+   from the graph; the long chapters from a lake scan; a cut chapter restored.
 
 Out of scope for v0.1: async API, savepoints / nested transactions, cross-store
 query planning.
