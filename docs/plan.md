@@ -21,15 +21,19 @@
    `known_at` reads.
 6. ✔ Migrations: one TOML format for every store, the history in the journal
    with transaction time, `rhizodat migrate`.
-7. ✔ Integration scenarios: CBT journal, story/book editor, IT task manager, ERP,
-   bug tracker. Each is an end-to-end workflow in `tests/scenarios/`, run on
-   the Python facade and on the native one, and closed with the same data
-   worked from both facades in turn.
-   ✔ CBT journal (`test_cbt_journal.py`): a thought record across PostgreSQL,
-   ClickHouse and drevo, migrated schema, reframe as a new version, the review
-   `as_of` before it, mood lift aggregated in ClickHouse, recurring distortions
-   found in the graph, withdraw and restore, and an entry written on one facade
-   read and reframed on the other.
+7. ✔ Integration scenarios: cloud operations, story/book editor, IT task
+   manager, ERP, bug tracker. Each is an end-to-end workflow in
+   `tests/scenarios/`, run on the Python facade and on the native one, and
+   closed with the same data worked from both facades in turn.
+   ✔ Cloud operations (`test_cloud_ops.py`), all four stores: resources in
+   PostgreSQL, their dependencies in drevo, telemetry in ClickHouse, the raw
+   API requests in an Iceberg lake; a stack provisioned with its requests in
+   one transaction (an interrupted one leaves neither), the blast radius of a
+   failing database from the graph, the unhealthy service found in ClickHouse,
+   scaled with its request and read `as_of` before the incident, its requests
+   audited in the lake, a balancer decommissioned and restored, and the estate
+   run from both facades in turn. It replaced a CBT journal scenario, a domain
+   one SQLite file serves, which justified none of the stores.
    ✔ Bug tracker (`test_bug_tracker.py`): bugs across PostgreSQL and an Iceberg
    lake, triage in one transaction through `uow.repository` (an interrupted one
    leaves nothing), open bugs per assignee in native SQL over the latest

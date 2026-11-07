@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The CBT journal scenario is replaced by **cloud operations** over all four
+  stores (`tests/scenarios/test_cloud_ops.py`): resources in PostgreSQL, their
+  dependencies in drevo, telemetry in ClickHouse, raw API requests in Iceberg.
+  A journal for one person fits in SQLite and was a poor case for the package.
+
 ## 0.1.0 — the MVP
 
 The v0.1 roadmap is complete. Since 0.1.0a1:
