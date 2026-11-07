@@ -29,6 +29,12 @@
    `as_of` before it, mood lift aggregated in ClickHouse, recurring distortions
    found in the graph, withdraw and restore, and an entry written on one facade
    read and reframed on the other.
+   ✔ Bug tracker (`test_bug_tracker.py`): bugs across PostgreSQL and an Iceberg
+   lake, triage in one transaction through `uow.repository` (an interrupted one
+   leaves nothing), open bugs per assignee in native SQL over the latest
+   versions, close / reopen with `as_of` reads, reopened bugs scanned in the
+   lake with a row filter, a withdrawn report, and the same tracker worked from
+   both facades in turn.
 
 Out of scope for v0.1: async API, savepoints / nested transactions, cross-store
 query planning.
