@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0 — the MVP
+
+The v0.1 roadmap is complete. Since 0.1.0a1:
+
+- **Five end-to-end scenarios** in `tests/scenarios/` (a CBT journal, a bug
+  tracker, an ERP with valid time, an IT task manager, a story editor), each run
+  on the Python facade and on the native facade and closed with the same data
+  worked from both in turn. They are the reference for how an application uses
+  the package.
+- **The shipped stores and their limits**: one documentation page per store and
+  per facade with every known limit (`docs/adapters/stores.md`).
+- Packaging: `rhizodat[native]` pins the Rust core to the package version;
+  the `Release` workflow builds the wheels for Linux and macOS on x86_64 and
+  arm64 from a `v*` tag.
+
 ## 0.1.0a1 — proof of concept
 
 The first public pre-release. One API over PostgreSQL, ClickHouse,

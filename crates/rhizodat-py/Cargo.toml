@@ -1,6 +1,6 @@
 [package]
 name = "rhizodat-py"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 description = "Python bindings of the rhizodat core (the rhizodat_native module)"
 publish = false
 edition.workspace = true
