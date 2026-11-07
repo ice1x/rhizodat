@@ -63,6 +63,7 @@ nav:
       - Ontology proposals: guide/ontology.md
       - rhizodat-MCP: guide/mcp.md
   - Adapters:
+      - The shipped stores and their limits: adapters/stores.md
       - Writing an adapter: adapters/index.md
       - Contracts and plug-ins: adapters/contracts.md
   - API reference:
