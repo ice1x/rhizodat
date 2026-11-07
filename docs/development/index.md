@@ -21,8 +21,8 @@ DSN set in the environment is used as is, so a store that is down fails the run
 `RHIZODAT_TEST_TOXIPROXY`. The drevo server must be
 **disposable**: 2PC raises the prepared fence and blocks other writers.
 
-`tests/scenarios/` holds the five end-to-end scenarios of the roadmap (a CBT
-journal, a bug tracker, an ERP, an IT task manager, a story editor), each run
+`tests/scenarios/` holds the five end-to-end scenarios of the roadmap (cloud
+operations, a bug tracker, an ERP, an IT task manager, a story editor), each run
 against the compose stores on the Python facade and on the native one; they are
 the reference for how an application uses the package.
 
