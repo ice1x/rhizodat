@@ -17,6 +17,7 @@ disposable PostgreSQL with ``max_prepared_transactions > 0``.
 
 import uuid
 from collections.abc import Callable, Iterator
+from decimal import Decimal
 
 import psycopg
 import pytest
@@ -230,6 +231,73 @@ def test_a_unit_carries_scalars_bytes_and_temporal_values(
     )
     assert rows[0] == ("12.34", True, b"\xff\x00o", "hi")
     assert rows[1] == (None, None, None, None)
+
+
+def test_a_unit_carries_lists_and_maps_into_json_and_array_columns(
+    pg_dsn: str, make_schema: Callable[[], str]
+) -> None:
+    """A list goes to an array or a json(b) column, a map to json(b); the
+    elements are quoted, so commas, quotes, braces and backslashes survive."""
+    fake = Faker()
+    schema = make_schema()
+    _create(
+        pg_dsn,
+        schema,
+        "CREATE TABLE docs (meta jsonb, tags text[], scores int[], grid int[][],"
+        " raw json, dat_txn uuid, dat_tx_time bigint)",
+    )
+    store = native.PostgresStore(pg_dsn, "pg", schema)
+    store.install()
+    tricky = ["a,b", 'say "hi"', "{braces}", "back\\slash", "", "NULL", fake.word()]
+    meta = {
+        "name": fake.name(),
+        "n": 3,
+        "ratio": 0.5,
+        "ok": True,
+        "none": None,
+        "price": Decimal("12.50"),
+        "tags": ["x", 1, None],
+        "nested": {"deep": [{"k": "v"}]},
+    }
+    unit = store.unit()
+    unit.insert(
+        "docs",
+        ["meta", "tags", "scores", "grid", "raw"],
+        [
+            [meta, tricky, [1, None, 3], [[1, 2], [3, 4]], [1, "two", None]],
+            [None, [], [], None, {}],
+        ],
+    )
+    native.Coordinator().commit(native.new_id(), [unit])
+    rows = _rows(
+        pg_dsn, schema, "SELECT meta, tags, scores, grid, raw FROM docs ORDER BY meta NULLS LAST"
+    )
+    stored_meta = {**meta, "price": 12.5}  # a decimal is a JSON number
+    assert rows[0] == (stored_meta, tricky, [1, None, 3], [[1, 2], [3, 4]], [1, "two", None])
+    assert rows[1] == (None, [], [], None, {})
+
+
+@pytest.mark.parametrize(
+    ("ddl", "value", "message"),
+    [
+        ("c text", ["a"], "array or json"),
+        ("c int[]", {"a": 1}, "json"),
+        ("c jsonb", [b"\x00"], "bytes"),
+        ("c jsonb", {"x": float("nan")}, "NaN"),
+    ],
+)
+def test_a_list_or_map_that_does_not_fit_its_column_aborts(
+    pg_dsn: str, make_schema: Callable[[], str], ddl: str, value: object, message: str
+) -> None:
+    schema = make_schema()
+    _create(pg_dsn, schema, f"CREATE TABLE t ({ddl}, dat_txn uuid, dat_tx_time bigint)")
+    store = native.PostgresStore(pg_dsn, "pg", schema)
+    store.install()
+    unit = store.unit()
+    unit.insert("t", ["c"], [[value]])
+    with pytest.raises(native.AbortedError, match=message):
+        native.Coordinator().commit(native.new_id(), [unit])
+    assert _rows(pg_dsn, schema, "SELECT count(*) FROM t") == [(0,)]
 
 
 def test_a_unit_and_a_second_store_write_together_through_a_journal(

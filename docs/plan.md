@@ -269,8 +269,8 @@ Steps:
    with the meta-transaction through the two-phase protocol. The target table
    carries the user columns plus `dat_txn`/`dat_tx_time`, stamped onto every row;
    values are bound as `$n::text::<column type>`, so the server parses each per its
-   own column (scalars, decimals, bytes and temporal values; lists and maps not
-   yet). A PostgreSQL unit may be reused across a retry.
+   own column (scalars, decimals, bytes and temporal values; lists and maps
+   since the MVP, into array and `json(b)` columns). A PostgreSQL unit may be reused across a retry.
    `tests/core/test_native_postgres.py` writes rows, reads them back, and replays a
    commit without duplicating them, including a unit + second-store meta-transaction.
    ✔ The data path for drevo (`DrevoStore.unit()`): a graph store buffers
@@ -414,8 +414,9 @@ Steps:
    inherits them: ✔ `numeric` in PostgreSQL `execute` (a binary codec in
    `rhizodat_postgres::numeric`, `Decimal` both ways with its scale, `NaN` and
    the infinities); ✔ partitioned Iceberg tables (one file per partition,
-   `RecordBatchPartitionSplitter` + `FanoutWriter`); lists and maps in PostgreSQL
-   rows; the Glue catalog.
+   `RecordBatchPartitionSplitter` + `FanoutWriter`); ✔ lists and maps in
+   PostgreSQL rows (array literals and JSON text by the column's type); the
+   Glue catalog.
    Next: the C ABI for Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance

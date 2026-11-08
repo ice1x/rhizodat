@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Native facade, PostgreSQL rows (`uow.store(name).insert`): a list goes to an
+  array or a `json(b)` column, a map to `json(b)` (they were refused).
 - Native facade, PostgreSQL `execute`: `numeric` columns come back as `Decimal`
   with their scale, and a `Decimal` or an `int` binds to a `numeric` parameter,
   exactly (a binary codec in `rhizodat-postgres`, no float on the way).

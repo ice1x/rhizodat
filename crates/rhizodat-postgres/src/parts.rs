@@ -92,7 +92,7 @@ impl ColumnType {
         if self == ColumnType::Jsonb {
             return Ok(Some(encode_value(value)));
         }
-        pg_text(value)
+        pg_text(value, self.sql())
     }
 
     fn decode(self, text: Option<String>) -> Result<RowValue, BoxError> {
