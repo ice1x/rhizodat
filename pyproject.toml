@@ -32,6 +32,8 @@ clickhouse = ["clickhouse-connect>=0.8"]
 drevo = ["neo4j>=5.20"]
 # pyarrow writes the data files; sqlalchemy is for iceberg+sql:// catalogs.
 iceberg = ["pyiceberg[pyarrow,sql-sqlite]>=0.12"]
+# AWS Glue catalogs (iceberg+glue://): boto3 on top of the iceberg extra.
+glue = ["pyiceberg[pyarrow,sql-sqlite,glue]>=0.12"]
 # rhizodat.ingest: file imports with schema inference (rhizodat import).
 ingest = ["pyarrow>=17", "rdflib>=7"]
 # rhizodat-MCP, the MCP server shipped with rhizodat (the rhizodat-mcp command).
@@ -61,7 +63,9 @@ dev = [
     "psycopg[binary]>=3.2",
     "neo4j>=5.20",
     "clickhouse-connect>=0.8",
-    "pyiceberg[pyarrow,sql-sqlite]>=0.12",
+    "pyiceberg[pyarrow,sql-sqlite,glue]>=0.12",
+    # A local Glue endpoint for the iceberg+glue tests (moto's server mode).
+    "moto[server,glue]>=5",
     "mcp>=2.3",
     "rdflib>=7",
     "rhizodat-ontology",

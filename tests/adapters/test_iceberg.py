@@ -144,8 +144,26 @@ def test_rest_catalog_passes_other_parameters_through() -> None:
     }
 
 
-def test_glue_is_not_supported_yet() -> None:
-    with pytest.raises(NotImplementedError, match="glue"):
+def test_glue_catalog_from_a_region(faker: Faker) -> None:
+    """The host is the AWS region; the warehouse and credentials are parameters."""
+    key = faker.password(special_chars=False)
+    props = catalog_properties(
+        f"iceberg+glue://eu-west-1?warehouse=s3://lake/wh&glue.secret-access-key={key}"
+        "&glue.endpoint=http://127.0.0.1:5000"
+    )
+    assert props == {
+        "type": "glue",
+        "glue.region": "eu-west-1",
+        "warehouse": "s3://lake/wh",
+        "glue.secret-access-key": key,
+        "glue.endpoint": "http://127.0.0.1:5000",
+    }
+    assert catalog_properties("iceberg+glue://")["type"] == "glue"  # region from the env
+
+
+def test_a_glue_dsn_with_a_path_is_refused() -> None:
+    """A path would read as the warehouse, which is an S3 location: say so."""
+    with pytest.raises(ValueError, match=r"warehouse=s3://"):
         catalog_properties("iceberg+glue://eu-west-1/lake")
 
 
