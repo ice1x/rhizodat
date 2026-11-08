@@ -5,9 +5,10 @@
 //! The statement is prepared first, so the server names the parameter and
 //! column types: a parameter is bound by its target type (an integer to
 //! `int2` / `int4` / `int8` / `float8`, a string to any text type, `uuid`,
-//! `json` / `jsonb`, …), and a column is decoded by its type. A value or a
-//! column type the port cannot carry is refused with the cast that would
-//! (`$1::text::numeric`, `price::text`).
+//! `json` / `jsonb`, a decimal or an integer to `numeric`, …), and a column is
+//! decoded by its type (`numeric` exactly, as a decimal with its scale). A
+//! value or a column type the port cannot carry is refused with the cast that
+//! would (`$1::text::interval`, `gap::text`).
 
 use std::error::Error;
 use std::fmt;
@@ -15,7 +16,9 @@ use std::fmt;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
 use rhizodat_core::rows::RowValue;
 use rhizodat_core::store::BoxError;
-use tokio_postgres::types::{IsNull, ToSql, Type, to_sql_checked};
+
+use crate::numeric;
+use tokio_postgres::types::{FromSql, IsNull, ToSql, Type, to_sql_checked};
 use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
@@ -103,18 +106,18 @@ impl<'a> Bind<'a> {
         let fits = match value {
             RowValue::Null => true,
             RowValue::Bool(_) => *ty == Type::BOOL,
-            RowValue::Int(_) => {
-                matches!(*ty, Type::INT2 | Type::INT4 | Type::INT8 | Type::FLOAT8)
-            }
+            RowValue::Int(_) => matches!(
+                *ty,
+                Type::INT2 | Type::INT4 | Type::INT8 | Type::FLOAT8 | Type::NUMERIC
+            ),
             RowValue::Float(_) => matches!(*ty, Type::FLOAT4 | Type::FLOAT8),
             RowValue::Str(_) => is_text(ty) || matches!(*ty, Type::UUID | Type::JSON | Type::JSONB),
             RowValue::Uuid(_) => *ty == Type::UUID || is_text(ty),
             RowValue::Bytes(_) => *ty == Type::BYTEA,
-            RowValue::Decimal(_)
-            | RowValue::Date(_)
-            | RowValue::DateTime(_)
-            | RowValue::List(_)
-            | RowValue::Map(_) => false,
+            RowValue::Decimal(_) => *ty == Type::NUMERIC,
+            RowValue::Date(_) | RowValue::DateTime(_) | RowValue::List(_) | RowValue::Map(_) => {
+                false
+            }
         };
         if fits {
             Ok(Self { value })
@@ -154,6 +157,10 @@ impl ToSql for Bind<'_> {
                 Type::INT4 => i32::try_from(*v)?.to_sql(ty, out),
                 #[allow(clippy::cast_precision_loss)]
                 Type::FLOAT8 => (*v as f64).to_sql(ty, out),
+                Type::NUMERIC => {
+                    out.extend_from_slice(&numeric::encode(&v.to_string())?);
+                    Ok(IsNull::No)
+                }
                 _ => v.to_sql(ty, out),
             },
             RowValue::Float(v) => match *ty {
@@ -173,6 +180,10 @@ impl ToSql for Bind<'_> {
                 _ => v.hyphenated().to_string().to_sql(ty, out),
             },
             RowValue::Bytes(v) => v.as_slice().to_sql(ty, out),
+            RowValue::Decimal(v) => {
+                out.extend_from_slice(&numeric::encode(v)?);
+                Ok(IsNull::No)
+            }
             other => Err(format!("{other:?} cannot be bound").into()),
         }
     }
@@ -222,6 +233,9 @@ fn decode(row: &Row, i: usize, name: &str, ty: &Type) -> Result<RowValue, BoxErr
         Type::BYTEA => row
             .try_get::<_, Option<Vec<u8>>>(i)?
             .map_or(RowValue::Null, RowValue::Bytes),
+        Type::NUMERIC => row
+            .try_get::<_, Option<NumericText>>(i)?
+            .map_or(RowValue::Null, |v| RowValue::Decimal(v.0)),
         Type::JSON | Type::JSONB => row
             .try_get::<_, Option<serde_json::Value>>(i)?
             .map_or(Ok(RowValue::Null), |v| json_value(&v))?,
@@ -248,6 +262,19 @@ fn decode(row: &Row, i: usize, name: &str, ty: &Type) -> Result<RowValue, BoxErr
             .into());
         }
     })
+}
+
+/// A `numeric` column's value as its decimal text.
+struct NumericText(String);
+
+impl<'a> FromSql<'a> for NumericText {
+    fn from_sql(_ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
+        Ok(Self(numeric::decode(raw)?))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        *ty == Type::NUMERIC
+    }
 }
 
 /// A JSON document as the values a `jsonb` column's reader gives the Python
@@ -284,9 +311,11 @@ mod tests {
         assert!(Bind::new(1, &RowValue::Null, &Type::TIMESTAMPTZ).is_ok());
         assert!(Bind::new(1, &RowValue::Str("x".into()), &Type::JSONB).is_ok());
         assert!(Bind::new(1, &RowValue::Uuid(Uuid::nil()), &Type::TEXT).is_ok());
-        let err = Bind::new(2, &RowValue::Decimal("1.5".into()), &Type::NUMERIC).unwrap_err();
+        assert!(Bind::new(1, &RowValue::Decimal("1.5".into()), &Type::NUMERIC).is_ok());
+        assert!(Bind::new(1, &RowValue::Int(7), &Type::NUMERIC).is_ok());
+        let err = Bind::new(2, &RowValue::Decimal("1.5".into()), &Type::TEXT).unwrap_err();
         assert!(
-            err.0.contains("$2") && err.0.contains("::text::numeric"),
+            err.0.contains("$2") && err.0.contains("::text::text"),
             "{err}"
         );
         let err = Bind::new(1, &RowValue::Str("x".into()), &Type::INT8).unwrap_err();

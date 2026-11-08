@@ -410,7 +410,12 @@ Steps:
    0.10 has `add_column` / `delete_column` but no column rename and no partition
    spec update, so the step itself waits for the library (or a hand-built REST
    table update like the erase's).
-   Next, after the MVP: the C ABI for Go.
+   After the MVP, the native core's gaps close before the C ABI for Go, which
+   inherits them: ✔ `numeric` in PostgreSQL `execute` (a binary codec in
+   `rhizodat_postgres::numeric`, `Decimal` both ways with its scale, `NaN` and
+   the infinities); partitioned Iceberg tables; lists and maps in PostgreSQL
+   rows; the Glue catalog.
+   Next: the C ABI for Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

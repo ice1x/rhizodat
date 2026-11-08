@@ -29,10 +29,11 @@ version every part already has.
   carry nested lists and dicts).
 - Native facade, `execute`: parameters are positional only (`$1..$n`), checked
   against the statement's parameter types; result columns are decoded for
-  `bool`, integers, floats, `text`, `uuid`, `bytea`, `json(b)`,
-  `timestamp(tz)` and `date`. **`numeric` and other column types are refused**
-  with the cast to use (`price::text`). The Python facade binds and decodes
-  whatever psycopg does.
+  `bool`, integers, floats, `numeric` (exactly, as a `Decimal` with its scale,
+  `NaN` and the infinities included), `text`, `uuid`, `bytea`, `json(b)`,
+  `timestamp(tz)` and `date`. **Other column types (`interval`, arrays, ranges,
+  …) are refused** with the cast to use (`gap::text`). The Python facade binds
+  and decodes whatever psycopg does.
 - Migrations: `sql` steps; the native store runs a migration's statements in
   one transaction.
 

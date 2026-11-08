@@ -911,18 +911,25 @@ async fn native_sql_binds_by_type_and_decodes_by_column() {
     assert_eq!(result.rows[1][0], RowValue::Int(2));
     assert!(result.rows[1][1..7].iter().all(|v| *v == RowValue::Null));
 
-    let err = query(&client, "SELECT price FROM people", &[])
+    let prices = query(&client, "SELECT price FROM people ORDER BY id", &[])
         .await
-        .unwrap_err();
-    assert!(err.to_string().contains("price::text"), "{err}");
-    let text = query(
+        .unwrap();
+    assert_eq!(
+        prices.rows,
+        [[RowValue::Decimal("12.5".into())], [RowValue::Null]]
+    );
+    let bound = query(
         &client,
-        "SELECT price::text AS p FROM people WHERE id = 1",
-        &[],
+        "SELECT $1::numeric(10, 2) + $2 AS total",
+        &[RowValue::Decimal("-0.5".into()), RowValue::Int(3)],
     )
     .await
     .unwrap();
-    assert_eq!(text.rows, [[RowValue::Str("12.5".into())]]);
+    assert_eq!(bound.rows, [[RowValue::Decimal("2.50".into())]]);
+    let err = query(&client, "SELECT interval '1 day' AS gap", &[])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("gap::text"), "{err}");
     let err = query(&client, "SELECT $1::int8", &[RowValue::Str("x".into())])
         .await
         .unwrap_err();
