@@ -12,10 +12,13 @@ Install the module with ``uv sync --group native`` (needs a Rust toolchain).
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from faker import Faker
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from rhizodat import Rhizodat
 from rhizodat.adapters.iceberg import IcebergStore as PyIcebergStore
@@ -271,17 +274,72 @@ def test_postgres_execute_runs_sql_with_positional_params(
 
     assert store.execute("SELECT count(*) AS n FROM people").one() == {"n": 2}
     assert store.execute("SELECT current_schema() AS s").one() == {"s": pg_schema}
-    assert store.execute("SELECT price::text AS p FROM people WHERE id = 1").one() == {"p": "12.5"}
+    assert store.execute("SELECT price FROM people WHERE id = 1").one() == {
+        "price": Decimal("12.5")
+    }
+    assert store.execute("SELECT price FROM people WHERE id = 2").one() == {"price": None}
     table = store.execute("SELECT id, name FROM people ORDER BY id").to_arrow()
     assert table.column("id").to_pylist() == [1, 2]
+
+
+def test_postgres_numeric_is_bound_and_decoded_exactly(pg_dsn: str, pg_schema: str) -> None:
+    """``numeric`` crosses as ``Decimal`` both ways, scale and specials kept."""
+    store = native.PostgresStore(pg_dsn, "pg", pg_schema)
+    store.execute("CREATE TABLE ledger (id bigint, amount numeric(12, 2), rate numeric)")
+    store.execute(
+        "INSERT INTO ledger VALUES ($1, $2, $3), ($4, $5, $6)",
+        [1, Decimal("1234.50"), Decimal("0.000001"), 2, 7, Decimal("-1E+3")],
+    )
+    rows = store.execute("SELECT id, amount, rate FROM ledger ORDER BY id").all()
+    assert rows == [
+        {"id": 1, "amount": Decimal("1234.50"), "rate": Decimal("0.000001")},
+        {"id": 2, "amount": Decimal("7.00"), "rate": Decimal("-1000")},
+    ]
+    assert str(rows[0]["amount"]) == "1234.50"  # the column's scale is kept
+    total = store.execute("SELECT sum(amount) AS total FROM ledger").one()
+    assert total == {"total": Decimal("1241.50")}
+    specials = store.execute(
+        "SELECT 'NaN'::numeric AS nan, 'Infinity'::numeric AS inf,"
+        " '-Infinity'::numeric AS ninf, 0::numeric AS zero, 0.00::numeric AS zeros"
+    ).one()
+    assert specials["nan"].is_nan()
+    assert (specials["inf"], specials["ninf"]) == (Decimal("Infinity"), Decimal("-Infinity"))
+    assert (str(specials["zero"]), str(specials["zeros"])) == ("0", "0.00")
+    big = Decimal("-98765432109876543210.0123456789012345678901")
+    assert store.execute("SELECT $1::numeric AS v", [big]).one() == {"v": big}
+    with pytest.raises(RuntimeError, match=r"cannot bind \$1: Decimal"):
+        store.execute("SELECT $1::text", [Decimal("1.5")])
+
+
+# A coefficient and a decimal exponent within PostgreSQL's numeric range, in both
+# notations Python prints (``1.50``, ``1.5E-7``, ``1E+3``), and the infinities.
+DECIMALS = st.builds(
+    lambda coefficient, exponent: Decimal(coefficient).scaleb(exponent),
+    st.integers(-(10**40), 10**40),
+    st.integers(-60, 20),
+) | st.sampled_from([Decimal("Infinity"), Decimal("-Infinity"), Decimal("-0")])
+
+
+@settings(
+    max_examples=80, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(value=DECIMALS)
+def test_postgres_numeric_round_trips_any_decimal(
+    pg_dsn: str, pg_schema: str, value: Decimal
+) -> None:
+    """Bound as numeric and read back: the same number, and PostgreSQL's own text of it."""
+    store = native.PostgresStore(pg_dsn, "pg", pg_schema)
+    back = store.execute("SELECT $1::numeric AS v, $1::numeric::text AS t", [value]).one()
+    assert back["v"] == value
+    assert back["v"].as_tuple() == Decimal(back["t"]).as_tuple()
 
 
 def test_postgres_execute_refuses_what_it_cannot_bind_or_decode(
     pg_dsn: str, pg_schema: str
 ) -> None:
     store = native.PostgresStore(pg_dsn, "pg", pg_schema)
-    with pytest.raises(RuntimeError, match=r"(?i)numeric.*::text"):
-        store.execute("SELECT 1.5::numeric AS price")
+    with pytest.raises(RuntimeError, match=r"(?i)interval.*::text"):
+        store.execute("SELECT interval '1 day' AS gap")
     with pytest.raises(native.InvalidUnitOfWork, match="cannot bind"):
         store.execute("SELECT $1::text", [object()])
     with pytest.raises(native.InvalidUnitOfWork, match=r"\$1"):

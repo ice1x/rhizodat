@@ -45,6 +45,7 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, NoTls, Row};
 use uuid::Uuid;
 
+pub mod numeric;
 pub mod parts;
 pub mod query;
 
