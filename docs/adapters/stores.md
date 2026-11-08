@@ -91,7 +91,12 @@ version every part already has.
   that hold the entity's versions (copy-on-write). Older snapshots keep the old
   files until snapshot expiry and orphan-file removal, the usual Iceberg
   maintenance.
-- Native facade: **partitioned tables are refused at stage**. Scans
+- Partitioned application tables: the native facade writes one file per
+  partition of the table's default spec, every transform included (each row's
+  partition computed by the spec's transforms); the Python facade writes what
+  pyiceberg's append supports. The native hard delete of entity parts needs an
+  unpartitioned table, which the parts namespace always has.
+- Native facade: scans
   (`execute(table, {...})`) take `selected_fields`, `snapshot_id`, `limit`
   (applied client-side) and `row_filter` in pyiceberg's syntax; the result
   crosses as one Arrow stream, UUID columns tagged `arrow.uuid`.

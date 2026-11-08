@@ -205,8 +205,8 @@ Steps:
    (checked both ways). Tested on iceberg-rust's in-memory catalog over a local
    warehouse and on the compose REST catalog, including an order in
    PostgreSQL with its sales in Iceberg, committed together and rolled forward
-   by recovery after a crash. Not yet in Rust: partitioned tables (refused at
-   stage) and the SQL / Glue catalogs. iceberg-rust 0.10 needs Rust 1.94, now
+   by recovery after a crash. Not yet in Rust: the SQL / Glue catalogs
+   (partitioned tables came after the MVP). iceberg-rust 0.10 needs Rust 1.94, now
    the workspace MSRV. Every store now has a Rust adapter.
 5. **Bindings**: the `rhizodat` Python package becomes a PyO3 wrapper over the
    core without changing its public API; a C ABI (cbindgen) for Go. Open
@@ -413,7 +413,8 @@ Steps:
    After the MVP, the native core's gaps close before the C ABI for Go, which
    inherits them: ✔ `numeric` in PostgreSQL `execute` (a binary codec in
    `rhizodat_postgres::numeric`, `Decimal` both ways with its scale, `NaN` and
-   the infinities); partitioned Iceberg tables; lists and maps in PostgreSQL
+   the infinities); ✔ partitioned Iceberg tables (one file per partition,
+   `RecordBatchPartitionSplitter` + `FanoutWriter`); lists and maps in PostgreSQL
    rows; the Glue catalog.
    Next: the C ABI for Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on

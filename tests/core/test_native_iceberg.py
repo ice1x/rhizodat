@@ -160,6 +160,36 @@ def test_a_unit_writes_its_rows(lake: IcebergStore, iceberg: Any, sales: str, fa
     assert snapshots(lake, sales) == 1
 
 
+def test_a_partitioned_table_gets_one_file_per_partition(
+    lake: IcebergStore, iceberg: Any, sales: str, faker: Faker
+) -> None:
+    """Partitioned by sku and a bucket of qty (the spec's order is not the
+    alphabetical one), written natively through a journal, read by pyiceberg."""
+    from pyiceberg.transforms import BucketTransform
+
+    with lake.catalog.load_table(sales).update_spec() as spec:
+        spec.add_identity("sku")
+        spec.add_field("qty", BucketTransform(4), "qty_bucket")
+    rows = [{"sku": sku, "qty": q} for sku in ("A-1", "B-2") for q in (1, 2, 3)]
+    unit = iceberg.unit()
+    unit.append(sales, pa.Table.from_pylist(rows))
+    journal = native.MemoryJournal()
+    outcome = native.Coordinator(journal).commit(native.new_id(), [unit])
+    assert outcome["status"] == "committed"
+
+    written = read(lake, sales)
+    assert sorted((r["sku"], r["qty"]) for r in written) == sorted(
+        (r["sku"], r["qty"]) for r in rows
+    )
+    table = lake.catalog.load_table(sales)
+    files = list(table.scan().plan_files())
+    partitions = {(f.file.partition[0], f.file.partition[1]) for f in files}
+    assert len(files) == len(partitions)  # one file per partition
+    assert {sku for sku, _ in partitions} == {"A-1", "B-2"}
+    only_a = table.scan(row_filter="sku == 'A-1'").plan_files()
+    assert {f.file.partition[0] for f in only_a} == {"A-1"}  # pruned by partition
+
+
 def test_a_unit_takes_record_batch_readers_and_ipc_bytes(
     lake: IcebergStore, iceberg: Any, sales: str, faker: Faker
 ) -> None:

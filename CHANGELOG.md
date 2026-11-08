@@ -5,6 +5,10 @@
 - Native facade, PostgreSQL `execute`: `numeric` columns come back as `Decimal`
   with their scale, and a `Decimal` or an `int` binds to a `numeric` parameter,
   exactly (a binary codec in `rhizodat-postgres`, no float on the way).
+- Native facade, Iceberg: partitioned tables are written, one file per
+  partition of the default spec (they were refused at stage). A staged
+  `DataFile` keeps its partition values in the spec's order through the journal,
+  where a JSON object loses its key order.
 - The CBT journal scenario is replaced by **cloud operations** over all four
   stores (`tests/scenarios/test_cloud_ops.py`): resources in PostgreSQL, their
   dependencies in drevo, telemetry in ClickHouse, raw API requests in Iceberg.
