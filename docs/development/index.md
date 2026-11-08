@@ -87,8 +87,8 @@ one-phase (its rows travel in the journal, applied after the decision) and is
 spent by its commit; a PostgreSQL unit writes its rows inside the branch's
 two-phase transaction and may be reused across a retry. PostgreSQL rows carry
 scalars, decimals, bytes and temporal values (bound as `$n::text::<column type>`,
-so the server parses each per its own column); lists and maps are not carried
-yet.
+so the server parses each per its own column); a list goes to an array or a
+`json(b)` column, a map to `json(b)`.
 
 A drevo store is a graph, so its unit buffers parameterized Cypher instead:
 `unit.run(cypher, params)`. The statements run inside the branch's two-phase

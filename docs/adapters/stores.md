@@ -25,8 +25,10 @@ version every part already has.
   lists, dicts and anything without a native type.
 - Native facade, rows (`uow.store(name).insert`): scalars, decimals, bytes and
   temporal values, bound as `$n::text::<column type>` so the server parses each
-  per its column. **Lists and maps are not carried in rows yet** (entity parts
-  carry nested lists and dicts).
+  per its column. A list goes to an array column (`text[]`, `integer[][]`) or a
+  `json(b)` one, a map to `json(b)`; decimals are JSON numbers, UUIDs and
+  temporal values JSON strings. **Bytes and non-finite numbers have no JSON
+  form, and a map cannot go into an array**: such a row aborts the transaction.
 - Native facade, `execute`: parameters are positional only (`$1..$n`), checked
   against the statement's parameter types; result columns are decoded for
   `bool`, integers, floats, `numeric` (exactly, as a `Decimal` with its scale,

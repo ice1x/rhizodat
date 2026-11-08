@@ -273,17 +273,42 @@ fn quote_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
-/// One value of a row as the text PostgreSQL parses per column (the row is
-/// inserted as `$n::text::<column type>`, so the server's input function reads
-/// the value exactly as it would from `COPY`/`INSERT` text). `None` is `NULL`.
+/// `value` as the text PostgreSQL parses into a column of type `ty` (its
+/// `format_type`), or `None` for NULL. Scalars are their own text; a list
+/// goes to an array column (`text[]`, `integer[][]`: a quoted array literal)
+/// or a `json` / `jsonb` one (a JSON array), a map to `json` / `jsonb` (a
+/// JSON object). Decimals are JSON numbers, UUIDs, dates and datetimes JSON
+/// strings.
 ///
 /// # Errors
 ///
-/// A [`BoxError`] for a list or map: nested values need an explicit array or
-/// JSON column and are not carried across the boundary yet.
-fn pg_text(value: &RowValue) -> Result<Option<String>, BoxError> {
+/// A [`BoxError`] for a list or map whose column cannot hold it, bytes or a
+/// non-finite float inside JSON, or a map inside an array.
+fn pg_text(value: &RowValue, ty: &str) -> Result<Option<String>, BoxError> {
     Ok(match value {
         RowValue::Null => None,
+        RowValue::List(_) | RowValue::Map(_) if is_json(ty) => Some(json_text(value)?),
+        RowValue::List(items) if ty.ends_with("[]") => Some(array_text(items)?),
+        RowValue::List(_) => {
+            return Err(
+                format!("a list needs an array or json(b) column, not a {ty} column").into(),
+            );
+        }
+        RowValue::Map(_) => {
+            return Err(format!("a map needs a json(b) column, not a {ty} column").into());
+        }
+        scalar => scalar_text(scalar),
+    })
+}
+
+fn is_json(ty: &str) -> bool {
+    matches!(ty, "json" | "jsonb")
+}
+
+/// A scalar's text (a list or map has none: [`pg_text`] handles them).
+fn scalar_text(value: &RowValue) -> Option<String> {
+    match value {
+        RowValue::Null | RowValue::List(_) | RowValue::Map(_) => None,
         RowValue::Bool(v) => Some(if *v { "true" } else { "false" }.to_owned()),
         RowValue::Int(v) => Some(v.to_string()),
         RowValue::Float(v) if v.is_finite() => Some(v.to_string()),
@@ -302,8 +327,82 @@ fn pg_text(value: &RowValue) -> Result<Option<String>, BoxError> {
             }
             Some(hex)
         }
-        RowValue::List(_) | RowValue::Map(_) => {
-            return Err("lists and maps are not carried into PostgreSQL rows yet".into());
+    }
+}
+
+/// A PostgreSQL array literal: `{"a","b,c",NULL,{"1","2"}}`. Every element is
+/// quoted (the server casts it to the element type), so commas, quotes,
+/// braces, backslashes and the word NULL survive.
+fn array_text(items: &[RowValue]) -> Result<String, BoxError> {
+    let mut out = String::from("{");
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        match item {
+            RowValue::Null => out.push_str("NULL"),
+            RowValue::List(inner) => out.push_str(&array_text(inner)?),
+            RowValue::Map(_) => {
+                return Err("a map inside an array needs a json(b) column".into());
+            }
+            scalar => {
+                out.push('"');
+                for c in scalar_text(scalar).unwrap_or_default().chars() {
+                    if matches!(c, '"' | '\\') {
+                        out.push('\\');
+                    }
+                    out.push(c);
+                }
+                out.push('"');
+            }
+        }
+    }
+    out.push('}');
+    Ok(out)
+}
+
+/// A value as JSON text: maps as objects (in their order), lists as arrays.
+fn json_text(value: &RowValue) -> Result<String, BoxError> {
+    Ok(match value {
+        RowValue::Null => "null".to_owned(),
+        RowValue::Bool(v) => v.to_string(),
+        RowValue::Int(v) => v.to_string(),
+        RowValue::Float(v) if v.is_finite() => serde_json::Value::from(*v).to_string(),
+        RowValue::Float(v) => {
+            return Err(format!("{v} (NaN or an infinity) has no JSON form").into());
+        }
+        RowValue::Decimal(v) => {
+            if v.parse::<f64>().is_ok_and(f64::is_finite) {
+                v.clone()
+            } else {
+                return Err(
+                    format!("the decimal {v} (NaN or an infinity) has no JSON form").into(),
+                );
+            }
+        }
+        RowValue::Str(v) | RowValue::Date(v) | RowValue::DateTime(v) => {
+            serde_json::Value::String(v.clone()).to_string()
+        }
+        RowValue::Uuid(v) => format!("\"{}\"", v.hyphenated()),
+        RowValue::Bytes(_) => {
+            return Err("bytes have no JSON form; encode them (base64, hex) first".into());
+        }
+        RowValue::List(items) => {
+            let parts: Vec<String> = items.iter().map(json_text).collect::<Result<_, _>>()?;
+            format!("[{}]", parts.join(","))
+        }
+        RowValue::Map(fields) => {
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| {
+                    Ok(format!(
+                        "{}:{}",
+                        serde_json::Value::String(k.clone()),
+                        json_text(v)?
+                    ))
+                })
+                .collect::<Result<_, BoxError>>()?;
+            format!("{{{}}}", parts.join(","))
         }
     })
 }
@@ -358,10 +457,16 @@ async fn apply_rows(
             let mut params: Vec<Option<String>> = Vec::with_capacity(chunk.len() * per_row);
             let mut tuples: Vec<String> = Vec::with_capacity(chunk.len());
             for row in chunk {
-                let mut values: Vec<Option<String>> =
-                    row.iter().map(pg_text).collect::<Result<_, _>>()?;
-                values.push(pg_text(&RowValue::Uuid(dat_txn))?);
-                values.push(pg_text(&RowValue::Int(dat_tx_time))?);
+                let mut values: Vec<Option<String>> = row
+                    .iter()
+                    .zip(cols)
+                    .map(|(v, col)| {
+                        let ty = types.get(col).expect("checked by column_types");
+                        pg_text(v, ty).map_err(|e| format!("{table}.{col}: {e}").into())
+                    })
+                    .collect::<Result<_, BoxError>>()?;
+                values.push(scalar_text(&RowValue::Uuid(dat_txn)));
+                values.push(scalar_text(&RowValue::Int(dat_tx_time)));
                 let mut placeholders = Vec::with_capacity(per_row);
                 for (col, value) in all.iter().zip(values) {
                     placeholders.push(format!(
@@ -393,7 +498,8 @@ async fn apply_rows(
 ///
 /// The target table carries the user columns plus `dat_txn uuid` and
 /// `dat_tx_time bigint`; those are reserved and [`stage`](PostgresBranch::stage)
-/// appends them to every row. Lists and maps are not carried yet.
+/// appends them to every row. A list goes to an array or a `json(b)` column,
+/// a map to a `json(b)` column ([`pg_text`]).
 #[derive(Clone, Default)]
 pub struct PostgresRows {
     buffer: BTreeMap<String, (Vec<String>, Vec<Vec<RowValue>>)>,
@@ -418,7 +524,7 @@ impl PostgresRows {
     ///
     /// A [`ConfigError`] for a bad table or column name, a reserved column
     /// (`dat_txn`, `dat_tx_time`), different columns than earlier rows of the
-    /// same table, a row of the wrong length, or a list/map value.
+    /// same table, or a row of the wrong length.
     pub fn insert(
         &mut self,
         table: &str,
@@ -443,15 +549,6 @@ impl PostgresRows {
                 row.len(),
                 columns.len()
             )));
-        }
-        if rows
-            .iter()
-            .flatten()
-            .any(|v| matches!(v, RowValue::List(_) | RowValue::Map(_)))
-        {
-            return Err(ConfigError(
-                "lists and maps are not carried into PostgreSQL rows yet".to_owned(),
-            ));
         }
         let columns: Vec<String> = columns.iter().map(ToString::to_string).collect();
         let (known, buffered) = self
@@ -1093,6 +1190,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lists_and_maps_take_the_text_of_their_column_type() {
+        let list = RowValue::List(vec![
+            RowValue::Str("a,b".into()),
+            RowValue::Str("say \"hi\" \\ {x}".into()),
+            RowValue::Null,
+            RowValue::Str("NULL".into()),
+            RowValue::Int(7),
+        ]);
+        assert_eq!(
+            pg_text(&list, "text[]").unwrap().unwrap(),
+            r#"{"a,b","say \"hi\" \\ {x}",NULL,"NULL","7"}"#
+        );
+        let grid = RowValue::List(vec![
+            RowValue::List(vec![RowValue::Int(1), RowValue::Int(2)]),
+            RowValue::List(vec![RowValue::Int(3), RowValue::Int(4)]),
+        ]);
+        assert_eq!(
+            pg_text(&grid, "integer[]").unwrap().unwrap(),
+            r#"{{"1","2"},{"3","4"}}"#
+        );
+        assert_eq!(
+            pg_text(&RowValue::List(vec![]), "text[]").unwrap().unwrap(),
+            "{}"
+        );
+        let map = RowValue::Map(vec![
+            ("b".into(), RowValue::Decimal("12.50".into())),
+            (
+                "a".into(),
+                RowValue::List(vec![RowValue::Float(0.5), RowValue::Null]),
+            ),
+            ("u".into(), RowValue::Uuid(Uuid::nil())),
+            ("q".into(), RowValue::Str("\"".into())),
+        ]);
+        assert_eq!(
+            pg_text(&map, "jsonb").unwrap().unwrap(),
+            r#"{"b":12.50,"a":[0.5,null],"u":"00000000-0000-0000-0000-000000000000","q":"\""}"#
+        );
+        assert_eq!(
+            pg_text(&list, "json").unwrap().unwrap(),
+            r#"["a,b","say \"hi\" \\ {x}",null,"NULL",7]"#
+        );
+        assert_eq!(pg_text(&RowValue::Null, "jsonb").unwrap(), None);
+        assert_eq!(pg_text(&RowValue::Int(3), "bigint").unwrap().unwrap(), "3");
+    }
+
+    #[test]
+    fn a_list_or_map_that_does_not_fit_is_refused() {
+        let list = RowValue::List(vec![RowValue::Int(1)]);
+        let map = RowValue::Map(vec![("a".into(), RowValue::Int(1))]);
+        let refused = |v: &RowValue, ty: &str| pg_text(v, ty).unwrap_err().to_string();
+        assert!(refused(&list, "text").contains("array or json(b)"));
+        assert!(refused(&map, "integer[]").contains("json(b)"));
+        assert!(
+            refused(&RowValue::List(vec![map.clone()]), "text[]").contains("map inside an array")
+        );
+        assert!(
+            refused(&RowValue::List(vec![RowValue::Bytes(vec![0])]), "jsonb").contains("bytes")
+        );
+        assert!(refused(&RowValue::List(vec![RowValue::Float(f64::NAN)]), "jsonb").contains("NaN"));
+        assert!(
+            refused(
+                &RowValue::List(vec![RowValue::Decimal("NaN".into())]),
+                "jsonb"
+            )
+            .contains("NaN")
+        );
+    }
+
+    #[test]
     fn identifiers_are_checked() {
         assert!(check_identifier("schema", "t_1").is_ok());
         assert!(check_identifier("schema", "_x").is_ok());
@@ -1148,11 +1314,9 @@ mod tests {
             rows.insert("t", &["a"], vec![vec![RowValue::Int(1), RowValue::Int(2)]])
                 .is_err()
         );
-        // Lists and maps are not carried yet.
-        assert!(
-            rows.insert("u", &["a"], vec![vec![RowValue::List(vec![])]])
-                .is_err()
-        );
+        // Lists and maps are buffered; their column type is checked at stage.
+        rows.insert("u", &["a"], vec![vec![RowValue::List(vec![])]])
+            .unwrap();
         assert!(!rows.is_empty());
     }
 
