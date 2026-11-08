@@ -35,8 +35,9 @@
 //! Tables written through rhizodat need `dat_txn` (`uuid` or `string`) and
 //! `dat_tx_time` (`long`) columns. A partitioned table gets one file per
 //! partition of its default spec (the rows' partition values computed by the
-//! spec's transforms); erases need an unpartitioned table. Catalogs: `iceberg+rest://` over S3, or any [`Catalog`] passed to
-//! [`IcebergStore::with_catalog`] (appends only: erases need REST).
+//! spec's transforms); erases need an unpartitioned table. Catalogs:
+//! `iceberg+rest://` and `iceberg+glue://` over S3, or any [`Catalog`] passed
+//! to [`IcebergStore::with_catalog`] (appends only off REST: erases need it).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
@@ -68,6 +69,7 @@ use iceberg::writer::partitioning::PartitioningWriter;
 use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, CatalogBuilder, ErrorKind, TableIdent};
+use iceberg_catalog_glue::GlueCatalogBuilder;
 use iceberg_catalog_rest::RestCatalogBuilder;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 use parquet::file::metadata::ParquetMetaDataReader;
@@ -84,9 +86,9 @@ mod erase;
 pub mod filter;
 pub mod parts;
 
-/// The Iceberg store kind: a REST catalog (`iceberg+rest://host/warehouse`);
-/// `iceberg+sql://` and `iceberg+glue://` are recognised for the Python
-/// reference. One phase; cannot hold the journal.
+/// The Iceberg store kind: a REST catalog (`iceberg+rest://host/warehouse`)
+/// or AWS Glue (`iceberg+glue://region?warehouse=s3://...`); `iceberg+sql://`
+/// is recognised for the Python reference. One phase; cannot hold the journal.
 pub const ADAPTER: Adapter = Adapter {
     kind: "iceberg",
     schemes: &[
@@ -138,15 +140,45 @@ fn refuse(message: impl Into<String>) -> BoxError {
     Box::new(IcebergError(message.into()))
 }
 
-/// Catalog properties for an `iceberg+rest` DSN: `uri`, `warehouse` from the
-/// path, and every query parameter but `secure` passed through (`s3.endpoint`,
+/// The catalog a DSN names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogKind {
+    /// `iceberg+rest://`: the REST catalog protocol.
+    Rest,
+    /// `iceberg+glue://<region>`: AWS Glue.
+    Glue,
+}
+
+/// The `glue.*` parameters of a DSN (pyiceberg's names, so one DSN serves
+/// both facades) and the iceberg-rust Glue catalog properties they become.
+const GLUE_PARAMS: [(&str, &str); 6] = [
+    ("glue.endpoint", "uri"),
+    ("glue.region", "region_name"),
+    ("glue.access-key-id", "aws_access_key_id"),
+    ("glue.secret-access-key", "aws_secret_access_key"),
+    ("glue.session-token", "aws_session_token"),
+    ("glue.profile-name", "profile_name"),
+];
+
+/// The catalog a DSN names and its iceberg-rust properties.
+///
+/// `iceberg+rest://host[:port]/[warehouse]`: `uri`, `warehouse` from the path,
+/// and every query parameter but `secure` passed through (`s3.endpoint`,
 /// `credential`, ...).
+///
+/// `iceberg+glue://[region]?warehouse=s3://bucket/prefix`: the region (else
+/// the AWS environment's), the warehouse, `glue.*` parameters renamed for
+/// iceberg-rust ([`GLUE_PARAMS`], `glue.id` is the catalog id), every other
+/// parameter (`s3.*`) passed through.
 ///
 /// # Errors
 ///
-/// [`IcebergError`] for a DSN of another store, or a catalog this crate does
-/// not support yet (`iceberg+sql`, `iceberg+glue`).
-pub fn catalog_properties(dsn: &str) -> Result<HashMap<String, String>, IcebergError> {
+/// [`IcebergError`] for a DSN of another store, a Glue DSN with a path or
+/// without a warehouse, or a catalog this crate does not support
+/// (`iceberg+sql`).
+pub fn catalog_properties(
+    dsn: &str,
+) -> Result<(CatalogKind, HashMap<String, String>), IcebergError> {
     let parsed = ADAPTER
         .parse(dsn)
         .map_err(|e| IcebergError(e.to_string()))?;
@@ -155,12 +187,17 @@ pub fn catalog_properties(dsn: &str) -> Result<HashMap<String, String>, IcebergE
             "not an iceberg connection string: {parsed}"
         )));
     }
-    if parsed.transport() != Some("rest") {
-        return Err(IcebergError(format!(
+    match parsed.transport() {
+        Some("rest") => Ok((CatalogKind::Rest, rest_properties(&parsed))),
+        Some("glue") => Ok((CatalogKind::Glue, glue_properties(&parsed)?)),
+        other => Err(IcebergError(format!(
             "the iceberg+{} catalog is not supported by the Rust adapter yet",
-            parsed.transport().unwrap_or_default()
-        )));
+            other.unwrap_or_default()
+        ))),
     }
+}
+
+fn rest_properties(parsed: &rhizodat_core::dsn::Dsn) -> HashMap<String, String> {
     let mut props: HashMap<String, String> = parsed
         .params()
         .iter()
@@ -186,6 +223,36 @@ pub fn catalog_properties(dsn: &str) -> Result<HashMap<String, String>, IcebergE
         .filter(|p| !p.is_empty())
     {
         props.insert("warehouse".to_owned(), warehouse.to_owned());
+    }
+    props
+}
+
+fn glue_properties(
+    parsed: &rhizodat_core::dsn::Dsn,
+) -> Result<HashMap<String, String>, IcebergError> {
+    if let Some(path) = parsed.path().filter(|p| !p.trim_matches('/').is_empty()) {
+        return Err(IcebergError(format!(
+            "iceberg+glue://<region> takes no path ({path:?}); give the warehouse as a \
+             parameter: ?warehouse=s3://bucket/prefix"
+        )));
+    }
+    let mut props = HashMap::new();
+    if let Some(region) = parsed.host().filter(|h| !h.is_empty()) {
+        props.insert("region_name".to_owned(), region.to_owned());
+    }
+    for (key, value) in parsed.params() {
+        let renamed = GLUE_PARAMS
+            .iter()
+            .find(|(param, _)| param == key)
+            .map(|(_, prop)| *prop)
+            .or((key == "glue.id").then_some("catalog_id"))
+            .unwrap_or(key.as_str());
+        props.insert(renamed.to_owned(), value.clone());
+    }
+    if !props.contains_key("warehouse") {
+        return Err(IcebergError(
+            "an iceberg+glue DSN needs its warehouse: ?warehouse=s3://bucket/prefix".to_owned(),
+        ));
     }
     Ok(props)
 }
@@ -540,21 +607,34 @@ impl fmt::Debug for IcebergStore {
 
 impl IcebergStore {
     /// A store named `name` over an `iceberg+rest://host:port/<warehouse>` DSN
-    /// (`?secure=true` for HTTPS), with S3 file IO.
+    /// (`?secure=true` for HTTPS) or an `iceberg+glue://region` one (see
+    /// [`catalog_properties`]), with S3 file IO.
     ///
     /// # Errors
     ///
     /// [`IcebergError`] for an unsupported DSN, or the catalog's error.
     pub async fn connect(dsn: &str, name: &str) -> Result<Self, BoxError> {
-        let props = catalog_properties(dsn)?;
-        let rest = erase::Rest::new(&props);
-        let catalog = RestCatalogBuilder::default()
-            .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
-                customized_credential_load: None,
-            }))
-            .load(name, props)
-            .await?;
-        Ok(Self::new(name, Arc::new(catalog), Some(rest)))
+        let (kind, props) = catalog_properties(dsn)?;
+        let storage = Arc::new(OpenDalStorageFactory::S3 {
+            customized_credential_load: None,
+        });
+        Ok(match kind {
+            CatalogKind::Rest => {
+                let rest = erase::Rest::new(&props);
+                let catalog = RestCatalogBuilder::default()
+                    .with_storage_factory(storage)
+                    .load(name, props)
+                    .await?;
+                Self::new(name, Arc::new(catalog), Some(rest))
+            }
+            CatalogKind::Glue => {
+                let catalog = GlueCatalogBuilder::default()
+                    .with_storage_factory(storage)
+                    .load(name, props)
+                    .await?;
+                Self::new(name, Arc::new(catalog), None)
+            }
+        })
     }
 
     /// A store named `name` over any iceberg-rust catalog.
@@ -1104,26 +1184,58 @@ mod tests {
 
     #[test]
     fn rest_dsn_becomes_catalog_properties() {
-        let props = catalog_properties(
+        let (kind, props) = catalog_properties(
             "iceberg+rest://cat.example:8181/prod?s3.endpoint=http://s3:9000&credential=a:b",
         )
         .unwrap();
+        assert_eq!(kind, CatalogKind::Rest);
         assert_eq!(props["uri"], "http://cat.example:8181");
         assert_eq!(props["warehouse"], "prod");
         assert_eq!(props["s3.endpoint"], "http://s3:9000");
         assert_eq!(props["credential"], "a:b");
-        let props = catalog_properties("iceberg+rest://cat.example/?secure=true").unwrap();
+        let (_, props) = catalog_properties("iceberg+rest://cat.example/?secure=true").unwrap();
         assert_eq!(props["uri"], "https://cat.example");
         assert!(!props.contains_key("warehouse") && !props.contains_key("secure"));
     }
 
     #[test]
+    fn glue_dsn_becomes_the_glue_catalogs_properties() {
+        let (kind, props) = catalog_properties(
+            "iceberg+glue://eu-west-1?warehouse=s3://lake/wh&glue.endpoint=http://127.0.0.1:5000\
+             &glue.access-key-id=AK&glue.secret-access-key=SK&glue.session-token=T\
+             &glue.profile-name=dev&glue.id=123&s3.endpoint=http://s3:9000",
+        )
+        .unwrap();
+        assert_eq!(kind, CatalogKind::Glue);
+        let expected: HashMap<String, String> = [
+            ("region_name", "eu-west-1"),
+            ("warehouse", "s3://lake/wh"),
+            ("uri", "http://127.0.0.1:5000"),
+            ("aws_access_key_id", "AK"),
+            ("aws_secret_access_key", "SK"),
+            ("aws_session_token", "T"),
+            ("profile_name", "dev"),
+            ("catalog_id", "123"),
+            ("s3.endpoint", "http://s3:9000"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        assert_eq!(props, expected);
+        let (_, props) = catalog_properties("iceberg+glue://?warehouse=s3://l/w").unwrap();
+        assert!(
+            !props.contains_key("region_name"),
+            "the region from the environment"
+        );
+        let err = catalog_properties("iceberg+glue://eu-west-1/lake").unwrap_err();
+        assert!(err.to_string().contains("warehouse=s3://"), "{err}");
+        let err = catalog_properties("iceberg+glue://eu-west-1").unwrap_err();
+        assert!(err.to_string().contains("warehouse"), "{err}");
+    }
+
+    #[test]
     fn other_catalogs_and_stores_are_refused() {
-        for dsn in [
-            "iceberg+sql://u:p@db:5432/cat",
-            "iceberg+glue://eu-west-1",
-            "postgresql://db/x",
-        ] {
+        for dsn in ["iceberg+sql://u:p@db:5432/cat", "postgresql://db/x"] {
             assert!(catalog_properties(dsn).is_err(), "{dsn}");
         }
     }

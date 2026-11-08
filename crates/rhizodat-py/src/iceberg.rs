@@ -1,7 +1,7 @@
 //! The real Rust Iceberg adapter behind the Python coordinator.
 //!
 //! [`IcebergStore`] stands for [`rhizodat_iceberg::IcebergStore`] (its one-phase
-//! branch and participant) over a REST catalog. A Python Unit of Work hands
+//! branch and participant) over a REST or Glue catalog. A Python Unit of Work hands
 //! native Iceberg stores to [`crate::coordinator::Coordinator`] alongside any
 //! other native store; stage writes Parquet files and the participant appends
 //! them after the decision. Iceberg has no journal of its own, so a
@@ -116,7 +116,7 @@ fn record_batches(stream: &[u8]) -> PyResult<Vec<RecordBatch>> {
         .map_err(invalid)
 }
 
-/// One Iceberg REST catalog as a rhizodat store, for a native Unit of Work.
+/// One Iceberg catalog (REST or Glue) as a rhizodat store, for a native Unit of Work.
 ///
 /// Built without I/O: the catalog is reached when a commit runs.
 #[pyclass(module = "rhizodat_native")]
@@ -159,7 +159,8 @@ impl IcebergStore {
 
 #[pymethods]
 impl IcebergStore {
-    /// A store named `name` over an `iceberg+rest://host:port/<warehouse>` DSN;
+    /// A store named `name` over an `iceberg+rest://host:port/<warehouse>` or an
+    /// `iceberg+glue://<region>?warehouse=s3://...` DSN;
     /// entity parts live in `parts_namespace` (the Python adapter's default too).
     #[new]
     #[pyo3(signature = (dsn, name, *, parts_namespace = "dat"))]

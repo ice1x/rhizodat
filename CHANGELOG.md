@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- AWS Glue catalogs for Iceberg on both facades:
+  `iceberg+glue://<region>?warehouse=s3://bucket/prefix`, the `rhizodat[glue]`
+  extra (boto3) for the Python facade, `iceberg-catalog-glue` in the native core.
 - Native facade, PostgreSQL rows (`uow.store(name).insert`): a list goes to an
   array or a `json(b)` column, a map to `json(b)` (they were refused).
 - Native facade, PostgreSQL `execute`: `numeric` columns come back as `Decimal`

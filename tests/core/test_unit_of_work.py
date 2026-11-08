@@ -429,8 +429,8 @@ def test_stores_from_connection_strings(tmp_path: object) -> None:
     dat.close()
 
 
-def test_unsupported_store_kind_is_reported() -> None:
-    with pytest.raises(NotImplementedError, match="glue"):
+def test_a_bad_store_dsn_is_reported() -> None:
+    with pytest.raises(ValueError, match=r"warehouse=s3://"):
         Rhizodat(stores={"lake": "iceberg+glue://eu-west-1/warehouse"})
 
 

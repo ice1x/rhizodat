@@ -10,7 +10,7 @@ please report it.
 | PostgreSQL | `postgresql://`, `postgres://` (`?schema=`) | two-phase (`PREPARE TRANSACTION`) | yes | yes |
 | drevo | `drevo:///path.drevo`, `drevo+mem://`, `drevo+bolt://host:7687` | two-phase (`drevo.tx.prepare`) | yes, when no branch is prepared there | over Bolt |
 | ClickHouse | `clickhouse://user:pass@host:8123/db` | one-phase, rows in the journal | no | yes |
-| Apache Iceberg | `iceberg+rest://`, `iceberg+sql://` | one-phase, files staged before the decision | no | REST catalog |
+| Apache Iceberg | `iceberg+rest://`, `iceberg+sql://`, `iceberg+glue://` | one-phase, files staged before the decision | no | REST and Glue catalogs |
 
 One-phase stores apply after the decision, so a reader may briefly see the
 two-phase stores' share first; the Repository hides this by reading the newest
@@ -81,9 +81,12 @@ version every part already has.
 
 ## Apache Iceberg
 
-- Catalogs: `iceberg+rest://` and `iceberg+sql://` (PostgreSQL or SQLite);
-  **Glue is not supported yet**. The native facade supports **the REST catalog
-  only**, with S3 through OpenDAL.
+- Catalogs: `iceberg+rest://`, `iceberg+sql://` (PostgreSQL or SQLite) and
+  `iceberg+glue://<region>?warehouse=s3://bucket/prefix` (AWS Glue, with
+  `rhizodat[glue]`; credentials as `glue.*` parameters or from the AWS
+  environment). The native facade supports REST and Glue (not SQL), with S3
+  through OpenDAL; the same DSN serves both facades. **On the native facade, a
+  hard delete of entity parts needs the REST catalog.**
 - Application tables need `dat_txn` (`uuid` or `string`) and `dat_tx_time`
   (`long`) columns, and **only appends** are supported for them. A branch over
   several tables commits one snapshot per table (Iceberg has no multi-table

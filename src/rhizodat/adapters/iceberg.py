@@ -98,7 +98,10 @@ def _pyiceberg() -> Any:  # noqa: ANN401 - the driver module, imported lazily
 
 
 def catalog_properties(dsn: str) -> dict[str, str]:
-    """pyiceberg catalog properties for an ``iceberg+rest`` / ``iceberg+sql`` DSN.
+    """pyiceberg catalog properties for an ``iceberg+rest`` / ``iceberg+sql`` /
+    ``iceberg+glue`` DSN (``iceberg+glue://<region>``, the warehouse as
+    ``?warehouse=s3://...``; the region and credentials may also come from the
+    AWS environment).
 
     Query parameters other than ``secure`` pass through as catalog properties
     (``warehouse``, ``s3.endpoint``, ``credential``, ...).
@@ -126,6 +129,16 @@ def catalog_properties(dsn: str) -> dict[str, str]:
         port = f":{parsed.port}" if parsed.port else ""
         uri = f"postgresql+psycopg://{auth}{parsed.host}{port}/{parsed.database or ''}"
         return {"type": "sql", "uri": uri, **extra}
+    if parsed.transport == "glue":
+        if parsed.path and parsed.path.strip("/"):
+            raise ValueError(
+                f"iceberg+glue://<region> takes no path ({parsed.path!r}); give the"
+                " warehouse as a parameter: ?warehouse=s3://bucket/prefix"
+            )
+        props = {"type": "glue"}
+        if parsed.host:
+            props["glue.region"] = parsed.host
+        return {**props, **extra}
     raise NotImplementedError(f"the iceberg+{parsed.transport} catalog is not supported yet")
 
 

@@ -105,7 +105,14 @@ def snapshots(lake: IcebergStore, table: str) -> int:
 def test_a_store_is_built_without_io_and_refuses_other_dsns() -> None:
     store = native.IcebergStore("iceberg+rest://127.0.0.1:1/wh", "lake")
     assert store.name == "lake"
-    for dsn in ["postgresql://u:p@127.0.0.1:5432/db", "iceberg+sql:///tmp/c.db"]:
+    glue = native.IcebergStore("iceberg+glue://eu-west-1?warehouse=s3://lake/wh", "lake")
+    assert glue.name == "lake"
+    for dsn in [
+        "postgresql://u:p@127.0.0.1:5432/db",
+        "iceberg+sql:///tmp/c.db",
+        "iceberg+glue://eu-west-1",  # no warehouse
+        "iceberg+glue://eu-west-1/lake",  # a path instead of ?warehouse=
+    ]:
         with pytest.raises(native.InvalidUnitOfWork):
             native.IcebergStore(dsn, "lake")
 
