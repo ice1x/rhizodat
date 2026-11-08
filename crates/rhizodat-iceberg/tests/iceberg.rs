@@ -607,29 +607,110 @@ async fn stage_fails_for_a_missing_table() {
     .await;
 }
 
+/// `sales` partitioned by `identity(sku)` and `day(at)`.
+async fn create_partitioned(lake: &Lake, name: &str) {
+    let spec = iceberg::spec::UnboundPartitionSpec::builder()
+        .with_spec_id(0)
+        .add_partition_field(2, "sku", iceberg::spec::Transform::Identity)
+        .unwrap()
+        .add_partition_field(5, "at_day", iceberg::spec::Transform::Day)
+        .unwrap()
+        .build();
+    lake.catalog()
+        .create_table(
+            &NamespaceIdent::new(lake.ns.clone()),
+            TableCreation::builder()
+                .name(name.to_owned())
+                .schema(sales_schema())
+                .partition_spec(spec)
+                .build(),
+        )
+        .await
+        .unwrap();
+}
+
+/// The partition values of every data file of `name`'s current snapshot.
+async fn file_partitions(lake: &Lake, name: &str) -> Vec<String> {
+    let table = lake.catalog().load_table(&lake.ident(name)).await.unwrap();
+    let md = table.metadata();
+    let snapshot = md.current_snapshot().unwrap();
+    let bytes = table
+        .file_io()
+        .new_input(snapshot.manifest_list())
+        .unwrap()
+        .read()
+        .await
+        .unwrap();
+    let list =
+        iceberg::spec::ManifestList::parse_with_version(&bytes, md.format_version()).unwrap();
+    let mut out = Vec::new();
+    for file in list.entries() {
+        let manifest = file.load_manifest(table.file_io()).await.unwrap();
+        for entry in manifest.entries() {
+            out.push(format!("{:?}", entry.data_file().partition()));
+        }
+    }
+    out.sort();
+    out
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn partitioned_tables_are_refused_at_stage() {
+async fn a_partitioned_table_gets_one_file_per_partition() {
     each(async |lake| {
-        let spec = iceberg::spec::UnboundPartitionSpec::builder()
-            .with_spec_id(0)
-            .add_partition_field(2, "sku", iceberg::spec::Transform::Identity)
-            .unwrap()
-            .build();
-        lake.catalog()
-            .create_table(
-                &NamespaceIdent::new(lake.ns.clone()),
-                TableCreation::builder()
-                    .name("by_sku".to_owned())
-                    .schema(sales_schema())
-                    .partition_spec(spec)
-                    .build(),
+        create_partitioned(lake, "by_sku").await;
+        let txn = new_id();
+        let mut branch = lake.store.branch();
+        // Three skus on one day, then the first sku again: three partitions.
+        branch.append(&lake.table("by_sku"), sales(3)).unwrap();
+        branch.append(&lake.table("by_sku"), sales(1)).unwrap();
+        let payload = branch.stage(txn, TS).await.unwrap().unwrap();
+        assert_eq!(files(&payload).len(), 3, "{:?}", files(&payload));
+        branch.commit_one_phase().await.unwrap();
+
+        assert_eq!(lake.rows("by_sku").await, 4);
+        assert_eq!(lake.snapshots("by_sku").await, [Some(txn.to_string())]);
+        let partitions = file_partitions(lake, "by_sku").await;
+        assert_eq!(partitions.len(), 3, "{partitions:?}");
+        for sku in ["SKU-0000", "SKU-0001", "SKU-0002"] {
+            assert_eq!(
+                partitions.iter().filter(|p| p.contains(sku)).count(),
+                1,
+                "{partitions:?}"
+            );
+        }
+        let filtered = lake
+            .store
+            .scan_with(
+                &lake.table("by_sku"),
+                &Scan {
+                    filter: Some(parse_filter("sku == 'SKU-0000'").unwrap()),
+                    ..Scan::default()
+                },
             )
             .await
             .unwrap();
+        assert_eq!(filtered.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_partitioned_table_is_committed_from_the_journal_payload() {
+    each(async |lake| {
+        create_partitioned(lake, "by_sku").await;
+        let txn = new_id();
         let mut branch = lake.store.branch();
-        branch.append(&lake.table("by_sku"), sales(1)).unwrap();
-        let err = branch.stage(new_id(), TS).await.unwrap_err();
-        assert!(err.to_string().contains("partitioned"), "{err}");
+        branch.append(&lake.table("by_sku"), sales(2)).unwrap();
+        let payload = branch.stage(txn, TS).await.unwrap();
+        drop(branch); // the process dies after the decision
+        let rec = record("lake", txn, payload);
+        lake.store
+            .participant()
+            .finish(&rec, txn, TS)
+            .await
+            .unwrap();
+        assert_eq!(lake.rows("by_sku").await, 2);
+        assert_eq!(file_partitions(lake, "by_sku").await.len(), 2);
     })
     .await;
 }

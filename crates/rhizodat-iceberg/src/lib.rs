@@ -33,8 +33,9 @@
 //! iceberg-rust has no delete action yet).
 //!
 //! Tables written through rhizodat need `dat_txn` (`uuid` or `string`) and
-//! `dat_tx_time` (`long`) columns. Only unpartitioned tables are supported for
-//! now; catalogs: `iceberg+rest://` over S3, or any [`Catalog`] passed to
+//! `dat_tx_time` (`long`) columns. A partitioned table gets one file per
+//! partition of its default spec (the rows' partition values computed by the
+//! spec's transforms); erases need an unpartitioned table. Catalogs: `iceberg+rest://` over S3, or any [`Catalog`] passed to
 //! [`IcebergStore::with_catalog`] (appends only: erases need REST).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -49,11 +50,11 @@ use arrow_array::{
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use futures::TryStreamExt;
-use iceberg::arrow::schema_to_arrow_schema;
+use iceberg::arrow::{RecordBatchPartitionSplitter, schema_to_arrow_schema};
 use iceberg::expr::Predicate;
 use iceberg::spec::{
-    DataContentType, DataFile, DataFileBuilder, DataFileFormat, PrimitiveType, Schema, Type,
-    deserialize_data_file_from_json, serialize_data_file_to_json,
+    DataContentType, DataFile, DataFileBuilder, DataFileFormat, PrimitiveType, Schema, StructType,
+    Type, deserialize_data_file_from_json, serialize_data_file_to_json,
 };
 use iceberg::table::Table;
 use iceberg::transaction::{ApplyTransactionAction, Transaction};
@@ -63,6 +64,8 @@ use iceberg::writer::file_writer::location_generator::{
     DefaultFileNameGenerator, DefaultLocationGenerator,
 };
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
+use iceberg::writer::partitioning::PartitioningWriter;
+use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
 use iceberg::{Catalog, CatalogBuilder, ErrorKind, TableIdent};
 use iceberg_catalog_rest::RestCatalogBuilder;
@@ -74,7 +77,7 @@ use rhizodat_core::gid::gid_for;
 use rhizodat_core::journal::BranchRecord;
 use rhizodat_core::staged::{StagedTable, decode_staged, encode_staged};
 use rhizodat_core::store::{BoxError, Branch, Participant};
-use serde_json::Value as Json;
+use serde_json::{Map as JsonMap, Value as Json};
 use uuid::Uuid;
 
 mod erase;
@@ -385,7 +388,7 @@ async fn data_files(table: &Table, staged: &StagedTable) -> Result<Vec<DataFile>
             .iter()
             .map(|o| {
                 Ok(deserialize_data_file_from_json(
-                    &Json::Object(o.clone()).to_string(),
+                    &data_file_json(o, md.default_partition_type()),
                     md.default_partition_spec_id(),
                     md.default_partition_type(),
                     md.current_schema(),
@@ -417,6 +420,34 @@ async fn data_files(table: &Table, staged: &StagedTable) -> Result<Vec<DataFile>
         );
     }
     Ok(out)
+}
+
+/// The JSON text of a `DataFile` object with its `partition` keys in the
+/// partition type's order. iceberg-rust reads the partition values by
+/// position, but the object loses its key order on the way (a JSON map here,
+/// `jsonb` in the journal), so the keys are written back in order by hand.
+fn data_file_json(object: &JsonMap<String, Json>, partition_type: &StructType) -> String {
+    let mut rest = object.clone();
+    let Some(Json::Object(partition)) = rest.remove("partition") else {
+        return Json::Object(rest).to_string();
+    };
+    let fields: Vec<String> = partition_type
+        .fields()
+        .iter()
+        .map(|f| {
+            let value = partition.get(&f.name).cloned().unwrap_or(Json::Null);
+            format!("{}:{value}", Json::String(f.name.clone()))
+        })
+        .collect();
+    let mut text = Json::Object(rest).to_string();
+    text.pop(); // the closing brace
+    if text.len() > 1 {
+        text.push(',');
+    }
+    text.push_str("\"partition\":{");
+    text.push_str(&fields.join(","));
+    text.push_str("}}");
+    text
 }
 
 /// At most `limit` rows of `stream` (all, if `None`), whole batches where
@@ -748,11 +779,6 @@ impl IcebergBranch {
     ) -> Result<StagedTable, BoxError> {
         let table = self.lake.load(name).await?;
         let md = table.metadata();
-        if !md.default_partition_spec().is_unpartitioned() {
-            return Err(refuse(format!(
-                "table {name:?} is partitioned: not supported by the Rust adapter yet"
-            )));
-        }
         let schema = md.current_schema().clone();
         let arrow = Arc::new(schema_to_arrow_schema(&schema)?);
         let conformed: Vec<RecordBatch> = parts
@@ -770,11 +796,29 @@ impl IcebergBranch {
             DefaultLocationGenerator::new(md)?,
             names,
         );
-        let mut writer = DataFileWriterBuilder::new(rolling).build(None).await?;
-        for batch in conformed {
-            writer.write(batch).await?;
-        }
-        let files = writer.close().await?;
+        let builder = DataFileWriterBuilder::new(rolling);
+        let spec = md.default_partition_spec();
+        let files = if spec.is_unpartitioned() {
+            let mut writer = builder.build(None).await?;
+            for batch in conformed {
+                writer.write(batch).await?;
+            }
+            writer.close().await?
+        } else {
+            // One writer per partition: the splitter computes each row's
+            // partition values with the spec's transforms.
+            let splitter = RecordBatchPartitionSplitter::try_new_with_computed_values(
+                md.current_schema().clone(),
+                spec.clone(),
+            )?;
+            let mut writer = FanoutWriter::new(builder);
+            for batch in conformed {
+                for (key, part) in splitter.split(&batch)? {
+                    writer.write(key, part).await?;
+                }
+            }
+            writer.close().await?
+        };
         let mut paths = Vec::with_capacity(files.len());
         let mut objects = Vec::with_capacity(files.len());
         for f in files {
@@ -1016,6 +1060,47 @@ impl Participant for IcebergParticipant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partition_keys_are_written_in_the_partition_types_order() {
+        let partition_type = StructType::new(vec![
+            iceberg::spec::NestedField::optional(
+                1000,
+                "sku",
+                Type::Primitive(PrimitiveType::String),
+            )
+            .into(),
+            iceberg::spec::NestedField::optional(
+                1001,
+                "at_day",
+                Type::Primitive(PrimitiveType::Date),
+            )
+            .into(),
+        ]);
+        let object: JsonMap<String, Json> = serde_json::from_str(
+            r#"{"file_path": "f", "partition": {"at_day": 20370, "sku": "A"}}"#,
+        )
+        .unwrap();
+        let text = data_file_json(&object, &partition_type);
+        assert!(
+            text.ends_with(r#""partition":{"sku":"A","at_day":20370}}"#),
+            "{text}"
+        );
+        let back: Json = serde_json::from_str(&text).unwrap();
+        assert_eq!(back["file_path"], "f");
+        let no_partition: JsonMap<String, Json> =
+            serde_json::from_str(r#"{"file_path": "f"}"#).unwrap();
+        assert_eq!(
+            data_file_json(&no_partition, &partition_type),
+            r#"{"file_path":"f"}"#
+        );
+        let missing: JsonMap<String, Json> =
+            serde_json::from_str(r#"{"partition": {"sku": "A"}}"#).unwrap();
+        assert_eq!(
+            data_file_json(&missing, &partition_type),
+            r#"{"partition":{"sku":"A","at_day":null}}"#
+        );
+    }
 
     #[test]
     fn rest_dsn_becomes_catalog_properties() {
