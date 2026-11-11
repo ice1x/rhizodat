@@ -140,7 +140,7 @@ Checked with `isinstance`. Implement the ones that apply.
 
 | Capability | Where | What for |
 |---|---|---|
-| `read_only(query, params)` (`ReadOnlyQueries`) | store | Native reads the store itself refuses to turn into writes. rhizodat-MCP uses them. |
+| `read_only(query, params, *, limit=None)` (`ReadOnlyQueries`) | store | Native reads the store itself refuses to turn into writes; with `limit`, no more rows than that leave the store (it stops reading). rhizodat-MCP uses them. |
 | `applied_location` (`AppliedLocation`) | store | Where the applied markers live. `Rhizodat` refuses two stores sharing one: they would block or confuse each other. |
 | `fence_location` (`Fenced`) | store | While a branch is prepared, nothing else commits there (drevo's fence), so the journal must live elsewhere. |
 | `classify(error) -> ErrorKind` (`Classifies`) | branch, participant | Error kinds beyond retryable / not (section 5). |

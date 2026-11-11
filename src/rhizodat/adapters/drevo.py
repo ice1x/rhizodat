@@ -30,6 +30,7 @@ Drivers are imported on first use; neither is a core dependency.
 """
 
 import contextlib
+import itertools
 import json
 import re
 import threading
@@ -577,13 +578,14 @@ class DrevoStore:
             raise
         return len(graph.nodes), len(graph.edges)
 
-    def read_only(self, query: str, params: Params = None) -> Result:
+    def read_only(self, query: str, params: Params = None, *, limit: int | None = None) -> Result:
         """A native read that never keeps a write: it runs in a transaction that is
-        always rolled back (drevo has no read-only mode)."""
+        always rolled back (drevo has no read-only mode). With ``limit``, no more
+        rows than that are taken from the result."""
         tx = self._backend.begin()
         try:
             result = tx.execute(query, params)
-            rows = list(result)
+            rows = list(result if limit is None else itertools.islice(result, limit))
         finally:
             tx.rollback()
         return Result(iter(rows), columns=result.columns)

@@ -1,6 +1,7 @@
 """PostgreSQL branch, participant and journal against a real server."""
 
 import contextlib
+import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -77,6 +78,33 @@ def test_read_only_refuses_writes(store: PostgresStore) -> None:
     ):
         with pytest.raises(psycopg.Error):
             store.read_only(escape)
+    assert count(store, "SELECT count(*) AS n FROM notes") == 0
+
+
+def test_read_only_stops_at_the_limit(store: PostgresStore) -> None:
+    rows = store.read_only("SELECT g FROM generate_series(1, 10) g", limit=3).all()
+    assert rows == [{"g": 1}, {"g": 2}, {"g": 3}]
+    assert len(store.read_only("SELECT %s::int AS a", (7,), limit=5).all()) == 1
+
+
+def test_read_only_with_a_limit_does_not_read_the_whole_result(store: PostgresStore) -> None:
+    """Rows are streamed and the query is cancelled at the limit."""
+    started = time.monotonic()
+    result = store.read_only("SELECT generate_series(1, 2000000000) AS g", limit=2)
+    assert result.columns == ("g",)
+    assert result.all() == [{"g": 1}, {"g": 2}]
+    assert time.monotonic() - started < 10
+
+
+def test_read_only_with_a_limit_still_refuses_writes(store: PostgresStore) -> None:
+    store.execute("CREATE TABLE notes (body text)")
+    for escape in (
+        "INSERT INTO notes VALUES ('x')",
+        "COMMIT; INSERT INTO notes VALUES ('x')",
+        "SET TRANSACTION READ WRITE; INSERT INTO notes VALUES ('x')",
+    ):
+        with pytest.raises(psycopg.Error):
+            store.read_only(escape, limit=1)
     assert count(store, "SELECT count(*) AS n FROM notes") == 0
 
 

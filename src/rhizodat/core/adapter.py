@@ -106,10 +106,19 @@ class Adapter:
 
 @runtime_checkable
 class ReadOnlyQueries(Protocol):
-    """Native reads the store itself refuses to turn into writes."""
+    """Native reads the store itself refuses to turn into writes.
 
-    def read_only(self, query: str, params: Any = None) -> "Result":  # noqa: ANN401
-        ...
+    With ``limit``, at most that many rows leave the store: it stops reading
+    there, so a query with an endless or huge result neither runs on nor fills
+    the caller's memory (the MCP server relies on it)."""
+
+    def read_only(
+        self,
+        query: str,
+        params: Any = None,  # noqa: ANN401
+        *,
+        limit: int | None = None,
+    ) -> "Result": ...
 
 
 @runtime_checkable

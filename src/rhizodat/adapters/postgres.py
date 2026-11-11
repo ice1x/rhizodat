@@ -22,12 +22,14 @@ whatever tables the application wrote. The server needs
 psycopg is imported on first use, so the driver stays an optional extra.
 """
 
+import contextlib
+import itertools
 import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import unquote_plus
 
 from rhizodat.core.adapter import Adapter, Scheme
@@ -437,7 +439,11 @@ class PostgresStore:
         return rows
 
     def read_only(
-        self, sql: str, params: Mapping[str, Any] | Sequence[Any] | None = None
+        self,
+        sql: str,
+        params: Mapping[str, Any] | Sequence[Any] | None = None,
+        *,
+        limit: int | None = None,
     ) -> Result:
         """A native read the server guarantees cannot write: one statement in a
         ``READ ONLY`` transaction that is always rolled back.
@@ -447,6 +453,9 @@ class PostgresStore:
         refuses several statements (``COMMIT; INSERT ...``); psycopg would send
         a string without parameters through the simple protocol, which runs them
         all. Without ``params`` a ``%`` is literal, as in ``execute``.
+
+        With ``limit`` the rows are streamed (the extended protocol, which
+        refuses several statements too) and the query is cancelled at the limit.
         """
         if params is None:
             sql, params = sql.replace("%", "%%"), ()
@@ -454,7 +463,19 @@ class PostgresStore:
             conn.read_only = True
             try:
                 conn.execute("SELECT 1")
-                return _result(conn.execute(sql, params, prepare=True))
+                if limit is None:
+                    return _result(conn.execute(sql, params, prepare=True))
+                cursor = conn.cursor()
+                # Closing the generator early cancels the query on the server
+                # (psycopg types it as an Iterator; it is a generator).
+                stream = cast(Generator[Any], cursor.stream(sql, params))
+                with contextlib.closing(stream):
+                    rows = list(itertools.islice(stream, limit))
+                if cursor.description is None:
+                    return Result(iter(()), columns=(), raw=cursor)
+                return Result(
+                    iter(rows), columns=tuple(c.name for c in cursor.description), raw=cursor
+                )
             finally:
                 conn.rollback()
 

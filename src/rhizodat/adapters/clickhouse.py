@@ -32,6 +32,7 @@ tagged JSON in a ``String`` column.
 clickhouse-connect is imported on first use, so the driver stays an optional extra.
 """
 
+import itertools
 import json
 import re
 import uuid
@@ -78,7 +79,8 @@ def _driver() -> Any:  # noqa: ANN401 - the driver module, imported lazily
 
 
 def _quote(table: str) -> str:
-    return ".".join(f"`{part}`" for part in table.split("."))
+    """A ``db.table`` or ``table`` name as quoted identifiers (``_name`` escapes them)."""
+    return ".".join(_name(part) for part in table.split(".", 1))
 
 
 _SERVICE = ("dat_id", "dat_created", "dat_deleted")
@@ -100,8 +102,7 @@ def _name(name: str) -> str:
     return "`" + name.replace("\\", "\\\\").replace("`", "\\`") + "`"
 
 
-def _import_table(table: str) -> str:
-    return ".".join(_name(part) for part in table.split(".", 1))
+_import_table = _quote
 
 
 def _import_column(c: "Column", *, nullable: bool | None = None) -> str:
@@ -301,13 +302,23 @@ class ClickHouseStore:
         for sql in statements(kind, body):
             self._client.command(sql)
 
-    def read_only(self, query: str, params: Mapping[str, Any] | None = None) -> Result:
+    def read_only(
+        self, query: str, params: Mapping[str, Any] | None = None, *, limit: int | None = None
+    ) -> Result:
         """A native read the server guarantees cannot write (``readonly = 2``: no writes,
-        no DDL; settings may still change for the query)."""
+        no DDL; settings may still change for the query). With ``limit`` the server
+        stops reading at that many rows (``max_result_rows``, ``result_overflow_mode =
+        break``, which ends on a block, so the rows are cut to the limit here)."""
+        settings: dict[str, Any] = {"readonly": 2}
+        if limit is not None:
+            settings |= {"max_result_rows": limit, "result_overflow_mode": "break"}
         r = self._client.query(
-            query, parameters=dict(params) if params else None, settings={"readonly": 2}
+            query, parameters=dict(params) if params else None, settings=settings
         )
-        return Result(iter(r.named_results()), columns=tuple(r.column_names), raw=r)
+        rows = r.named_results()
+        if limit is not None:
+            rows = itertools.islice(rows, limit)
+        return Result(iter(rows), columns=tuple(r.column_names), raw=r)
 
     def branch(self, dat_txn: uuid.UUID) -> "ClickHouseBranch":
         return ClickHouseBranch(self, dat_txn)

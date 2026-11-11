@@ -18,7 +18,7 @@ for clients:
 | Tool | What it does |
 |---|---|
 | `stores` | the configured stores: name, kind, two-phase or not, whether `query` can read it, DSN with secrets masked |
-| `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `RHIZODAT_MCP_MAX_ROWS`) |
+| `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `RHIZODAT_MCP_MAX_ROWS`); the store stops reading past them, so an endless query returns |
 
 The store itself refuses writes in `query`, so a mistaken or injected query
 cannot change data:

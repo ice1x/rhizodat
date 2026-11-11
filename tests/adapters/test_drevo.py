@@ -82,6 +82,13 @@ def test_read_only_reads_and_never_keeps_a_write(store: DrevoStore) -> None:
     assert count(store, lbl) == 1
 
 
+def test_read_only_stops_at_the_limit(store: DrevoStore) -> None:
+    lbl = label()
+    store.execute(f"UNWIND range(1, 5) AS i CREATE (:{lbl} {{i: i}})")
+    rows = store.read_only(f"MATCH (n:{lbl}) RETURN n.i AS i ORDER BY i", limit=2).all()
+    assert rows == [{"i": 1}, {"i": 2}]
+
+
 def test_one_phase_commit_with_applied_marker(store: DrevoStore) -> None:
     lbl, txn = label(), new_id()
     branch = store.branch(txn)

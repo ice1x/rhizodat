@@ -32,7 +32,7 @@ class Store:                         # what open_store returns
     def close(self) -> None: ...
 
 # optional capabilities, checked with isinstance
-class ReadOnlyQueries:  def read_only(self, query, params=None) -> Result: ...  # the store refuses writes
+class ReadOnlyQueries:  def read_only(self, query, params=None, *, limit=None) -> Result: ...  # the store refuses writes; stops at limit rows
 class AppliedLocation:  applied_location: tuple | None   # two stores in one place are refused
 class Fenced:           fence_location: tuple | None     # the journal must not live there
 class PartStore:        ...  # entity parts: install_part, read_part, part_history, expired_parts

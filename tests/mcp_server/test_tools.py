@@ -29,9 +29,11 @@ class ReadableStore(FakeStoreHandle):
         super().__init__(world.store(name, two_phase=True))
         self.rows = rows
         self.reads: list[tuple[str, object]] = []
+        self.limits: list[int | None] = []
 
-    def read_only(self, query: str, params: object = None) -> Result:
+    def read_only(self, query: str, params: object = None, *, limit: int | None = None) -> Result:
         self.reads.append((query, params))
+        self.limits.append(limit)
         columns = tuple(self.rows[0]) if self.rows else ()
         return Result(iter(self.rows), columns=columns)
 
@@ -114,6 +116,16 @@ def test_query_limit_is_capped(orders: ReadableStore, journal: MemoryJournal) ->
     assert (len(out["rows"]), out["truncated"]) == (3, True)
     with pytest.raises(ValueError, match="limit"):
         t.query("orders", "q", limit=0)
+
+
+def test_query_asks_the_store_for_one_row_past_the_limit(
+    orders: ReadableStore, journal: MemoryJournal
+) -> None:
+    """The store stops reading there: no more than that leaves it, whatever the query."""
+    t = tools_for({"orders": orders}, journal, max_rows=3)
+    t.query("orders", "q", limit=2)
+    t.query("orders", "q", limit=1000)
+    assert orders.limits == [3, 4]
 
 
 def test_query_refuses_a_store_without_read_only_access(

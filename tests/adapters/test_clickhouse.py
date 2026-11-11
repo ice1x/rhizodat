@@ -88,6 +88,12 @@ def test_read_only_refuses_writes(store: ClickHouseStore) -> None:
     assert store.execute("SELECT count() AS n FROM notes").one()["n"] == 0
 
 
+def test_read_only_stops_at_the_limit(store: ClickHouseStore) -> None:
+    """An endless query returns: the server stops at the limit."""
+    rows = store.read_only("SELECT number FROM system.numbers", limit=3).all()
+    assert rows == [{"number": 0}, {"number": 1}, {"number": 2}]
+
+
 def test_install_is_idempotent(store: ClickHouseStore) -> None:
     store.install()
     assert store.execute("SELECT count() AS n FROM dat_applied").one()["n"] == 0
@@ -356,3 +362,20 @@ def test_free_space_is_the_least_free_disk(store: ClickHouseStore) -> None:
     assert free is not None
     # Other writers change it between the two queries: the same disk, not the same byte.
     assert abs(free - min(int(d["free_space"]) for d in disks)) < 1 << 30
+
+
+@pytest.mark.parametrize(
+    ("table", "quoted"),
+    [
+        ("events", "`events`"),
+        ("db.events", "`db`.`events`"),
+        ("we`ird", "`we\\`ird`"),
+        ("db.a`; DROP TABLE x; --", "`db`.`a\\`; DROP TABLE x; --`"),
+        ("back\\slash", "`back\\\\slash`"),
+    ],
+)
+def test_a_table_name_is_quoted_whatever_it_holds(table: str, quoted: str) -> None:
+    """Every table name the adapter puts into a statement is one quoted identifier."""
+    from rhizodat.adapters.clickhouse import _quote
+
+    assert _quote(table) == quoted

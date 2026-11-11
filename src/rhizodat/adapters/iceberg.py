@@ -411,9 +411,15 @@ class IcebergStore:
 
         run_operations(self.catalog, body)
 
-    def read_only(self, table: str, params: Mapping[str, Any] | None = None) -> Result:
-        """The same scan as ``execute``: a scan cannot write."""
-        return self.execute(table, params)
+    def read_only(
+        self, table: str, params: Mapping[str, Any] | None = None, *, limit: int | None = None
+    ) -> Result:
+        """The same scan as ``execute``: a scan cannot write. ``limit`` caps the
+        scan's own ``limit``."""
+        scan = dict(params or {})
+        if limit is not None:
+            scan["limit"] = min(limit, scan.get("limit") or limit)
+        return self.execute(table, scan)
 
     def branch(self, dat_txn: uuid.UUID) -> "IcebergBranch":
         return IcebergBranch(self, dat_txn)
