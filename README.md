@@ -32,5 +32,5 @@ The whole script: [examples/quickstart.py](examples/quickstart.py). More in
 [documentation](https://ice1x.github.io/rhizodat/): concepts, guides
 (Repository, migrations, file imports, MCP), adapters and the API reference.
 
-Apache-2.0. Status: 0.1.0, the MVP — please report what you tried in a
+Apache-2.0. Status: 0.2.0 — please report what you tried in a
 [feedback issue](https://github.com/ice1x/rhizodat/issues/new?template=feedback.yml).

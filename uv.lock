@@ -2843,7 +2843,7 @@ wheels = [
 
 [[package]]
 name = "rhizodat"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -2951,7 +2951,7 @@ native = [{ name = "rhizodat-native", directory = "crates/rhizodat-py" }]
 
 [[package]]
 name = "rhizodat-native"
-version = "0.1.0"
+version = "0.2.0"
 source = { directory = "crates/rhizodat-py" }
 
 [[package]]
