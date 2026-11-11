@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Security: rhizodat-MCP's `query` no longer reads a whole result into memory.
+  `ReadOnlyQueries.read_only` takes `limit`, and every store stops reading
+  there (PostgreSQL streams and cancels the query, ClickHouse
+  `max_result_rows`, drevo and Iceberg cut the result); an endless query
+  returns. An adapter that implements `read_only` should accept `limit`.
+- Security: the ClickHouse adapter escapes a backtick in a table name.
+- certifi 2026.10.23 in the lock (PYSEC-2026-4320).
+
 ## 0.2.0 — the native core's gaps closed
 
 The native core's gaps listed after the MVP are closed (the limits that remain
