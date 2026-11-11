@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — the native core's gaps closed
+
+The native core's gaps listed after the MVP are closed (the limits that remain
+are in `docs/adapters/stores.md`), and the cloud-operations scenario replaces
+the CBT journal:
 
 - AWS Glue catalogs for Iceberg on both facades:
   `iceberg+glue://<region>?warehouse=s3://bucket/prefix`, the `rhizodat[glue]`
