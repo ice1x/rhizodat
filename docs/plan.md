@@ -428,6 +428,12 @@ Steps:
    implement stores, it hands the core a unit of work of native stores, as the
    native Python facade does. Next: stores, the journal and meta-transactions
    from Go.
+   ✔ PostgreSQL from Go: stores (their own SQL, values as the core's tagged
+   JSON), the PostgreSQL journal, a unit of work and its commit, with typed
+   aborted / in-doubt errors and a `Transactional` that re-runs retryable
+   aborts. Both bindings commit through one crate,
+   [`crates/rhizodat-units`](https://github.com/ice1x/rhizodat/tree/main/crates/rhizodat-units),
+   moved out of the Python binding. Next: ClickHouse, drevo and Iceberg from Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

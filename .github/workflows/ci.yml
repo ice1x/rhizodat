@@ -80,6 +80,13 @@ jobs:
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --release -p rhizodat-ffi
+      # PostgreSQL for the store and commit tests; exporting the DSN makes a server that
+      # is down fail the run. macOS runners have no Docker: those tests skip there.
+      - name: Start PostgreSQL
+        if: runner.os == 'Linux'
+        run: |
+          docker compose up -d --wait postgres
+          grep -E '^RHIZODAT_TEST_PG_DSN=' .env.test >> "$GITHUB_ENV"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go/go.mod

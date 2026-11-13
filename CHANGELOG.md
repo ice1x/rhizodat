@@ -12,6 +12,10 @@
 - The C ABI's first step: `crates/rhizodat-ffi` (`librhizodat_ffi`, a static
   library with a cbindgen header) and the Go package in `go/` over it (cgo):
   the calling conventions and UUIDv7 ids; stores and meta-transactions follow.
+- Go: PostgreSQL stores, the PostgreSQL journal and meta-transactions
+  (`Coordinator.Commit`, `Transactional`, `*AbortedError` / `*InDoubtError`).
+  `crates/rhizodat-units` holds the native stores' unit of work for both
+  bindings.
 
 ## 0.2.0 — the native core's gaps closed
 

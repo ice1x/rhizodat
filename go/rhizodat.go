@@ -11,7 +11,7 @@ package rhizodat
 #cgo CFLAGS: -I${SRCDIR}/../crates/rhizodat-ffi/include
 #cgo LDFLAGS: ${SRCDIR}/../target/release/librhizodat_ffi.a
 #cgo linux LDFLAGS: -lm -ldl -lpthread
-#cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
+#cgo darwin LDFLAGS: -framework CoreFoundation -framework Security -framework SystemConfiguration
 #include <stdlib.h>
 #include "rhizodat.h"
 */
@@ -31,6 +31,8 @@ const (
 	StatusInvalidArgument Status = C.RHIZODAT_STATUS_INVALID_ARGUMENT
 	StatusFailed          Status = C.RHIZODAT_STATUS_FAILED
 	StatusPanic           Status = C.RHIZODAT_STATUS_PANIC
+	StatusAborted         Status = C.RHIZODAT_STATUS_ABORTED
+	StatusInDoubt         Status = C.RHIZODAT_STATUS_IN_DOUBT
 )
 
 // Unexported aliases, so tests (which cannot use cgo) build errors from statuses.
@@ -49,6 +51,10 @@ func (s Status) String() string {
 		return "failed"
 	case StatusPanic:
 		return "panic"
+	case StatusAborted:
+		return "aborted"
+	case StatusInDoubt:
+		return "in doubt"
 	}
 	return fmt.Sprintf("status %d", int(s))
 }

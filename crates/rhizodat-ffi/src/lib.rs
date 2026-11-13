@@ -10,6 +10,15 @@
 //! - A string the library returns (a result or an error) belongs to the caller,
 //!   who frees it with [`rhizodat_string_free`], never with `free(3)`.
 //! - A panic never crosses the boundary: it becomes [`RhizodatStatus::Panic`].
+//! - A handle (`RhizodatPostgresStore *`, …) is opaque; the caller frees it with
+//!   its `*_free` function, once. Handles may be used from several threads.
+//! - Values travel as the core's tagged JSON (`rhizodat_core::rows`): JSON
+//!   scalars, arrays as lists, and `{"$": tag, "v": value}` for what JSON
+//!   cannot carry exactly (`uuid`, `decimal`, `bytes` in base64, `date`,
+//!   `datetime`, `map` as `[[key, value], …]`, non-finite `float`).
+//! - [`rhizodat_coordinator_commit`] is the one exception to "results only on
+//!   OK": it also writes its outcome (with the meta-transaction id) on
+//!   [`RhizodatStatus::Aborted`] and [`RhizodatStatus::InDoubt`].
 //!
 //! The header, `include/rhizodat.h`, is generated from this crate by cbindgen;
 //! a test fails when the checked-in copy is stale.
@@ -21,7 +30,7 @@ use std::sync::OnceLock;
 use rhizodat_core::identity::IdGenerator;
 
 /// One id generator per process, so ids from all threads are unique.
-static IDS: OnceLock<IdGenerator> = OnceLock::new();
+pub(crate) static IDS: OnceLock<IdGenerator> = OnceLock::new();
 
 /// What a call did. Results are valid only with `Ok`.
 #[repr(C)]
@@ -36,7 +45,19 @@ pub enum RhizodatStatus {
     Failed = 2,
     /// The library panicked: a bug in rhizodat. The error carries the panic's text.
     Panic = 3,
+    /// A meta-transaction committed nothing; its outcome says whether a re-run
+    /// may succeed (`retryable`).
+    Aborted = 4,
+    /// A meta-transaction's outcome is unknown: recovery resolves it from the
+    /// journal. Do not re-run it, it may have committed.
+    InDoubt = 5,
 }
+
+mod postgres;
+mod unit;
+
+pub use postgres::*;
+pub use unit::*;
 
 /// The library's version, a static string: do not free it.
 #[unsafe(no_mangle)]
@@ -89,7 +110,10 @@ pub unsafe extern "C" fn rhizodat_string_free(value: *mut c_char) {
     }
 }
 
-type Outcome = Result<(), (RhizodatStatus, String)>;
+/// A failed call: its status and message.
+pub(crate) type Failure = (RhizodatStatus, String);
+
+type Outcome = Result<(), Failure>;
 
 /// Runs `body`, turning its error or a panic into a status and, when the caller
 /// asked for one, an error string.
@@ -97,7 +121,10 @@ type Outcome = Result<(), (RhizodatStatus, String)>;
 /// # Safety
 ///
 /// `error` must be null or writable for one pointer.
-unsafe fn boundary(error: *mut *mut c_char, body: impl FnOnce() -> Outcome) -> RhizodatStatus {
+pub(crate) unsafe fn boundary(
+    error: *mut *mut c_char,
+    body: impl FnOnce() -> Outcome,
+) -> RhizodatStatus {
     let (status, message) = match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(())) => return RhizodatStatus::Ok,
         Ok(Err(failure)) => failure,
@@ -115,7 +142,10 @@ unsafe fn boundary(error: *mut *mut c_char, body: impl FnOnce() -> Outcome) -> R
 /// # Safety
 ///
 /// `ptr` must be null or writable for one `T`.
-unsafe fn writable<'a, T>(ptr: *mut T, name: &str) -> Result<&'a mut T, (RhizodatStatus, String)> {
+pub(crate) unsafe fn writable<'a, T>(
+    ptr: *mut T,
+    name: &str,
+) -> Result<&'a mut T, (RhizodatStatus, String)> {
     // SAFETY: the caller's contract.
     unsafe { ptr.as_mut() }
         .ok_or_else(|| (RhizodatStatus::InvalidArgument, format!("{name} is null")))
@@ -123,13 +153,96 @@ unsafe fn writable<'a, T>(ptr: *mut T, name: &str) -> Result<&'a mut T, (Rhizoda
 
 /// `text` as a C string the caller owns; an interior NUL is replaced, so
 /// nothing is lost silently and nothing panics.
-fn owned_string(text: String) -> *mut c_char {
+pub(crate) fn owned_string(text: String) -> *mut c_char {
     let text = if text.contains('\0') {
         text.replace('\0', "\u{fffd}")
     } else {
         text
     };
     CString::new(text).unwrap_or_default().into_raw()
+}
+
+/// `ptr` as UTF-8 text, or an invalid-argument error naming it.
+///
+/// # Safety
+///
+/// `ptr` must be null or a NUL-terminated string that outlives the call.
+pub(crate) unsafe fn text<'a>(ptr: *const c_char, name: &str) -> Result<&'a str, Failure> {
+    // SAFETY: the caller's contract.
+    unsafe { optional_text(ptr, name) }?
+        .ok_or_else(|| (RhizodatStatus::InvalidArgument, format!("{name} is null")))
+}
+
+/// Like [`text`], with null as `None`.
+///
+/// # Safety
+///
+/// As [`text`].
+pub(crate) unsafe fn optional_text<'a>(
+    ptr: *const c_char,
+    name: &str,
+) -> Result<Option<&'a str>, Failure> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: the caller's contract.
+    unsafe { std::ffi::CStr::from_ptr(ptr) }
+        .to_str()
+        .map(Some)
+        .map_err(|_| {
+            (
+                RhizodatStatus::InvalidArgument,
+                format!("{name} is not UTF-8"),
+            )
+        })
+}
+
+/// A handle as a shared reference, or an invalid-argument error naming it.
+///
+/// # Safety
+///
+/// `ptr` must be null or a live handle of this type.
+pub(crate) unsafe fn handle<'a, T>(ptr: *const T, name: &str) -> Result<&'a T, Failure> {
+    // SAFETY: the caller's contract.
+    unsafe { ptr.as_ref() }
+        .ok_or_else(|| (RhizodatStatus::InvalidArgument, format!("{name} is null")))
+}
+
+/// A boxed handle for the caller, who frees it with its `*_free` function.
+pub(crate) fn into_handle<T>(value: T) -> *mut T {
+    Box::into_raw(Box::new(value))
+}
+
+/// Frees a handle made by [`into_handle`]; null does nothing.
+///
+/// # Safety
+///
+/// `ptr` must be null or a handle of this type not freed before.
+pub(crate) unsafe fn free_handle<T>(ptr: *mut T) {
+    if !ptr.is_null() {
+        // SAFETY: made by `Box::into_raw` in `into_handle`, freed once.
+        drop(unsafe { Box::from_raw(ptr) });
+    }
+}
+
+/// A list of values from tagged JSON text, or an invalid-argument error.
+pub(crate) fn values(
+    json: &str,
+    name: &str,
+) -> Result<Vec<rhizodat_core::rows::RowValue>, Failure> {
+    match rhizodat_core::rows::decode_value(json) {
+        Ok(rhizodat_core::rows::RowValue::List(values)) => Ok(values),
+        Ok(_) => Err((
+            RhizodatStatus::InvalidArgument,
+            format!("{name} must be a JSON array"),
+        )),
+        Err(e) => Err((RhizodatStatus::InvalidArgument, format!("{name}: {e}"))),
+    }
+}
+
+/// A runtime for one call, or a failure.
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Failure> {
+    rhizodat_units::runtime().map_err(|e| (RhizodatStatus::Failed, e.to_string()))
 }
 
 fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
