@@ -1,0 +1,166 @@
+//! `librhizodat_ffi`: the C ABI of the rhizodat core, for Go (cgo) and other C callers.
+//!
+//! The conventions every function follows:
+//!
+//! - A function returns a [`RhizodatStatus`]; its results go to out-pointers the
+//!   caller passes. On anything but [`RhizodatStatus::Ok`] it writes nothing to
+//!   them except the error.
+//! - An error is text: when the caller passes a non-null `error` out-pointer, a
+//!   failing call stores a message there. Pass null to ignore it.
+//! - A string the library returns (a result or an error) belongs to the caller,
+//!   who frees it with [`rhizodat_string_free`], never with `free(3)`.
+//! - A panic never crosses the boundary: it becomes [`RhizodatStatus::Panic`].
+//!
+//! The header, `include/rhizodat.h`, is generated from this crate by cbindgen;
+//! a test fails when the checked-in copy is stale.
+
+use std::ffi::{CString, c_char};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::OnceLock;
+
+use rhizodat_core::identity::IdGenerator;
+
+/// One id generator per process, so ids from all threads are unique.
+static IDS: OnceLock<IdGenerator> = OnceLock::new();
+
+/// What a call did. Results are valid only with `Ok`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RhizodatStatus {
+    /// It worked; the out-pointers hold the results.
+    Ok = 0,
+    /// An argument the caller passed is unusable (a null pointer, text that is not
+    /// UTF-8, a malformed value); nothing was done.
+    InvalidArgument = 1,
+    /// The core failed; the error says why.
+    Failed = 2,
+    /// The library panicked: a bug in rhizodat. The error carries the panic's text.
+    Panic = 3,
+}
+
+/// The library's version, a static string: do not free it.
+#[unsafe(no_mangle)]
+pub extern "C" fn rhizodat_version() -> *const c_char {
+    static VERSION: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
+        concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes(),
+    ) {
+        Ok(v) => v,
+        Err(_) => panic!("the version holds a NUL"),
+    };
+    VERSION.as_ptr()
+}
+
+/// A new UUIDv7 as its 36-character text, from one generator per process (ids
+/// from all threads are unique; those from one thread are ordered).
+///
+/// # Safety
+///
+/// `out` must be null or point to writable memory for one pointer; `error` too.
+/// A string stored in either is freed with [`rhizodat_string_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_new_id(
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract above.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let id = IDS
+                .get_or_init(IdGenerator::new)
+                .generate()
+                .map_err(|e| (RhizodatStatus::Failed, e.to_string()))?;
+            *out = owned_string(id.to_string());
+            Ok(())
+        })
+    }
+}
+
+/// Frees a string the library returned. Null is allowed and does nothing.
+///
+/// # Safety
+///
+/// `value` must be null or a string from this library not freed before.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_string_free(value: *mut c_char) {
+    if !value.is_null() {
+        // SAFETY: made by `CString::into_raw` in `owned_string`, freed once.
+        drop(unsafe { CString::from_raw(value) });
+    }
+}
+
+type Outcome = Result<(), (RhizodatStatus, String)>;
+
+/// Runs `body`, turning its error or a panic into a status and, when the caller
+/// asked for one, an error string.
+///
+/// # Safety
+///
+/// `error` must be null or writable for one pointer.
+unsafe fn boundary(error: *mut *mut c_char, body: impl FnOnce() -> Outcome) -> RhizodatStatus {
+    let (status, message) = match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(Ok(())) => return RhizodatStatus::Ok,
+        Ok(Err(failure)) => failure,
+        Err(panic) => (RhizodatStatus::Panic, panic_text(panic.as_ref())),
+    };
+    if !error.is_null() {
+        // SAFETY: the caller's contract.
+        unsafe { *error = owned_string(message) };
+    }
+    status
+}
+
+/// `ptr` as a place to write, or an invalid-argument error naming it.
+///
+/// # Safety
+///
+/// `ptr` must be null or writable for one `T`.
+unsafe fn writable<'a, T>(ptr: *mut T, name: &str) -> Result<&'a mut T, (RhizodatStatus, String)> {
+    // SAFETY: the caller's contract.
+    unsafe { ptr.as_mut() }
+        .ok_or_else(|| (RhizodatStatus::InvalidArgument, format!("{name} is null")))
+}
+
+/// `text` as a C string the caller owns; an interior NUL is replaced, so
+/// nothing is lost silently and nothing panics.
+fn owned_string(text: String) -> *mut c_char {
+    let text = if text.contains('\0') {
+        text.replace('\0', "\u{fffd}")
+    } else {
+        text
+    };
+    CString::new(text).unwrap_or_default().into_raw()
+}
+
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    let what = panic
+        .downcast_ref::<&str>()
+        .map(ToString::to_string)
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".to_owned());
+    format!("rhizodat panicked (a bug, please report it): {what}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_becomes_a_status_and_its_text() {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        // SAFETY: `error` is a writable local.
+        let status = unsafe { boundary(&raw mut error, || panic!("boom")) };
+        assert_eq!(status, RhizodatStatus::Panic);
+        // SAFETY: set by `boundary`, freed once.
+        let text = unsafe { CString::from_raw(error) }.into_string().unwrap();
+        assert!(text.contains("boom") && text.contains("a bug"));
+    }
+
+    #[test]
+    fn a_nul_inside_a_message_is_kept_visible() {
+        let raw = owned_string("a\0b".to_owned());
+        // SAFETY: made just above, freed once.
+        let back = unsafe { CString::from_raw(raw) }.into_string().unwrap();
+        assert_eq!(back, "a\u{fffd}b");
+    }
+}

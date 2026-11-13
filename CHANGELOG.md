@@ -9,6 +9,9 @@
   returns. An adapter that implements `read_only` should accept `limit`.
 - Security: the ClickHouse adapter escapes a backtick in a table name.
 - certifi 2026.10.23 in the lock (PYSEC-2026-4320).
+- The C ABI's first step: `crates/rhizodat-ffi` (`librhizodat_ffi`, a static
+  library with a cbindgen header) and the Go package in `go/` over it (cgo):
+  the calling conventions and UUIDv7 ids; stores and meta-transactions follow.
 
 ## 0.2.0 — the native core's gaps closed
 

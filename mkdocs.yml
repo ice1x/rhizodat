@@ -62,6 +62,7 @@ nav:
       - Embeddings: guide/embeddings.md
       - Ontology proposals: guide/ontology.md
       - rhizodat-MCP: guide/mcp.md
+      - Go (C ABI): guide/go.md
   - Adapters:
       - The shipped stores and their limits: adapters/stores.md
       - Writing an adapter: adapters/index.md
