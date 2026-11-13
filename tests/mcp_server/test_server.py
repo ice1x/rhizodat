@@ -26,7 +26,7 @@ TOOLS = {"stores", "query"}
 
 
 class Readable(FakeStoreHandle):
-    def read_only(self, query: str, params: object = None) -> Result:
+    def read_only(self, query: str, params: object = None, *, limit: int | None = None) -> Result:
         if query == "boom":
             raise RuntimeError("syntax error at or near boom")
         return Result(iter([{"q": query}]), columns=("q",))

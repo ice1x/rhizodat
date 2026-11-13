@@ -142,7 +142,7 @@ class Tools:
         target = self._dat.store(store)
         if not isinstance(target, ReadOnlyQueries):
             raise ValueError(f"store {store!r} offers no read-only queries")
-        result = target.read_only(query, params)
+        result = target.read_only(query, params, limit=limit + 1)
         try:
             rows = list(itertools.islice(result, limit + 1))
         finally:

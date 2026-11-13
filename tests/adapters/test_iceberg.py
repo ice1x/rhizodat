@@ -199,6 +199,16 @@ def test_read_only_is_a_scan(store: IcebergStore, faker: Faker) -> None:
     assert len(store.read_only("erp.sales", {"selected_fields": ("sku",)}).all()) == 2
 
 
+def test_read_only_stops_at_the_limit(store: IcebergStore, faker: Faker) -> None:
+    branch = store.branch(new_id())
+    branch.append("erp.sales", sales(faker, 5))
+    branch.stage(branch.dat_txn, TS)
+    branch.commit_one_phase()
+    assert len(store.read_only("erp.sales", limit=2).all()) == 2
+    assert len(store.read_only("erp.sales", {"limit": 1}, limit=3).all()) == 1
+    assert len(store.read_only("erp.sales", {"limit": 4}, limit=3).all()) == 3
+
+
 # --- branch -------------------------------------------------------------------------
 
 
