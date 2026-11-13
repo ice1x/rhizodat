@@ -6,13 +6,12 @@ use std::ffi::c_char;
 use std::sync::Arc;
 
 use rhizodat_core::journal::Journal;
-use rhizodat_core::rows::{RowValue, encode_value};
 use rhizodat_postgres::query::query;
 use rhizodat_postgres::{PostgresJournal, PostgresStore};
 
 use crate::{
     Failure, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
-    owned_string, runtime, text, values, writable,
+    owned_string, rows_json, runtime, text, values, writable,
 };
 
 /// One PostgreSQL database as a rhizodat store.
@@ -124,11 +123,7 @@ pub unsafe extern "C" fn rhizodat_postgres_store_execute(
                     query(&client, sql, &params).await
                 })
                 .map_err(|e| failed(server_message(e.as_ref())))?;
-            let columns = serde_json::to_string(&result.columns).map_err(failed)?;
-            let rows = encode_value(&RowValue::List(
-                result.rows.into_iter().map(RowValue::List).collect(),
-            ));
-            *out = owned_string(format!(r#"{{"columns":{columns},"rows":{rows}}}"#));
+            *out = owned_string(rows_json(&result.columns, result.rows)?);
             Ok(())
         })
     }

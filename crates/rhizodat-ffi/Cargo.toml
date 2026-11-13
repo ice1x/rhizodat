@@ -15,7 +15,13 @@ name = "rhizodat_ffi"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+# ClickHouse answers queries as Arrow IPC streams (the Arrow of iceberg-rust).
+arrow-array = "58"
+arrow-ipc = { version = "58", default-features = false, features = ["lz4", "zstd"] }
+arrow-schema = "58"
+rhizodat-clickhouse = { path = "../rhizodat-clickhouse" }
 rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
+rhizodat-drevo = { path = "../rhizodat-drevo" }
 rhizodat-postgres = { path = "../rhizodat-postgres" }
 rhizodat-units = { path = "../rhizodat-units" }
 serde_json = "1"

@@ -434,6 +434,10 @@ Steps:
    aborts. Both bindings commit through one crate,
    [`crates/rhizodat-units`](https://github.com/ice1x/rhizodat/tree/main/crates/rhizodat-units),
    moved out of the Python binding. Next: ClickHouse, drevo and Iceberg from Go.
+   ✔ ClickHouse and drevo from Go: their own queries (ClickHouse's Arrow
+   answer read into tagged rows in the C ABI), rows and Cypher statements in a
+   unit of work, the drevo journal; one meta-transaction over PostgreSQL,
+   ClickHouse and drevo from Go. Next: Iceberg from Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the
