@@ -3914,7 +3914,23 @@ dependencies = [
  "rhizodat-drevo",
  "rhizodat-iceberg",
  "rhizodat-postgres",
+ "rhizodat-units",
  "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "uuid",
+]
+
+[[package]]
+name = "rhizodat-units"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "rhizodat-clickhouse",
+ "rhizodat-core",
+ "rhizodat-drevo",
+ "rhizodat-iceberg",
+ "rhizodat-postgres",
  "tokio",
  "tokio-postgres",
  "uuid",

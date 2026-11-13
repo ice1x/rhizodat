@@ -30,10 +30,10 @@ use rhizodat_iceberg::{IcebergBatches, IcebergStore as CoreStore, Scan, catalog_
 use uuid::Uuid;
 
 use crate::migrations::kinds;
-use crate::native::{IcebergLake, IcebergPending, NativeStore};
 use crate::result::{ipc_bytes, py_result};
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, op_err, runtime};
+use rhizodat_units::{IcebergLake, IcebergPending, NativeStore};
 
 /// `data` as the bytes of an Arrow IPC stream: the bytes themselves, or a
 /// Python object with `__arrow_c_stream__` written as a stream by pyarrow.

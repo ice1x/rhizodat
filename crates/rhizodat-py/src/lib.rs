@@ -66,20 +66,13 @@ mod coordinator;
 mod drevo;
 mod iceberg;
 mod migrations;
-mod native;
 mod postgres;
 mod recovery;
 mod result;
 mod rows;
 
-/// A current-thread tokio runtime for one native call: it drives the async
-/// adapter and the connection tasks it spawns on the calling thread, so a native
-/// commit stays single-threaded, like the Python-callback path.
-pub(crate) fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-}
+/// A current-thread tokio runtime for one native call (shared with the C ABI).
+pub(crate) use rhizodat_units::runtime;
 
 /// An operational failure of a native adapter (a connection or a setup error),
 /// as a Python exception. Safe to build without the GIL.
