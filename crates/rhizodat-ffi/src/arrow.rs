@@ -9,6 +9,8 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_ipc::reader::StreamReader;
+use std::sync::Arc;
+
 use arrow_schema::{DataType, TimeUnit};
 use rhizodat_core::rows::RowValue;
 
@@ -21,9 +23,16 @@ pub(crate) fn ipc_rows(stream: &[u8]) -> Result<(Vec<String>, Vec<Vec<RowValue>>
         .iter()
         .map(|f| f.name().clone())
         .collect();
+    let batches = reader
+        .collect::<Result<Vec<RecordBatch>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok((columns, batch_rows(&batches)?))
+}
+
+/// The rows of `batches`, values in column order.
+pub(crate) fn batch_rows(batches: &[RecordBatch]) -> Result<Vec<Vec<RowValue>>, String> {
     let mut rows = Vec::new();
-    for batch in reader {
-        let batch: RecordBatch = batch.map_err(|e| e.to_string())?;
+    for batch in batches {
         for i in 0..batch.num_rows() {
             rows.push(
                 batch
@@ -34,7 +43,148 @@ pub(crate) fn ipc_rows(stream: &[u8]) -> Result<(Vec<String>, Vec<Vec<RowValue>>
             );
         }
     }
-    Ok((columns, rows))
+    Ok(rows)
+}
+
+/// `rows` (values in `columns` order) as one record batch, each column of the
+/// Arrow type its values have: integers `Int64` (`Float64` when floats are
+/// mixed in), floats `Float64`, booleans, UUIDs as 16 bytes, bytes `Binary`,
+/// and text — strings, decimals, dates, datetimes — as `Utf8`, which the
+/// Iceberg branch casts to the table's type at stage. A column of nulls only
+/// is `Null`. Lists and maps are refused.
+pub(crate) fn record_batch(
+    columns: &[String],
+    rows: &[Vec<RowValue>],
+) -> Result<RecordBatch, String> {
+    use arrow_schema::{Field, Schema};
+
+    let mut fields = Vec::with_capacity(columns.len());
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
+    for (c, name) in columns.iter().enumerate() {
+        let kind = column_kind(name, rows.iter().map(|r| &r[c]))?;
+        let array = column_array(kind, rows.iter().map(|r| &r[c]), rows.len())?;
+        fields.push(Field::new(name, array.data_type().clone(), true));
+        arrays.push(array);
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(|e| e.to_string())
+}
+
+/// The Arrow type a column of values gets.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Null,
+    Int,
+    Float,
+    Bool,
+    Uuid,
+    Bytes,
+    Text,
+}
+
+fn column_kind<'a>(name: &str, values: impl Iterator<Item = &'a RowValue>) -> Result<Kind, String> {
+    let mut kind = Kind::Null;
+    for value in values {
+        let k = match value {
+            RowValue::Null => Kind::Null,
+            RowValue::Int(_) => Kind::Int,
+            RowValue::Float(_) => Kind::Float,
+            RowValue::Bool(_) => Kind::Bool,
+            RowValue::Uuid(_) => Kind::Uuid,
+            RowValue::Bytes(_) => Kind::Bytes,
+            RowValue::Str(_) | RowValue::Decimal(_) | RowValue::Date(_) | RowValue::DateTime(_) => {
+                Kind::Text
+            }
+            RowValue::List(_) | RowValue::Map(_) => {
+                return Err(format!(
+                    "column {name:?}: a list or a map has no Iceberg column type here"
+                ));
+            }
+        };
+        kind = match (kind, k) {
+            (any, Kind::Null) | (Kind::Null, any) => any,
+            (a, b) if a == b => a,
+            (Kind::Int, Kind::Float) | (Kind::Float, Kind::Int) => Kind::Float,
+            _ => return Err(format!("column {name:?} mixes values of different types")),
+        };
+    }
+    Ok(kind)
+}
+
+fn column_array<'a>(
+    kind: Kind,
+    values: impl Iterator<Item = &'a RowValue>,
+    len: usize,
+) -> Result<ArrayRef, String> {
+    use arrow_array::builder::{
+        BinaryBuilder, BooleanBuilder, FixedSizeBinaryBuilder, Float64Builder, StringBuilder,
+    };
+
+    Ok(match kind {
+        Kind::Null => Arc::new(arrow_array::NullArray::new(len)),
+        Kind::Int => Arc::new(
+            values
+                .map(|v| match v {
+                    RowValue::Int(i) => Some(*i),
+                    _ => None,
+                })
+                .collect::<arrow_array::Int64Array>(),
+        ),
+        Kind::Float => {
+            let mut b = Float64Builder::new();
+            for v in values {
+                #[allow(clippy::cast_precision_loss)]
+                b.append_option(match v {
+                    RowValue::Float(f) => Some(*f),
+                    RowValue::Int(i) => Some(*i as f64),
+                    _ => None,
+                });
+            }
+            Arc::new(b.finish())
+        }
+        Kind::Bool => {
+            let mut b = BooleanBuilder::new();
+            for v in values {
+                b.append_option(match v {
+                    RowValue::Bool(x) => Some(*x),
+                    _ => None,
+                });
+            }
+            Arc::new(b.finish())
+        }
+        Kind::Uuid => {
+            let mut b = FixedSizeBinaryBuilder::new(16);
+            for v in values {
+                match v {
+                    RowValue::Uuid(u) => b.append_value(u.as_bytes()).map_err(|e| e.to_string())?,
+                    _ => b.append_null(),
+                }
+            }
+            Arc::new(b.finish())
+        }
+        Kind::Bytes => {
+            let mut b = BinaryBuilder::new();
+            for v in values {
+                match v {
+                    RowValue::Bytes(x) => b.append_value(x),
+                    _ => b.append_null(),
+                }
+            }
+            Arc::new(b.finish())
+        }
+        Kind::Text => {
+            let mut b = StringBuilder::new();
+            for v in values {
+                match v {
+                    RowValue::Str(x)
+                    | RowValue::Decimal(x)
+                    | RowValue::Date(x)
+                    | RowValue::DateTime(x) => b.append_value(x),
+                    _ => b.append_null(),
+                }
+            }
+            Arc::new(b.finish())
+        }
+    })
 }
 
 /// One cell as a core value.
@@ -197,6 +347,65 @@ mod tests {
             datetime(-1, TimeUnit::Second, false),
             "1969-12-31T23:59:59.000000"
         );
+    }
+
+    #[test]
+    fn rows_become_a_batch_of_their_values_types() {
+        let id = uuid::Uuid::from_u128(1);
+        let batch = record_batch(
+            &[
+                "n".into(),
+                "x".into(),
+                "id".into(),
+                "at".into(),
+                "gone".into(),
+            ],
+            &[
+                vec![
+                    RowValue::Int(1),
+                    RowValue::Int(2),
+                    RowValue::Uuid(id),
+                    RowValue::DateTime("2026-11-14T09:30:00+00:00".into()),
+                    RowValue::Null,
+                ],
+                vec![
+                    RowValue::Null,
+                    RowValue::Float(0.5),
+                    RowValue::Null,
+                    RowValue::Null,
+                    RowValue::Null,
+                ],
+            ],
+        )
+        .unwrap();
+        let types: Vec<DataType> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.data_type().clone())
+            .collect();
+        assert_eq!(
+            types,
+            [
+                DataType::Int64,
+                DataType::Float64,
+                DataType::FixedSizeBinary(16),
+                DataType::Utf8,
+                DataType::Null
+            ]
+        );
+        let rows = batch_rows(&[batch]).unwrap();
+        assert_eq!(rows[0][2], RowValue::Uuid(id));
+        assert_eq!(rows[1][1], RowValue::Float(0.5));
+        assert_eq!(rows[0][1], RowValue::Float(2.0));
+        assert!(
+            record_batch(
+                &["a".into()],
+                &[vec![RowValue::Int(1)], vec![RowValue::Str("x".into())]]
+            )
+            .is_err()
+        );
+        assert!(record_batch(&["a".into()], &[vec![RowValue::List(vec![])]]).is_err());
     }
 
     #[test]

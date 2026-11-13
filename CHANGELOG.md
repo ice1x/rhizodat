@@ -19,6 +19,10 @@
 - Go: ClickHouse and drevo stores (`Execute`, `Unit.InsertClickHouse`,
   `Unit.Run`) and the drevo journal; one meta-transaction over PostgreSQL,
   ClickHouse and drevo.
+- Go: Iceberg stores (`OpenIceberg`, `CreateTable` / `RunOperations`, `Scan`,
+  `Unit.Append`). The native core runs the `create_namespace` and
+  `create_table` operations of `iceberg` migration steps itself
+  (`rhizodat_iceberg::schema`).
 
 ## 0.2.0 — the native core's gaps closed
 

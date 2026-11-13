@@ -3863,6 +3863,7 @@ dependencies = [
  "rhizodat-clickhouse",
  "rhizodat-core",
  "rhizodat-drevo",
+ "rhizodat-iceberg",
  "rhizodat-postgres",
  "rhizodat-units",
  "serde_json",

@@ -17,16 +17,21 @@ use rhizodat_core::journal::Journal;
 use rhizodat_core::rows::RowValue;
 use rhizodat_drevo::parts::DrevoParts;
 use rhizodat_drevo::{DrevoStore, DrevoWrites};
+use rhizodat_iceberg::IcebergBatches;
+use rhizodat_iceberg::parts::IcebergParts;
 use rhizodat_postgres::parts::PostgresParts;
 use rhizodat_postgres::{PostgresRows, PostgresStore};
 use rhizodat_units::{
-    ClickHousePending, DrevoPending, NativeStore, PostgresPending, UnitError, commit,
+    ClickHousePending, DrevoPending, IcebergLake, IcebergPending, NativeStore, PostgresPending,
+    UnitError, commit,
 };
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::arrow::record_batch;
 use crate::clickhouse::RhizodatClickHouseStore;
 use crate::drevo::{RhizodatDrevoStore, cypher_params};
+use crate::iceberg::RhizodatIcebergStore;
 use crate::postgres::{RhizodatJournal, RhizodatPostgresStore};
 use crate::{
     Failure, IDS, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
@@ -50,6 +55,14 @@ enum Pending {
         store: Arc<DrevoStore>,
         writes: DrevoWrites,
     },
+    Iceberg {
+        /// The store handle's address, its identity (it holds no `Arc` of a
+        /// core store); only compared.
+        id: usize,
+        dsn: Arc<str>,
+        name: Arc<str>,
+        batches: IcebergBatches,
+    },
 }
 
 impl Pending {
@@ -69,6 +82,13 @@ impl Pending {
                 writes: writes.clone(),
                 parts: DrevoParts::default(),
             }),
+            Pending::Iceberg {
+                dsn, name, batches, ..
+            } => Arc::new(IcebergPending {
+                lake: IcebergLake::new(dsn.clone(), name.clone()),
+                batches: batches.clone(),
+                parts: IcebergParts::default(),
+            }),
         }
     }
 
@@ -78,6 +98,7 @@ impl Pending {
             Pending::Postgres { store, .. } => Arc::as_ptr(store).cast::<()>(),
             Pending::ClickHouse { store, .. } => Arc::as_ptr(store).cast::<()>(),
             Pending::Drevo { store, .. } => Arc::as_ptr(store).cast::<()>(),
+            Pending::Iceberg { id, .. } => *id as *const (),
         };
         std::ptr::eq(held, store)
     }
@@ -299,6 +320,60 @@ pub unsafe extern "C" fn rhizodat_unit_drevo_run(
             };
             writes
                 .push(cypher, params)
+                .map_err(|e| invalid(e.to_string()))
+        })
+    }
+}
+
+/// Buffer rows for `table` (`namespace.table`) of an Iceberg store, as
+/// [`rhizodat_unit_postgres_insert`]. The rows become one Arrow batch whose
+/// columns have their values' types; at stage they are matched to the table's
+/// columns by name and cast to their types (text to dates, timestamps and
+/// decimals; table columns the rows lack are null). Iceberg is one-phase:
+/// data files are written at stage and appended after the decision.
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `table`, `columns_json` and
+/// `rows_json` NUL-terminated strings; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_iceberg_append(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatIcebergStore,
+    table: *const c_char,
+    columns_json: *const c_char,
+    rows_json: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let unit = handle(unit, "unit")?;
+            let id = store as usize;
+            let store = handle(store, "store")?;
+            let table = text(table, "table")?;
+            let (columns, rows) = table_rows(
+                text(columns_json, "columns_json")?,
+                text(rows_json, "rows_json")?,
+            )?;
+            let batch = record_batch(&columns, &rows).map_err(invalid)?;
+            let mut buffer = unit
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pending = buffer_of(&mut buffer, &store.name, id as *const (), || {
+                Pending::Iceberg {
+                    id,
+                    dsn: store.dsn.clone(),
+                    name: store.name.clone(),
+                    batches: IcebergBatches::new(),
+                }
+            })?;
+            let Pending::Iceberg { batches, .. } = pending else {
+                unreachable!("a buffer holds its own store's kind")
+            };
+            batches
+                .append(table, batch)
                 .map_err(|e| invalid(e.to_string()))
         })
     }

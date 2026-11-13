@@ -1537,3 +1537,45 @@ async fn a_scan_takes_a_pyiceberg_row_filter() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn schema_operations_create_a_namespace_and_a_table_once() {
+    each(async |lake: &Lake| {
+        let ns = format!("{}_ops", lake.ns);
+        let table = format!("{ns}.api_request");
+        let step = serde_json::json!([
+            {"op": "create_namespace", "namespace": ns},
+            {"op": "create_table", "table": table, "columns": [
+                {"name": "id", "type": "string", "required": true},
+                {"name": "status", "type": "int"},
+                {"name": "cost", "type": "decimal(10, 2)"},
+                {"name": "at", "type": "timestamptz"},
+                {"name": "dat_txn", "type": "uuid"},
+                {"name": "dat_tx_time", "type": "long"}
+            ]}
+        ]);
+        lake.store.run_operations(&step).await.unwrap();
+        // Again: every operation is a no-op once its result is there.
+        lake.store.run_operations(&step).await.unwrap();
+        let ident = TableIdent::from_strs([ns.as_str(), "api_request"]).unwrap();
+        let created = lake.catalog().load_table(&ident).await.unwrap();
+        let schema = created.metadata().current_schema();
+        let names: Vec<&str> = schema
+            .as_struct()
+            .fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["id", "status", "cost", "at", "dat_txn", "dat_tx_time"]
+        );
+        assert!(schema.field_by_name("id").unwrap().required);
+        lake.catalog().drop_table(&ident).await.unwrap();
+        lake.catalog()
+            .drop_namespace(&NamespaceIdent::new(ns))
+            .await
+            .unwrap();
+    })
+    .await;
+}
