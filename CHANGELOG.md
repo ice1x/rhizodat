@@ -23,6 +23,8 @@
   `Unit.Append`). The native core runs the `create_namespace` and
   `create_table` operations of `iceberg` migration steps itself
   (`rhizodat_iceberg::schema`).
+- The cloud-operations scenario in Go (`go/cloudops_test.go`): the reference
+  for a Go program over the four stores.
 
 ## 0.2.0 — the native core's gaps closed
 

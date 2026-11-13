@@ -445,6 +445,14 @@ Steps:
    Arrow batch of the values' types, cast to the table's at stage). Every
    shipped store now commits from Go. Next: the cloud-operations scenario in
    Go.
+   ✔ The cloud-operations scenario in Go
+   ([`go/cloudops_test.go`](https://github.com/ice1x/rhizodat/blob/main/go/cloudops_test.go)),
+   on application tables: a stack provisioned with its API requests over the
+   four stores or not at all, the blast radius from the graph, the unhealthy
+   service found in ClickHouse, scaled with its request, its size read as of
+   before the incident from the `dat_tx_time` every row carries, and its audit
+   trail scanned in the lake. The C ABI for Go is done for application data.
+   Next: entity repositories (bitemporal parts) from Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the
