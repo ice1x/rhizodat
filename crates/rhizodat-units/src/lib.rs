@@ -122,6 +122,42 @@ impl NativeStore for ClickHouse {
     }
 }
 
+/// The ClickHouse adapter as a native store that also carries a unit of work's
+/// own rows, for a binding that buffers them before the commit: `open_branch`
+/// replays the inserts into a fresh branch (one-phase, no I/O), so a retry of
+/// the whole commit gets the same rows.
+pub struct ClickHousePending {
+    /// The store.
+    pub store: Arc<rhizodat_clickhouse::ClickHouseStore>,
+    /// The inserts in order: table, columns, rows.
+    pub inserts: Vec<(String, Vec<String>, Vec<Vec<rhizodat_core::rows::RowValue>>)>,
+}
+
+#[async_trait]
+impl NativeStore for ClickHousePending {
+    fn name(&self) -> String {
+        self.store.name().to_owned()
+    }
+
+    fn participant(&self) -> Arc<dyn Participant> {
+        self.store.participant()
+    }
+
+    async fn open_branch(&self) -> Result<Box<dyn Branch>, ConnectError> {
+        let mut branch = self.store.branch();
+        for (table, columns, rows) in &self.inserts {
+            let columns: Vec<&str> = columns.iter().map(String::as_str).collect();
+            branch
+                .insert(table, &columns, rows.clone())
+                .map_err(|e| ConnectError {
+                    error: Box::new(e),
+                    retryable: false,
+                })?;
+        }
+        Ok(Box::new(branch))
+    }
+}
+
 /// The drevo adapter as a native store.
 pub struct Drevo(pub Arc<rhizodat_drevo::DrevoStore>);
 

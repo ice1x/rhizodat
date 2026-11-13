@@ -28,8 +28,14 @@ typedef enum RhizodatStatus {
   RHIZODAT_STATUS_IN_DOUBT = 5,
 } RhizodatStatus;
 
+// One ClickHouse database as a rhizodat store.
+typedef struct RhizodatClickHouseStore RhizodatClickHouseStore;
+
 // Commits units of work; keeps a hybrid logical clock across them.
 typedef struct RhizodatCoordinator RhizodatCoordinator;
+
+// One drevo graph as a rhizodat store.
+typedef struct RhizodatDrevoStore RhizodatDrevoStore;
 
 // A journal: the record of meta-transactions over several stores.
 typedef struct RhizodatJournal RhizodatJournal;
@@ -62,6 +68,102 @@ enum RhizodatStatus rhizodat_new_id(char **out, char **error);
 //
 // `value` must be null or a string from this library not freed before.
 void rhizodat_string_free(char *value);
+
+// A store named `name` over a ClickHouse DSN (`clickhouse://…`).
+//
+// # Safety
+//
+// `dsn` and `name` must be NUL-terminated strings; `out` writable for one
+// pointer; `error` null or writable. Free with [`rhizodat_clickhouse_store_free`].
+enum RhizodatStatus rhizodat_clickhouse_store_open(const char *dsn,
+                                                   const char *name,
+                                                   struct RhizodatClickHouseStore **out,
+                                                   char **error);
+
+// Create the store's service table `dat_applied` if it does not exist.
+//
+// # Safety
+//
+// `store` must be a live store handle; `error` null or writable.
+enum RhizodatStatus rhizodat_clickhouse_store_install(const struct RhizodatClickHouseStore *store,
+                                                      char **error);
+
+// Run one statement outside any meta-transaction, with `params_json` (a JSON
+// object of tagged values, or null) bound server-side to its `{name:Type}`
+// placeholders. A statement that returns rows (`SELECT`, `WITH`, `SHOW`,
+// `DESCRIBE`, `EXISTS`, `EXPLAIN`) answers `{"columns", "rows"}` with tagged
+// values; any other runs for its effect and answers no columns and no rows.
+// The rows travel as Arrow, so a column ClickHouse cannot send as Arrow
+// (`UUID`, a bare `NULL`) is refused by the server: cast it (`toString(id)`).
+// A `Date` arrives as its day number (ClickHouse sends it as `UInt16`); a
+// `Date32` arrives as a date.
+//
+// # Safety
+//
+// `store` must be a live store handle; `sql` a NUL-terminated string,
+// `params_json` too or null; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_clickhouse_store_execute(const struct RhizodatClickHouseStore *store,
+                                                      const char *sql,
+                                                      const char *params_json,
+                                                      char **out,
+                                                      char **error);
+
+// Frees a store. Null does nothing.
+//
+// # Safety
+//
+// `store` must be null or a store handle not freed before.
+void rhizodat_clickhouse_store_free(struct RhizodatClickHouseStore *store);
+
+// A graph store named `name` over a drevo DSN (`drevo+bolt://…`, or an
+// embedded `drevo+file://…` when the library is built with it).
+//
+// # Safety
+//
+// `dsn` and `name` must be NUL-terminated strings; `out` writable for one
+// pointer; `error` null or writable. Free with [`rhizodat_drevo_store_free`].
+enum RhizodatStatus rhizodat_drevo_store_open(const char *dsn,
+                                              const char *name,
+                                              struct RhizodatDrevoStore **out,
+                                              char **error);
+
+// Run one Cypher statement outside any meta-transaction, with `params_json`
+// (a JSON object of tagged values, or null) as its parameters. A write fails
+// retryably while a branch of this graph is prepared. The result is
+// `{"columns", "rows"}`, columns in name order (the graph's rows are maps).
+//
+// # Safety
+//
+// `store` must be a live store handle; `cypher` a NUL-terminated string,
+// `params_json` too or null; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_drevo_store_execute(const struct RhizodatDrevoStore *store,
+                                                 const char *cypher,
+                                                 const char *params_json,
+                                                 char **out,
+                                                 char **error);
+
+// Frees a store. Null does nothing.
+//
+// # Safety
+//
+// `store` must be null or a store handle not freed before.
+void rhizodat_drevo_store_free(struct RhizodatDrevoStore *store);
+
+// The journal in the graph of `dsn`, its records under `label` (null:
+// `DatJournal`). The graph must hold no store's data: a journal write would
+// outdate the transaction of that store's branch. Free with
+// [`crate::rhizodat_journal_free`].
+//
+// # Safety
+//
+// `dsn` must be a NUL-terminated string, `label` too or null; `out` writable
+// for one pointer; `error` null or writable.
+enum RhizodatStatus rhizodat_drevo_journal_open(const char *dsn,
+                                                const char *label,
+                                                struct RhizodatJournal **out,
+                                                char **error);
 
 // A store named `name` over `dsn`, confined to `schema` when it is not null
 // (no two stores may share one schema's marker table). Connects on first use.
@@ -151,6 +253,36 @@ enum RhizodatStatus rhizodat_unit_postgres_insert(const struct RhizodatUnit *uni
                                                   const char *columns_json,
                                                   const char *rows_json,
                                                   char **error);
+
+// Buffer rows for `table` of a ClickHouse store, as
+// [`rhizodat_unit_postgres_insert`]. ClickHouse is one-phase: the rows go
+// into the journal payload and are applied after the decision.
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `table`, `columns_json` and
+// `rows_json` NUL-terminated strings; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_clickhouse_insert(const struct RhizodatUnit *unit,
+                                                    const struct RhizodatClickHouseStore *store,
+                                                    const char *table,
+                                                    const char *columns_json,
+                                                    const char *rows_json,
+                                                    char **error);
+
+// Buffer a Cypher statement for a drevo store, with `params_json` (a JSON
+// object of tagged values, or null). It runs inside the store's branch at the
+// commit (two-phase), with the parameters `dat_txn` and `dat_tx_time` added,
+// so it may stamp what it writes with `$dat_txn`.
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `cypher` a NUL-terminated string,
+// `params_json` too or null; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_drevo_run(const struct RhizodatUnit *unit,
+                                            const struct RhizodatDrevoStore *store,
+                                            const char *cypher,
+                                            const char *params_json,
+                                            char **error);
 
 // Frees a unit of work. Null does nothing.
 //

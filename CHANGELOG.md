@@ -16,6 +16,9 @@
   (`Coordinator.Commit`, `Transactional`, `*AbortedError` / `*InDoubtError`).
   `crates/rhizodat-units` holds the native stores' unit of work for both
   bindings.
+- Go: ClickHouse and drevo stores (`Execute`, `Unit.InsertClickHouse`,
+  `Unit.Run`) and the drevo journal; one meta-transaction over PostgreSQL,
+  ClickHouse and drevo.
 
 ## 0.2.0 — the native core's gaps closed
 

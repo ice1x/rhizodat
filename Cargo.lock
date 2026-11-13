@@ -234,6 +234,8 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "flatbuffers",
+ "lz4_flex 0.13.1",
+ "zstd",
 ]
 
 [[package]]
@@ -3854,8 +3856,13 @@ dependencies = [
 name = "rhizodat-ffi"
 version = "0.2.0"
 dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
  "cbindgen",
+ "rhizodat-clickhouse",
  "rhizodat-core",
+ "rhizodat-drevo",
  "rhizodat-postgres",
  "rhizodat-units",
  "serde_json",

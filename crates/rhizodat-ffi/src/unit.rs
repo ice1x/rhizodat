@@ -10,19 +10,27 @@ use std::collections::BTreeMap;
 use std::ffi::c_char;
 use std::sync::{Arc, Mutex};
 
+use rhizodat_clickhouse::{ClickHouseBranch, ClickHouseStore};
 use rhizodat_core::clock::HybridLogicalClock;
 use rhizodat_core::coordinator::{CommitError, Outcome};
 use rhizodat_core::journal::Journal;
+use rhizodat_core::rows::RowValue;
+use rhizodat_drevo::parts::DrevoParts;
+use rhizodat_drevo::{DrevoStore, DrevoWrites};
 use rhizodat_postgres::parts::PostgresParts;
 use rhizodat_postgres::{PostgresRows, PostgresStore};
-use rhizodat_units::{NativeStore, PostgresPending, UnitError, commit};
+use rhizodat_units::{
+    ClickHousePending, DrevoPending, NativeStore, PostgresPending, UnitError, commit,
+};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::clickhouse::RhizodatClickHouseStore;
+use crate::drevo::{RhizodatDrevoStore, cypher_params};
 use crate::postgres::{RhizodatJournal, RhizodatPostgresStore};
 use crate::{
-    Failure, IDS, RhizodatStatus, boundary, free_handle, handle, into_handle, owned_string,
-    runtime, text, values, writable,
+    Failure, IDS, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
+    owned_string, runtime, text, values, writable,
 };
 
 /// One store's buffered writes.
@@ -30,6 +38,17 @@ enum Pending {
     Postgres {
         store: Arc<PostgresStore>,
         rows: PostgresRows,
+    },
+    ClickHouse {
+        store: Arc<ClickHouseStore>,
+        /// Checks every insert as the commit's branch will (columns, reserved
+        /// names, row lengths), so a bad one is refused at insert.
+        check: Box<ClickHouseBranch>,
+        inserts: Vec<(String, Vec<String>, Vec<Vec<RowValue>>)>,
+    },
+    Drevo {
+        store: Arc<DrevoStore>,
+        writes: DrevoWrites,
     },
 }
 
@@ -41,8 +60,62 @@ impl Pending {
                 rows: rows.clone(),
                 parts: PostgresParts::default(),
             }),
+            Pending::ClickHouse { store, inserts, .. } => Arc::new(ClickHousePending {
+                store: store.clone(),
+                inserts: inserts.clone(),
+            }),
+            Pending::Drevo { store, writes } => Arc::new(DrevoPending {
+                store: store.clone(),
+                writes: writes.clone(),
+                parts: DrevoParts::default(),
+            }),
         }
     }
+
+    /// Whether this is the buffer of exactly `store` (two stores may not share a name).
+    fn holds(&self, store: *const ()) -> bool {
+        let held = match self {
+            Pending::Postgres { store, .. } => Arc::as_ptr(store).cast::<()>(),
+            Pending::ClickHouse { store, .. } => Arc::as_ptr(store).cast::<()>(),
+            Pending::Drevo { store, .. } => Arc::as_ptr(store).cast::<()>(),
+        };
+        std::ptr::eq(held, store)
+    }
+}
+
+/// The buffer of the store named `name`, made by `new` on first use; refused
+/// when another store holds that name.
+fn buffer_of<'a>(
+    buffer: &'a mut BTreeMap<String, Pending>,
+    name: &str,
+    store: *const (),
+    new: impl FnOnce() -> Pending,
+) -> Result<&'a mut Pending, Failure> {
+    let entry = buffer.entry(name.to_owned()).or_insert_with(new);
+    if entry.holds(store) {
+        Ok(entry)
+    } else {
+        Err(invalid(format!(
+            "two stores named {name:?} in one unit of work"
+        )))
+    }
+}
+
+/// `columns_json` and `rows_json` as names and rows of values.
+fn table_rows(
+    columns_json: &str,
+    rows_json: &str,
+) -> Result<(Vec<String>, Vec<Vec<RowValue>>), Failure> {
+    let columns: Vec<String> = serde_json::from_str(columns_json)
+        .map_err(|e| invalid(format!("columns_json must be an array of names: {e}")))?;
+    let rows = values(rows_json, "rows_json")?
+        .into_iter()
+        .map(|row| match row {
+            RowValue::List(values) => Ok(values),
+            _ => Err(invalid("rows_json must be an array of arrays")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((columns, rows))
 }
 
 /// A unit of work: writes buffered per store, committed together.
@@ -102,38 +175,130 @@ pub unsafe extern "C" fn rhizodat_unit_postgres_insert(
             let unit = handle(unit, "unit")?;
             let store = handle(store, "store")?.0.clone();
             let table = text(table, "table")?;
-            let columns: Vec<String> = serde_json::from_str(text(columns_json, "columns_json")?)
-                .map_err(|e| invalid(format!("columns_json must be an array of names: {e}")))?;
-            let rows = values(text(rows_json, "rows_json")?, "rows_json")?
-                .into_iter()
-                .map(|row| match row {
-                    rhizodat_core::rows::RowValue::List(values) => Ok(values),
-                    _ => Err(invalid("rows_json must be an array of arrays")),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let (columns, rows) = table_rows(
+                text(columns_json, "columns_json")?,
+                text(rows_json, "rows_json")?,
+            )?;
             let mut buffer = unit
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let name = store.name().to_owned();
-            let entry = buffer
-                .entry(name.clone())
-                .or_insert_with(|| Pending::Postgres {
+            let pending = buffer_of(
+                &mut buffer,
+                store.name(),
+                Arc::as_ptr(&store).cast(),
+                || Pending::Postgres {
                     store: store.clone(),
                     rows: PostgresRows::new(),
-                });
-            let Pending::Postgres {
-                store: known,
-                rows: buffered,
-            } = entry;
-            if !Arc::ptr_eq(known, &store) {
-                return Err(invalid(format!(
-                    "two stores named {name:?} in one unit of work"
-                )));
-            }
+                },
+            )?;
+            let Pending::Postgres { rows: buffered, .. } = pending else {
+                unreachable!("a buffer holds its own store's kind")
+            };
             let column_refs: Vec<&str> = columns.iter().map(String::as_str).collect();
             buffered
                 .insert(table, &column_refs, rows)
+                .map_err(|e| invalid(e.to_string()))
+        })
+    }
+}
+
+/// Buffer rows for `table` of a ClickHouse store, as
+/// [`rhizodat_unit_postgres_insert`]. ClickHouse is one-phase: the rows go
+/// into the journal payload and are applied after the decision.
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `table`, `columns_json` and
+/// `rows_json` NUL-terminated strings; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_clickhouse_insert(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatClickHouseStore,
+    table: *const c_char,
+    columns_json: *const c_char,
+    rows_json: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let unit = handle(unit, "unit")?;
+            let store = handle(store, "store")?.0.clone();
+            let table = text(table, "table")?;
+            let (columns, rows) = table_rows(
+                text(columns_json, "columns_json")?,
+                text(rows_json, "rows_json")?,
+            )?;
+            let mut buffer = unit
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pending = buffer_of(
+                &mut buffer,
+                store.name(),
+                Arc::as_ptr(&store).cast(),
+                || Pending::ClickHouse {
+                    store: store.clone(),
+                    check: Box::new(store.branch()),
+                    inserts: Vec::new(),
+                },
+            )?;
+            let Pending::ClickHouse { check, inserts, .. } = pending else {
+                unreachable!("a buffer holds its own store's kind")
+            };
+            let column_refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+            check
+                .insert(table, &column_refs, rows.clone())
+                .map_err(|e| invalid(e.to_string()))?;
+            inserts.push((table.to_owned(), columns, rows));
+            Ok(())
+        })
+    }
+}
+
+/// Buffer a Cypher statement for a drevo store, with `params_json` (a JSON
+/// object of tagged values, or null). It runs inside the store's branch at the
+/// commit (two-phase), with the parameters `dat_txn` and `dat_tx_time` added,
+/// so it may stamp what it writes with `$dat_txn`.
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `cypher` a NUL-terminated string,
+/// `params_json` too or null; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_drevo_run(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatDrevoStore,
+    cypher: *const c_char,
+    params_json: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let unit = handle(unit, "unit")?;
+            let store = handle(store, "store")?.0.clone();
+            let cypher = text(cypher, "cypher")?;
+            let params = cypher_params(optional_text(params_json, "params_json")?)?;
+            let mut buffer = unit
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pending = buffer_of(
+                &mut buffer,
+                store.name(),
+                Arc::as_ptr(&store).cast(),
+                || Pending::Drevo {
+                    store: store.clone(),
+                    writes: DrevoWrites::new(),
+                },
+            )?;
+            let Pending::Drevo { writes, .. } = pending else {
+                unreachable!("a buffer holds its own store's kind")
+            };
+            writes
+                .push(cypher, params)
                 .map_err(|e| invalid(e.to_string()))
         })
     }

@@ -12,21 +12,22 @@ import (
 	"time"
 )
 
-// pgDSN is RHIZODAT_TEST_PG_DSN, else the one in ../.env.test when its server
-// answers; otherwise the test is skipped (a DSN from the environment must work).
-func pgDSN(t *testing.T) string {
+// testDSN is the environment's var, else the one in ../.env.test when its
+// server answers; otherwise the test is skipped (a DSN from the environment
+// must work).
+func testDSN(t *testing.T, name string) string {
 	t.Helper()
-	if dsn := os.Getenv("RHIZODAT_TEST_PG_DSN"); dsn != "" {
+	if dsn := os.Getenv(name); dsn != "" {
 		return dsn
 	}
 	f, err := os.Open("../.env.test")
 	if err != nil {
-		t.Skip("no RHIZODAT_TEST_PG_DSN and no .env.test")
+		t.Skipf("no %s and no .env.test", name)
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		if dsn, ok := strings.CutPrefix(scanner.Text(), "RHIZODAT_TEST_PG_DSN="); ok {
+		if dsn, ok := strings.CutPrefix(scanner.Text(), name+"="); ok {
 			u, err := url.Parse(dsn)
 			if err == nil {
 				if conn, err := net.DialTimeout("tcp", u.Host, 500*time.Millisecond); err == nil {
@@ -34,12 +35,14 @@ func pgDSN(t *testing.T) string {
 					return dsn
 				}
 			}
-			t.Skip("PostgreSQL from .env.test is not running (docker compose up -d --wait)")
+			t.Skipf("%s from .env.test is not running (docker compose up -d --wait)", name)
 		}
 	}
-	t.Skip("no RHIZODAT_TEST_PG_DSN in .env.test")
+	t.Skipf("no %s in .env.test", name)
 	return ""
 }
+
+func pgDSN(t *testing.T) string { return testDSN(t, "RHIZODAT_TEST_PG_DSN") }
 
 // db is a test's own schemas, dropped after it: base_<store> per store (with
 // an events table) and base_journal.

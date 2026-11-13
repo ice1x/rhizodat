@@ -2,9 +2,9 @@
 
 The rhizodat core has a C ABI, `librhizodat_ffi` (`crates/rhizodat-ffi`), and a
 Go package over it, `github.com/ice1x/rhizodat/go`, linked statically through
-cgo. It is in progress: PostgreSQL stores, the PostgreSQL journal and
-meta-transactions work; ClickHouse, drevo and Iceberg come next (see the
-[plan](../plan.md)). It commits through the same Rust path as the native
+cgo. It is in progress: PostgreSQL, ClickHouse and drevo stores, the
+PostgreSQL and drevo journals and meta-transactions over them work; Iceberg
+comes next (see the [plan](../plan.md)). It commits through the same Rust path as the native
 Python facade (`crates/rhizodat-units`).
 
 ## Build
@@ -45,10 +45,20 @@ it; do not re-run), or `*rhizodat.Error` for a unit of work the core refuses
 (two stores without a journal, a reserved column). `Transactional` re-runs the
 whole function while the abort is retryable.
 
+The other stores join the same unit of work: `u.InsertClickHouse(ch, table,
+columns, rows)` (one-phase, applied after the decision from the journal) and
+`u.Run(graph, cypher, rhizodat.Params{...})` for drevo (two-phase; the
+statement gets `$dat_txn` and `$dat_tx_time`). A drevo journal
+(`OpenDrevoJournal`) must live in a graph that holds no store's data.
+
 `store.Execute(sql, params...)` runs one statement outside any
 meta-transaction, with `$1..$n` bound by the statement's types; it returns
 `*rhizodat.Rows`. Dates and times bind through text
 (`$1::text::timestamptz`), as on the native Python facade.
+`ClickHouseStore.Execute(sql, rhizodat.Params{...})` binds `{name:Type}`
+placeholders server-side; its rows travel as Arrow, so cast a `UUID` column
+(`toString(id)`) and use `Date32` for dates (a `Date` arrives as its day
+number). `DrevoStore.Execute(cypher, params)` returns columns in name order.
 
 ## Values
 

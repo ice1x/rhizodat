@@ -53,9 +53,14 @@ pub enum RhizodatStatus {
     InDoubt = 5,
 }
 
+mod arrow;
+mod clickhouse;
+mod drevo;
 mod postgres;
 mod unit;
 
+pub use clickhouse::*;
+pub use drevo::*;
 pub use postgres::*;
 pub use unit::*;
 
@@ -238,6 +243,22 @@ pub(crate) fn values(
         )),
         Err(e) => Err((RhizodatStatus::InvalidArgument, format!("{name}: {e}"))),
     }
+}
+
+/// A statement's result as `{"columns": [...], "rows": [[value, ...], ...]}`,
+/// values tagged.
+pub(crate) fn rows_json(
+    columns: &[String],
+    rows: Vec<Vec<rhizodat_core::rows::RowValue>>,
+) -> Result<String, Failure> {
+    let columns =
+        serde_json::to_string(columns).map_err(|e| (RhizodatStatus::Failed, e.to_string()))?;
+    let rows = rhizodat_core::rows::encode_value(&rhizodat_core::rows::RowValue::List(
+        rows.into_iter()
+            .map(rhizodat_core::rows::RowValue::List)
+            .collect(),
+    ));
+    Ok(format!(r#"{{"columns":{columns},"rows":{rows}}}"#))
 }
 
 /// A runtime for one call, or a failure.

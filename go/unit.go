@@ -38,19 +38,10 @@ func NewUnit() (*Unit, error) {
 func (u *Unit) Insert(store *PostgresStore, table string, columns []string, rows [][]any) error {
 	defer runtime.KeepAlive(u)
 	defer runtime.KeepAlive(store)
-	cols, err := json.Marshal(columns)
+	cTable, cCols, cRows, err := tableArgs(table, columns, rows)
 	if err != nil {
 		return err
 	}
-	list := make([]any, len(rows))
-	for i, r := range rows {
-		list[i] = r
-	}
-	values, err := encodeValues(list)
-	if err != nil {
-		return &Error{Status: StatusInvalidArgument, Message: err.Error()}
-	}
-	cTable, cCols, cRows := C.CString(table), C.CString(string(cols)), C.CString(values)
 	defer freeC(cTable, cCols, cRows)
 	return call(func(e **C.char) C.enum_RhizodatStatus {
 		return C.rhizodat_unit_postgres_insert(u.ptr, store.ptr, cTable, cCols, cRows, e)
