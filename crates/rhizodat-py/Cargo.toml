@@ -28,6 +28,7 @@ rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
 rhizodat-drevo = { path = "../rhizodat-drevo" }
 rhizodat-iceberg = { path = "../rhizodat-iceberg" }
 rhizodat-postgres = { path = "../rhizodat-postgres" }
+rhizodat-units = { path = "../rhizodat-units" }
 serde_json = "1"
 tokio-postgres = "0.7"
 # A current-thread runtime drives the async adapters (and their connection tasks)

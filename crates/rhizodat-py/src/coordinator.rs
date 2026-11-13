@@ -41,9 +41,9 @@ use uuid::Uuid;
 use crate::clickhouse::{ClickHouseStore, ClickHouseUnit};
 use crate::drevo::{DrevoJournal, DrevoStore, DrevoUnit};
 use crate::iceberg::{IcebergStore, IcebergUnit};
-use crate::native::{ConnectError, NativeStore};
 use crate::postgres::{PostgresJournal, PostgresStore, PostgresUnit};
 use crate::{AbortedError, Failure, InDoubtError, InvalidUnitOfWork, journal_record_dict, op_err};
+use rhizodat_units::{ConnectError, NativeStore};
 
 /// A Python branch callback raised; it is kept in the [`Failure`] cell.
 #[derive(Debug)]

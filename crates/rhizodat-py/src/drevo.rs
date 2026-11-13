@@ -22,9 +22,9 @@ use rhizodat_drevo::{
 use uuid::Uuid;
 
 use crate::migrations::{kinds, statements};
-use crate::native::{Drevo, DrevoPending, NativeStore};
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, journal_record_dict, op_err, runtime};
+use rhizodat_units::{Drevo, DrevoPending, NativeStore};
 
 /// One Python value as a drevo Cypher [`Value`]. drevo carries scalars and lists;
 /// a UUID travels as its string. Bytes and dicts (maps) are not Cypher values.

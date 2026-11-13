@@ -27,10 +27,10 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::migrations::{kinds, statements};
-use crate::native::{ClickHouse, NativeStore};
 use crate::result::{empty_result, py_result};
 use crate::rows::{fields_dict, row_value};
 use crate::{InvalidUnitOfWork, op_err, runtime};
+use rhizodat_units::{ClickHouse, NativeStore};
 
 /// `execute`'s `params` as the server-side parameters of a query: the scalar
 /// values ClickHouse can take as `{name:Type}` (a UUID as its text).

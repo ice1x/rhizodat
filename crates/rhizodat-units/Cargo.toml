@@ -1,0 +1,25 @@
+[package]
+name = "rhizodat-units"
+version = "0.0.0"
+description = "A unit of work of native rhizodat stores, committed by the core (shared by the bindings)"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+rhizodat-clickhouse = { path = "../rhizodat-clickhouse" }
+rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
+rhizodat-drevo = { path = "../rhizodat-drevo" }
+rhizodat-iceberg = { path = "../rhizodat-iceberg" }
+rhizodat-postgres = { path = "../rhizodat-postgres" }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+uuid = "1"
+
+[dev-dependencies]
+tokio-postgres = "0.7"
+
+[lints]
+workspace = true

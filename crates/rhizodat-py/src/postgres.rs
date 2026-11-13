@@ -23,8 +23,8 @@ use rhizodat_postgres::{
 use uuid::Uuid;
 
 use crate::migrations::{applied_from_py, applied_py, kinds, recorded_twice, statements};
-use crate::native::{NativeStore, Postgres, PostgresPending};
 use crate::result::rows_result;
+use rhizodat_units::{NativeStore, Postgres, PostgresPending};
 
 /// The driver's error with the server's message (`tokio_postgres::Error`
 /// displays as "db error" and keeps the message in its source).
