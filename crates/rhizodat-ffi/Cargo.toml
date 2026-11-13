@@ -1,0 +1,36 @@
+[package]
+name = "rhizodat-ffi"
+version = "0.2.0"
+description = "The C ABI of the rhizodat core (librhizodat_ffi), for Go and other C callers"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rhizodat_ffi"
+# A static library for cgo (no runtime search path), a shared one for other callers,
+# and an rlib so the crate's own tests call the functions.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+rhizodat-core = { path = "../rhizodat-core" }
+uuid = "1"
+
+[dev-dependencies]
+# The header in include/rhizodat.h is generated from this crate; a test regenerates
+# it and fails when the checked-in copy is stale.
+cbindgen = { version = "0.29", default-features = false }
+
+[lints.rust]
+# The C ABI takes and returns raw pointers: unsafe is this crate's job, kept to the
+# boundary functions, each with its contract in a `# Safety` section.
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+doc_markdown = "allow"

@@ -419,6 +419,15 @@ Steps:
    Glue catalog on both facades (pyiceberg's and `iceberg-catalog-glue`, one
    DSN).
    Next: the C ABI for Go.
+   ✔ The C ABI's first step, [`crates/rhizodat-ffi`](https://github.com/ice1x/rhizodat/tree/main/crates/rhizodat-ffi)
+   and the Go package in [`go/`](https://github.com/ice1x/rhizodat/tree/main/go): a static
+   library for cgo with its cbindgen header checked in, and the conventions every
+   later function follows — a status code, results through out-pointers, errors
+   as text, strings freed by the library, no panic across the boundary — shown on
+   UUIDv7 ids. The open questions settle without callbacks: Go does not
+   implement stores, it hands the core a unit of work of native stores, as the
+   native Python facade does. Next: stores, the journal and meta-transactions
+   from Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

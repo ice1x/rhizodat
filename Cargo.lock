@@ -991,6 +991,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbindgen"
+version = "0.29.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ecb53484c9c167ba674026b656d8a27d7657a58e6066aa902bfb1a4aa00ae20"
+dependencies = [
+ "heck",
+ "indexmap 2.14.2",
+ "log",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "cc"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3829,6 +3847,15 @@ dependencies = [
  "serde",
  "tokio",
  "tokio-postgres",
+ "uuid",
+]
+
+[[package]]
+name = "rhizodat-ffi"
+version = "0.2.0"
+dependencies = [
+ "cbindgen",
+ "rhizodat-core",
  "uuid",
 ]
 
