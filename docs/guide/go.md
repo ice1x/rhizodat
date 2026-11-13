@@ -18,6 +18,11 @@ cd go && go test ./...
 The package links `target/release/librhizodat_ffi.a`; for a library built
 elsewhere, set `CGO_LDFLAGS` to it.
 
+The reference for how a Go program uses it is the cloud-operations scenario,
+[`go/cloudops_test.go`](https://github.com/ice1x/rhizodat/blob/main/go/cloudops_test.go):
+an inventory in PostgreSQL, the dependencies in drevo, telemetry in ClickHouse
+and the raw API requests in Iceberg, changed together.
+
 ## A meta-transaction
 
 Go code does not run inside the commit: it fills a unit of work, and the core
