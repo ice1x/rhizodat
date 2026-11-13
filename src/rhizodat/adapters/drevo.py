@@ -189,7 +189,11 @@ class _Embedded:
 class _BoltTx:
     def __init__(self, session: Any) -> None:  # noqa: ANN401 - neo4j.Session
         self._session = session
-        self._tx = session.begin_transaction()
+        try:
+            self._tx = session.begin_transaction()
+        except BaseException:
+            session.close()  # a server that is down: no session left to the collector
+            raise
 
     def execute(self, query: str, params: Params) -> Result:
         records = self._tx.run(query, dict(params) if params else None)

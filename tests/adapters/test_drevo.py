@@ -210,3 +210,23 @@ def test_an_embedded_graph_file_reports_its_disk(store: DrevoStore, tmp_path: Pa
         assert abs(free - shutil.disk_usage(tmp_path).free) < 1 << 30
     else:
         assert free is None  # in memory, or a server whose disk is not ours to see
+
+
+def test_a_bolt_transaction_that_cannot_begin_closes_its_session() -> None:
+    """A server that is down fails ``begin_transaction``: the session opened for it
+    is closed, not left to the garbage collector (one per retry)."""
+    from rhizodat.adapters.drevo import _BoltTx
+
+    class Session:
+        closed = False
+
+        def begin_transaction(self) -> None:
+            raise ConnectionError("server unavailable")
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = Session()
+    with pytest.raises(ConnectionError):
+        _BoltTx(session)
+    assert session.closed
