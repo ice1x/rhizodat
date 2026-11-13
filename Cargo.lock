@@ -3856,6 +3856,11 @@ version = "0.2.0"
 dependencies = [
  "cbindgen",
  "rhizodat-core",
+ "rhizodat-postgres",
+ "rhizodat-units",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
  "uuid",
 ]
 

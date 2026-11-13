@@ -20,7 +20,25 @@ typedef enum RhizodatStatus {
   RHIZODAT_STATUS_FAILED = 2,
   // The library panicked: a bug in rhizodat. The error carries the panic's text.
   RHIZODAT_STATUS_PANIC = 3,
+  // A meta-transaction committed nothing; its outcome says whether a re-run
+  // may succeed (`retryable`).
+  RHIZODAT_STATUS_ABORTED = 4,
+  // A meta-transaction's outcome is unknown: recovery resolves it from the
+  // journal. Do not re-run it, it may have committed.
+  RHIZODAT_STATUS_IN_DOUBT = 5,
 } RhizodatStatus;
+
+// Commits units of work; keeps a hybrid logical clock across them.
+typedef struct RhizodatCoordinator RhizodatCoordinator;
+
+// A journal: the record of meta-transactions over several stores.
+typedef struct RhizodatJournal RhizodatJournal;
+
+// One PostgreSQL database as a rhizodat store.
+typedef struct RhizodatPostgresStore RhizodatPostgresStore;
+
+// A unit of work: writes buffered per store, committed together.
+typedef struct RhizodatUnit RhizodatUnit;
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +62,137 @@ enum RhizodatStatus rhizodat_new_id(char **out, char **error);
 //
 // `value` must be null or a string from this library not freed before.
 void rhizodat_string_free(char *value);
+
+// A store named `name` over `dsn`, confined to `schema` when it is not null
+// (no two stores may share one schema's marker table). Connects on first use.
+//
+// # Safety
+//
+// `dsn` and `name` must be NUL-terminated strings, `schema` too or null; `out`
+// writable for one pointer; `error` null or writable. Free the store with
+// [`rhizodat_postgres_store_free`].
+enum RhizodatStatus rhizodat_postgres_store_open(const char *dsn,
+                                                 const char *name,
+                                                 const char *schema,
+                                                 struct RhizodatPostgresStore **out,
+                                                 char **error);
+
+// Create the store's service table `dat_applied` if it does not exist.
+//
+// # Safety
+//
+// `store` must be a live store handle; `error` null or writable.
+enum RhizodatStatus rhizodat_postgres_store_install(const struct RhizodatPostgresStore *store,
+                                                    char **error);
+
+// Run one statement in autocommit mode, outside any meta-transaction, with
+// `params_json` (a JSON array of tagged values, or null for none) bound to its
+// `$1..$n` by the statement's parameter types. The result is
+// `{"columns": [...], "rows": [[value, ...], ...]}` with tagged values.
+//
+// # Safety
+//
+// `store` must be a live store handle; `sql` a NUL-terminated string,
+// `params_json` too or null; `out` writable for one pointer; `error` null or
+// writable. Free the result with [`crate::rhizodat_string_free`].
+enum RhizodatStatus rhizodat_postgres_store_execute(const struct RhizodatPostgresStore *store,
+                                                    const char *sql,
+                                                    const char *params_json,
+                                                    char **out,
+                                                    char **error);
+
+// Frees a store. Null does nothing.
+//
+// # Safety
+//
+// `store` must be null or a store handle not freed before.
+void rhizodat_postgres_store_free(struct RhizodatPostgresStore *store);
+
+// The durable journal in PostgreSQL: the table `dat_journal` in `schema` (or
+// the DSN's `schema=` parameter; both given must agree), created if missing.
+//
+// # Safety
+//
+// `dsn` must be a NUL-terminated string, `schema` too or null; `out` writable
+// for one pointer; `error` null or writable. Free the journal with
+// [`rhizodat_journal_free`].
+enum RhizodatStatus rhizodat_postgres_journal_open(const char *dsn,
+                                                   const char *schema,
+                                                   struct RhizodatJournal **out,
+                                                   char **error);
+
+// Frees a journal. Null does nothing.
+//
+// # Safety
+//
+// `journal` must be null or a journal handle not freed before.
+void rhizodat_journal_free(struct RhizodatJournal *journal);
+
+// An empty unit of work.
+//
+// # Safety
+//
+// `out` must be writable for one pointer; `error` null or writable. Free the
+// unit with [`rhizodat_unit_free`].
+enum RhizodatStatus rhizodat_unit_new(struct RhizodatUnit **out, char **error);
+
+// Buffer rows for `table` of a PostgreSQL store: `columns_json` is a JSON
+// array of column names, `rows_json` a JSON array of rows, each an array of
+// tagged values in column order. They are written at the commit, with the
+// meta-transaction's `dat_txn` and `dat_tx_time` (leave those columns out).
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `table`, `columns_json` and
+// `rows_json` NUL-terminated strings; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_postgres_insert(const struct RhizodatUnit *unit,
+                                                  const struct RhizodatPostgresStore *store,
+                                                  const char *table,
+                                                  const char *columns_json,
+                                                  const char *rows_json,
+                                                  char **error);
+
+// Frees a unit of work. Null does nothing.
+//
+// # Safety
+//
+// `unit` must be null or a unit handle not freed before.
+void rhizodat_unit_free(struct RhizodatUnit *unit);
+
+// A coordinator committing through `journal` (null for none: then a unit of
+// work may write to one store only). The journal stays the caller's to free.
+//
+// # Safety
+//
+// `journal` must be null or a live journal handle; `out` writable for one
+// pointer; `error` null or writable. Free the coordinator with
+// [`rhizodat_coordinator_free`].
+enum RhizodatStatus rhizodat_coordinator_new(const struct RhizodatJournal *journal,
+                                             struct RhizodatCoordinator **out,
+                                             char **error);
+
+// Commit `unit` as one new meta-transaction. `out` receives the outcome as
+// JSON on `OK` (`{"status": "committed" | "pending", "dat_txn", "dat_tx_time"}`)
+// and also on `ABORTED` (`{"status": "aborted", "dat_txn", "retryable",
+// "error"}`) and `IN_DOUBT` (`{"status": "in_doubt", "dat_txn", "error"}`). A
+// unit of work the core refuses is `INVALID_ARGUMENT`. The unit keeps its
+// writes, so a retryable abort may be committed again.
+//
+// # Safety
+//
+// `coordinator` and `unit` must be live handles; `out` writable for one
+// pointer; `error` null or writable.
+enum RhizodatStatus rhizodat_coordinator_commit(const struct RhizodatCoordinator *coordinator,
+                                                const struct RhizodatUnit *unit,
+                                                char **out,
+                                                char **error);
+
+// Frees a coordinator. Null does nothing.
+//
+// # Safety
+//
+// `coordinator` must be null or a coordinator handle not freed before.
+void rhizodat_coordinator_free(struct RhizodatCoordinator *coordinator);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -15,13 +15,19 @@ name = "rhizodat_ffi"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-rhizodat-core = { path = "../rhizodat-core" }
+rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
+rhizodat-postgres = { path = "../rhizodat-postgres" }
+rhizodat-units = { path = "../rhizodat-units" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+tokio-postgres = "0.7"
 uuid = "1"
 
 [dev-dependencies]
 # The header in include/rhizodat.h is generated from this crate; a test regenerates
 # it and fails when the checked-in copy is stale.
 cbindgen = { version = "0.29", default-features = false }
+serde_json = "1"
 
 [lints.rust]
 # The C ABI takes and returns raw pointers: unsafe is this crate's job, kept to the
