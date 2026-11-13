@@ -438,6 +438,13 @@ Steps:
    answer read into tagged rows in the C ABI), rows and Cypher statements in a
    unit of work, the drevo journal; one meta-transaction over PostgreSQL,
    ClickHouse and drevo from Go. Next: Iceberg from Go.
+   ✔ Iceberg from Go: schema operations in Rust (`rhizodat_iceberg::schema`,
+   the port of `create_namespace` and `create_table`; the operations that
+   change a table stay with the Python adapter), scans with columns, a limit, a
+   snapshot and a pyiceberg filter, and rows appended in a unit of work (an
+   Arrow batch of the values' types, cast to the table's at stage). Every
+   shipped store now commits from Go. Next: the cloud-operations scenario in
+   Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

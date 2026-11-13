@@ -37,6 +37,9 @@ typedef struct RhizodatCoordinator RhizodatCoordinator;
 // One drevo graph as a rhizodat store.
 typedef struct RhizodatDrevoStore RhizodatDrevoStore;
 
+// One Iceberg catalog as a rhizodat store.
+typedef struct RhizodatIcebergStore RhizodatIcebergStore;
+
 // A journal: the record of meta-transactions over several stores.
 typedef struct RhizodatJournal RhizodatJournal;
 
@@ -165,6 +168,52 @@ enum RhizodatStatus rhizodat_drevo_journal_open(const char *dsn,
                                                 struct RhizodatJournal **out,
                                                 char **error);
 
+// A store named `name` over an Iceberg DSN (`iceberg+rest://…` or
+// `iceberg+glue://…`). It connects on each call.
+//
+// # Safety
+//
+// `dsn` and `name` must be NUL-terminated strings; `out` writable for one
+// pointer; `error` null or writable. Free with [`rhizodat_iceberg_store_free`].
+enum RhizodatStatus rhizodat_iceberg_store_open(const char *dsn,
+                                                const char *name,
+                                                struct RhizodatIcebergStore **out,
+                                                char **error);
+
+// Run the operations of an `iceberg` migration step (a JSON list): the
+// Rust port has `create_namespace` and `create_table`, each a no-op when its
+// result is there.
+//
+// # Safety
+//
+// `store` must be a live store handle; `operations_json` a NUL-terminated
+// string; `error` null or writable.
+enum RhizodatStatus rhizodat_iceberg_store_run_operations(const struct RhizodatIcebergStore *store,
+                                                          const char *operations_json,
+                                                          char **error);
+
+// Scan `table` (`namespace.table`) outside any meta-transaction with
+// `options_json` (null, or `{"columns", "limit", "snapshot_id", "filter"}`).
+// The result is `{"columns", "rows"}` with tagged values.
+//
+// # Safety
+//
+// `store` must be a live store handle; `table` a NUL-terminated string,
+// `options_json` too or null; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_iceberg_store_scan(const struct RhizodatIcebergStore *store,
+                                                const char *table,
+                                                const char *options_json,
+                                                char **out,
+                                                char **error);
+
+// Frees a store. Null does nothing.
+//
+// # Safety
+//
+// `store` must be null or a store handle not freed before.
+void rhizodat_iceberg_store_free(struct RhizodatIcebergStore *store);
+
 // A store named `name` over `dsn`, confined to `schema` when it is not null
 // (no two stores may share one schema's marker table). Connects on first use.
 //
@@ -283,6 +332,24 @@ enum RhizodatStatus rhizodat_unit_drevo_run(const struct RhizodatUnit *unit,
                                             const char *cypher,
                                             const char *params_json,
                                             char **error);
+
+// Buffer rows for `table` (`namespace.table`) of an Iceberg store, as
+// [`rhizodat_unit_postgres_insert`]. The rows become one Arrow batch whose
+// columns have their values' types; at stage they are matched to the table's
+// columns by name and cast to their types (text to dates, timestamps and
+// decimals; table columns the rows lack are null). Iceberg is one-phase:
+// data files are written at stage and appended after the decision.
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `table`, `columns_json` and
+// `rows_json` NUL-terminated strings; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_iceberg_append(const struct RhizodatUnit *unit,
+                                                 const struct RhizodatIcebergStore *store,
+                                                 const char *table,
+                                                 const char *columns_json,
+                                                 const char *rows_json,
+                                                 char **error);
 
 // Frees a unit of work. Null does nothing.
 //

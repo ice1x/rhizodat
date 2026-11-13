@@ -82,11 +82,11 @@ jobs:
       - run: cargo build --locked --release -p rhizodat-ffi
       # The stores for the store and commit tests; exporting the DSNs makes a store that
       # is down fail the run. macOS runners have no Docker: those tests skip there.
-      - name: Start PostgreSQL, ClickHouse and drevo
+      - name: Start PostgreSQL, ClickHouse, drevo and the Iceberg REST catalog
         if: runner.os == 'Linux'
         run: |
-          docker compose --profile clickhouse up -d --wait postgres clickhouse drevo
-          grep -E '^RHIZODAT_TEST_(PG_DSN|CLICKHOUSE_DSN|DREVO_BOLT)=' .env.test >> "$GITHUB_ENV"
+          docker compose --profile clickhouse --profile iceberg up -d --wait postgres clickhouse drevo iceberg-rest
+          grep -E '^RHIZODAT_TEST_(PG_DSN|CLICKHOUSE_DSN|DREVO_BOLT|ICEBERG_REST_DSN)=' .env.test >> "$GITHUB_ENV"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go/go.mod

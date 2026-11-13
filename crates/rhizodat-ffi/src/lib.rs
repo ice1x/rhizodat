@@ -56,11 +56,13 @@ pub enum RhizodatStatus {
 mod arrow;
 mod clickhouse;
 mod drevo;
+mod iceberg;
 mod postgres;
 mod unit;
 
 pub use clickhouse::*;
 pub use drevo::*;
+pub use iceberg::*;
 pub use postgres::*;
 pub use unit::*;
 

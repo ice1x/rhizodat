@@ -85,6 +85,7 @@ use uuid::Uuid;
 mod erase;
 pub mod filter;
 pub mod parts;
+pub mod schema;
 
 /// The Iceberg store kind: a REST catalog (`iceberg+rest://host/warehouse`)
 /// or AWS Glue (`iceberg+glue://region?warehouse=s3://...`); `iceberg+sql://`

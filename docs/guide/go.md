@@ -2,9 +2,10 @@
 
 The rhizodat core has a C ABI, `librhizodat_ffi` (`crates/rhizodat-ffi`), and a
 Go package over it, `github.com/ice1x/rhizodat/go`, linked statically through
-cgo. It is in progress: PostgreSQL, ClickHouse and drevo stores, the
-PostgreSQL and drevo journals and meta-transactions over them work; Iceberg
-comes next (see the [plan](../plan.md)). It commits through the same Rust path as the native
+cgo. PostgreSQL, ClickHouse, drevo and Iceberg (REST and Glue catalogs)
+stores, the PostgreSQL and drevo journals and meta-transactions over any of
+them work. Entity repositories (bitemporal parts) are not in Go yet (see the
+[plan](../plan.md)). It commits through the same Rust path as the native
 Python facade (`crates/rhizodat-units`).
 
 ## Build
@@ -50,6 +51,14 @@ columns, rows)` (one-phase, applied after the decision from the journal) and
 `u.Run(graph, cypher, rhizodat.Params{...})` for drevo (two-phase; the
 statement gets `$dat_txn` and `$dat_tx_time`). A drevo journal
 (`OpenDrevoJournal`) must live in a graph that holds no store's data.
+
+Iceberg: `lake.CreateTable("ops.api_request", []rhizodat.Column{...})`
+(or `RunOperations` with the migration step's operations; the native core has
+`create_namespace` and `create_table`), `u.Append(lake, table, columns, rows)`
+in a unit of work (columns matched by name and cast to the table's types at
+the commit; a table needs `dat_txn` and `dat_tx_time` columns), and
+`lake.Scan(table, rhizodat.ScanOptions{Columns, Limit, SnapshotID, Filter})`
+with a pyiceberg row filter (`"status >= 500"`).
 
 `store.Execute(sql, params...)` runs one statement outside any
 meta-transaction, with `$1..$n` bound by the statement's types; it returns
