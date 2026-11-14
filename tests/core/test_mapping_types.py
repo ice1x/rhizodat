@@ -88,9 +88,9 @@ def test_a_reference_by_declared_name_or_to_no_class_is_kept() -> None:
 def test_a_name_that_is_not_an_entity_is_kept() -> None:
     @entity(stores={"pg": ["a"]}, name="types.Odd")
     class Odd:
-        a: "Ref[uuid]"
+        a: "Ref[MappingError]"
 
-    assert mapping_of(Odd).refs == {"a": "uuid"}
+    assert mapping_of(Odd).refs == {"a": "MappingError"}
 
 
 def test_the_store_of_a_field_and_of_an_unknown_one() -> None:
