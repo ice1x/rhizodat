@@ -26,8 +26,14 @@ cannot change data:
   is fixed before the statement runs, always rolled back. Without both, the
   tests showed `SET TRANSACTION READ WRITE` or `COMMIT; INSERT …` getting
   through.
-- drevo: a transaction that is always rolled back, since drevo has no
-  read-only mode.
+- drevo: a transaction that is always rolled back, in a Bolt session that
+  asks for READ access. drevo does not honour the access mode yet
+  ([ice1x/drevo#825](https://github.com/ice1x/drevo/issues/825)), so the
+  rollback is what undoes writes — and **it cannot undo a procedure's effects
+  outside the graph**: on a drevo with an LLM configured, a "read" can call
+  `drevo.extract.*` and spend on the model. Give an agent such a store only
+  when that is acceptable. drevo 0.0.43 has no such procedures, no
+  `LOAD CSV` and no `apoc.load.*`: a query cannot read the server's files.
 - ClickHouse: `readonly = 2`, which also refuses lifting it per query.
 - Iceberg: a scan.
 

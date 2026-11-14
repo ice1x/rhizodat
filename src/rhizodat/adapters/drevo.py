@@ -103,7 +103,7 @@ class _UnknownGid(Exception):
 
 class _Backend(Protocol):
     def execute(self, query: str, params: Params) -> Result: ...
-    def begin(self, timeout_s: float | None = None) -> "_Tx": ...
+    def begin(self, timeout_s: float | None = None, *, read: bool = False) -> "_Tx": ...
     def commit_prepared(self, gid: str) -> None: ...  # raises _UnknownGid
     def rollback_prepared(self, gid: str) -> None: ...  # raises _UnknownGid
     def list_prepared(self) -> list[str]: ...
@@ -158,9 +158,9 @@ class _Embedded:
         r = self._db.execute(query, dict(params) if params else None)
         return Result(iter(r.rows), columns=tuple(r.columns), raw=r)
 
-    def begin(self, timeout_s: float | None = None) -> _Tx:
-        # Embedded drevo has no transaction timeout: a running query cannot be stopped.
-        del timeout_s
+    def begin(self, timeout_s: float | None = None, *, read: bool = False) -> _Tx:
+        # Embedded drevo has no transaction timeout and no access mode.
+        del timeout_s, read
         return _EmbeddedTx(self._db.begin())
 
     def commit_prepared(self, gid: str) -> None:
@@ -234,8 +234,11 @@ class _Bolt:
             rows = records.data()
             return Result(iter(rows), columns=tuple(records.keys()))
 
-    def begin(self, timeout_s: float | None = None) -> _Tx:
-        return _BoltTx(self._driver.session(), timeout_s)
+    def begin(self, timeout_s: float | None = None, *, read: bool = False) -> _Tx:
+        # A READ session: a server that honours the access mode (ice1x/drevo#825)
+        # refuses writes and procedures with effects outside the transaction.
+        kwargs = {"default_access_mode": self._neo4j.READ_ACCESS} if read else {}
+        return _BoltTx(self._driver.session(**kwargs), timeout_s)
 
     def _resolve(self, procedure: str, gid: str) -> None:
         try:
@@ -599,7 +602,7 @@ class DrevoStore:
         rows than that are taken from the result. ``timeout_s`` becomes the Bolt
         transaction timeout, which drevo enforces from 0.0.86; an older server and
         embedded drevo cannot stop a running query."""
-        tx = self._backend.begin(timeout_s)
+        tx = self._backend.begin(timeout_s, read=True)
         try:
             result = tx.execute(query, params)
             rows = list(result if limit is None else itertools.islice(result, limit))

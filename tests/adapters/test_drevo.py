@@ -252,3 +252,32 @@ def test_a_bolt_transaction_gets_the_timeout() -> None:
     _BoltTx(session, timeout_s=2.5)
     _BoltTx(session)
     assert session.kwargs == [{"timeout": 2.5}, {}]
+
+
+def test_a_read_only_bolt_session_asks_for_read_access() -> None:
+    """``read_only`` opens a READ session: a server that honours the access mode
+    (ice1x/drevo#825) refuses writes and procedures with outside effects."""
+    from rhizodat.adapters.drevo import _Bolt
+
+    class Driver:
+        def __init__(self) -> None:
+            self.sessions: list[dict[str, object]] = []
+
+        def session(self, **kwargs: object) -> object:
+            self.sessions.append(kwargs)
+
+            class Session:
+                def begin_transaction(self, **kwargs: object) -> object:
+                    return object()
+
+                def close(self) -> None:
+                    pass
+
+            return Session()
+
+    bolt = _Bolt.__new__(_Bolt)
+    bolt._neo4j = pytest.importorskip("neo4j")
+    bolt._driver = Driver()
+    bolt.begin(read=True)
+    bolt.begin()
+    assert bolt._driver.sessions == [{"default_access_mode": "READ"}, {}]

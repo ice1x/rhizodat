@@ -14,7 +14,9 @@
   ClickHouse (`max_execution_time`) and drevo from 0.0.86 (the Bolt
   transaction timeout) stop the query. An older drevo and embedded drevo
   cannot stop a running query (a heavy Cypher read can exhaust the server),
-  documented.
+  documented. A drevo `read_only` asks for a READ Bolt session; until drevo
+  honours it (ice1x/drevo#825) the rollback cannot undo a procedure's effects
+  outside the graph (LLM calls), documented.
 - Security: rhizodat-MCP's `query` no longer reads a whole result into memory.
   `ReadOnlyQueries.read_only` takes `limit`, and every store stops reading
   there (PostgreSQL streams and cancels the query, ClickHouse
