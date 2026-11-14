@@ -171,12 +171,16 @@ def _add_partition(
     transform: str = "identity",
     name: str | None = None,
 ) -> None:
-    from pyiceberg.transforms import parse_transform
+    from pyiceberg.exceptions import ValidationError
+    from pyiceberg.transforms import UnknownTransform, parse_transform
 
     try:
         wanted = parse_transform(transform)
-    except ValueError:
-        raise ValueError(f"add_partition {table}: unknown transform {transform!r}") from None
+    except (ValueError, ValidationError):  # "bucket[x]": pyiceberg's own error
+        wanted = None
+    # pyiceberg parses an unknown name into an UnknownTransform rather than refusing it.
+    if wanted is None or isinstance(wanted, UnknownTransform):
+        raise ValueError(f"add_partition {table}: unknown transform {transform!r}")
     t = catalog.load_table(table)
     source = _field(t.schema(), column)
     if source is None:
