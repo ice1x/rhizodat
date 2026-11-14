@@ -467,6 +467,7 @@ class PostgresStore:
         params: Mapping[str, Any] | Sequence[Any] | None = None,
         *,
         limit: int | None = None,
+        timeout_s: float | None = None,
     ) -> Result:
         """A native read the server guarantees cannot write: one statement in a
         ``READ ONLY`` transaction that is always rolled back.
@@ -479,6 +480,8 @@ class PostgresStore:
 
         With ``limit`` the rows are streamed (the extended protocol, which
         refuses several statements too) and the query is cancelled at the limit.
+        With ``timeout_s`` the server cancels the statement then
+        (``statement_timeout``, local to the transaction).
         """
         if params is None:
             sql, params = sql.replace("%", "%%"), ()
@@ -486,6 +489,8 @@ class PostgresStore:
             conn.read_only = True
             try:
                 conn.execute("SELECT 1")
+                if timeout_s is not None:
+                    conn.execute(f"SET LOCAL statement_timeout = {max(1, round(timeout_s * 1000))}")
                 if limit is None:
                     return _result(conn.execute(sql, params, prepare=True))
                 cursor = conn.cursor()

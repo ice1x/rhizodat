@@ -230,3 +230,54 @@ def test_a_bolt_transaction_that_cannot_begin_closes_its_session() -> None:
     with pytest.raises(ConnectionError):
         _BoltTx(session)
     assert session.closed
+
+
+def test_a_bolt_transaction_gets_the_timeout() -> None:
+    """``read_only(..., timeout_s=)`` reaches the server as the Bolt transaction
+    timeout, which drevo enforces from 0.0.86 (older servers ignore it)."""
+    from rhizodat.adapters.drevo import _BoltTx
+
+    class Session:
+        def __init__(self) -> None:
+            self.kwargs: list[dict[str, object]] = []
+
+        def begin_transaction(self, **kwargs: object) -> object:
+            self.kwargs.append(kwargs)
+            return object()
+
+        def close(self) -> None:
+            pass
+
+    session = Session()
+    _BoltTx(session, timeout_s=2.5)
+    _BoltTx(session)
+    assert session.kwargs == [{"timeout": 2.5}, {}]
+
+
+def test_a_read_only_bolt_session_asks_for_read_access() -> None:
+    """``read_only`` opens a READ session: a server that honours the access mode
+    (ice1x/drevo#825) refuses writes and procedures with outside effects."""
+    from rhizodat.adapters.drevo import _Bolt
+
+    class Driver:
+        def __init__(self) -> None:
+            self.sessions: list[dict[str, object]] = []
+
+        def session(self, **kwargs: object) -> object:
+            self.sessions.append(kwargs)
+
+            class Session:
+                def begin_transaction(self, **kwargs: object) -> object:
+                    return object()
+
+                def close(self) -> None:
+                    pass
+
+            return Session()
+
+    bolt = _Bolt.__new__(_Bolt)
+    bolt._neo4j = pytest.importorskip("neo4j")
+    bolt._driver = Driver()
+    bolt.begin(read=True)
+    bolt.begin()
+    assert bolt._driver.sessions == [{"default_access_mode": "READ"}, {}]

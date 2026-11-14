@@ -303,13 +303,21 @@ class ClickHouseStore:
             self._client.command(sql)
 
     def read_only(
-        self, query: str, params: Mapping[str, Any] | None = None, *, limit: int | None = None
+        self,
+        query: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        limit: int | None = None,
+        timeout_s: float | None = None,
     ) -> Result:
         """A native read the server guarantees cannot write (``readonly = 2``: no writes,
         no DDL; settings may still change for the query). With ``limit`` the server
         stops reading at that many rows (``max_result_rows``, ``result_overflow_mode =
-        break``, which ends on a block, so the rows are cut to the limit here)."""
+        break``, which ends on a block, so the rows are cut to the limit here). With
+        ``timeout_s`` the server stops the query then (``max_execution_time``)."""
         settings: dict[str, Any] = {"readonly": 2}
+        if timeout_s is not None:
+            settings |= {"max_execution_time": timeout_s, "timeout_overflow_mode": "throw"}
         if limit is not None:
             settings |= {"max_result_rows": limit, "result_overflow_mode": "break"}
         r = self._client.query(

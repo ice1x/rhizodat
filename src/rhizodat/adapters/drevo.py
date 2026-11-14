@@ -103,7 +103,7 @@ class _UnknownGid(Exception):
 
 class _Backend(Protocol):
     def execute(self, query: str, params: Params) -> Result: ...
-    def begin(self) -> "_Tx": ...
+    def begin(self, timeout_s: float | None = None, *, read: bool = False) -> "_Tx": ...
     def commit_prepared(self, gid: str) -> None: ...  # raises _UnknownGid
     def rollback_prepared(self, gid: str) -> None: ...  # raises _UnknownGid
     def list_prepared(self) -> list[str]: ...
@@ -158,7 +158,9 @@ class _Embedded:
         r = self._db.execute(query, dict(params) if params else None)
         return Result(iter(r.rows), columns=tuple(r.columns), raw=r)
 
-    def begin(self) -> _Tx:
+    def begin(self, timeout_s: float | None = None, *, read: bool = False) -> _Tx:
+        # Embedded drevo has no transaction timeout and no access mode.
+        del timeout_s, read
         return _EmbeddedTx(self._db.begin())
 
     def commit_prepared(self, gid: str) -> None:
@@ -187,10 +189,12 @@ class _Embedded:
 
 
 class _BoltTx:
-    def __init__(self, session: Any) -> None:  # noqa: ANN401 - neo4j.Session
+    def __init__(self, session: Any, timeout_s: float | None = None) -> None:  # noqa: ANN401 - neo4j.Session
         self._session = session
         try:
-            self._tx = session.begin_transaction()
+            # The Bolt transaction timeout: drevo enforces it from 0.0.86.
+            kwargs = {} if timeout_s is None else {"timeout": timeout_s}
+            self._tx = session.begin_transaction(**kwargs)
         except BaseException:
             session.close()  # a server that is down: no session left to the collector
             raise
@@ -230,8 +234,11 @@ class _Bolt:
             rows = records.data()
             return Result(iter(rows), columns=tuple(records.keys()))
 
-    def begin(self) -> _Tx:
-        return _BoltTx(self._driver.session())
+    def begin(self, timeout_s: float | None = None, *, read: bool = False) -> _Tx:
+        # A READ session: a server that honours the access mode (ice1x/drevo#825)
+        # refuses writes and procedures with effects outside the transaction.
+        kwargs = {"default_access_mode": self._neo4j.READ_ACCESS} if read else {}
+        return _BoltTx(self._driver.session(**kwargs), timeout_s)
 
     def _resolve(self, procedure: str, gid: str) -> None:
         try:
@@ -582,11 +589,20 @@ class DrevoStore:
             raise
         return len(graph.nodes), len(graph.edges)
 
-    def read_only(self, query: str, params: Params = None, *, limit: int | None = None) -> Result:
+    def read_only(
+        self,
+        query: str,
+        params: Params = None,
+        *,
+        limit: int | None = None,
+        timeout_s: float | None = None,
+    ) -> Result:
         """A native read that never keeps a write: it runs in a transaction that is
         always rolled back (drevo has no read-only mode). With ``limit``, no more
-        rows than that are taken from the result."""
-        tx = self._backend.begin()
+        rows than that are taken from the result. ``timeout_s`` becomes the Bolt
+        transaction timeout, which drevo enforces from 0.0.86; an older server and
+        embedded drevo cannot stop a running query."""
+        tx = self._backend.begin(timeout_s, read=True)
         try:
             result = tx.execute(query, params)
             rows = list(result if limit is None else itertools.islice(result, limit))

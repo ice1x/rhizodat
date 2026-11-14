@@ -6,6 +6,8 @@ stay out of command lines:
 - ``RHIZODAT_STORE_<NAME>=<dsn>``: one per store; the name is lower-cased;
 - ``RHIZODAT_JOURNAL=<dsn>``: the journal (optional until writes need it);
 - ``RHIZODAT_MCP_MAX_ROWS=<n>``: the most rows one query returns (default 1000);
+- ``RHIZODAT_MCP_QUERY_TIMEOUT_S=<seconds>``: how long one query may run before
+  the store stops it (default 30; PostgreSQL and ClickHouse enforce it);
 - ``RHIZODAT_MCP_ENTITIES=<module:Class>,...``: the ``@entity`` classes offered
   for CRUD (the application's package must be importable);
 - ``RHIZODAT_MCP_WRITES=1``: enable creating, updating, deleting and restoring
@@ -22,6 +24,7 @@ __all__ = ["Config", "ConfigError", "config_from_env"]
 
 _STORE_PREFIX = "RHIZODAT_STORE_"
 DEFAULT_MAX_ROWS = 1000
+DEFAULT_QUERY_TIMEOUT_S = 30.0
 _YES = {"1", "true", "yes", "on"}
 _NO = {"", "0", "false", "no", "off"}
 _REMOVED = ("RHIZODAT_MCP_RECOVERY", "RHIZODAT_MCP_RECOVERY_STALE_S")
@@ -38,6 +41,7 @@ class Config:
     max_rows: int = DEFAULT_MAX_ROWS
     entities: tuple[str, ...] = ()
     writes: bool = False
+    query_timeout_s: float = DEFAULT_QUERY_TIMEOUT_S
 
 
 def config_from_env(environ: Mapping[str, str]) -> Config:
@@ -55,6 +59,17 @@ def config_from_env(environ: Mapping[str, str]) -> Config:
         raise ConfigError(f"RHIZODAT_MCP_MAX_ROWS must be a number, not {raw!r}") from None
     if max_rows < 1:
         raise ConfigError(f"RHIZODAT_MCP_MAX_ROWS must be at least 1, not {max_rows}")
+    raw = environ.get("RHIZODAT_MCP_QUERY_TIMEOUT_S", str(DEFAULT_QUERY_TIMEOUT_S))
+    try:
+        query_timeout_s = float(raw)
+    except ValueError:
+        raise ConfigError(
+            f"RHIZODAT_MCP_QUERY_TIMEOUT_S must be a number of seconds, not {raw!r}"
+        ) from None
+    if not 0 < query_timeout_s < float("inf"):
+        raise ConfigError(
+            f"RHIZODAT_MCP_QUERY_TIMEOUT_S must be a positive number of seconds, not {raw!r}"
+        )
     for removed in _REMOVED:
         if removed in environ:
             raise ConfigError(
@@ -73,4 +88,5 @@ def config_from_env(environ: Mapping[str, str]) -> Config:
         max_rows,
         entities=entities,
         writes=flag in _YES,
+        query_timeout_s=query_timeout_s,
     )

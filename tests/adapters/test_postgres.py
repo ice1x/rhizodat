@@ -108,6 +108,16 @@ def test_read_only_with_a_limit_still_refuses_writes(store: PostgresStore) -> No
     assert count(store, "SELECT count(*) AS n FROM notes") == 0
 
 
+def test_read_only_stops_a_query_at_its_timeout(store: PostgresStore) -> None:
+    started = time.monotonic()
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        store.read_only("SELECT pg_sleep(30)", timeout_s=0.3)
+    assert time.monotonic() - started < 10
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        store.read_only("SELECT pg_sleep(30)", limit=1, timeout_s=0.3)
+    assert store.read_only("SELECT 1 AS one", timeout_s=5).one() == {"one": 1}
+
+
 def test_read_only_keeps_a_literal_percent(store: PostgresStore) -> None:
     assert store.read_only("SELECT '100%' AS p").one() == {"p": "100%"}
 

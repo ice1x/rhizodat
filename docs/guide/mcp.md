@@ -18,7 +18,7 @@ for clients:
 | Tool | What it does |
 |---|---|
 | `stores` | the configured stores: name, kind, two-phase or not, whether `query` can read it, DSN with secrets masked |
-| `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `RHIZODAT_MCP_MAX_ROWS`); the store stops reading past them, so an endless query returns |
+| `query` | a native read (SQL, Cypher, an Iceberg scan) through the store's `read_only` access, at most `limit` rows (capped by `RHIZODAT_MCP_MAX_ROWS`); the store stops reading past them, so an endless query returns; PostgreSQL, ClickHouse and drevo (0.0.86 and later) also stop a query that runs past `RHIZODAT_MCP_QUERY_TIMEOUT_S` |
 
 The store itself refuses writes in `query`, so a mistaken or injected query
 cannot change data:
@@ -26,16 +26,33 @@ cannot change data:
   is fixed before the statement runs, always rolled back. Without both, the
   tests showed `SET TRANSACTION READ WRITE` or `COMMIT; INSERT …` getting
   through.
-- drevo: a transaction that is always rolled back, since drevo has no
-  read-only mode.
+- drevo: a transaction that is always rolled back, in a Bolt session that
+  asks for READ access. drevo does not honour the access mode yet
+  ([ice1x/drevo#825](https://github.com/ice1x/drevo/issues/825)), so the
+  rollback is what undoes writes — and **it cannot undo a procedure's effects
+  outside the graph**: on a drevo with an LLM configured, a "read" can call
+  `drevo.extract.*` and spend on the model. Give an agent such a store only
+  when that is acceptable. drevo 0.0.43 has no such procedures, no
+  `LOAD CSV` and no `apoc.load.*`: a query cannot read the server's files.
 - ClickHouse: `readonly = 2`, which also refuses lifting it per query.
 - Iceberg: a scan.
+
+A query is also bounded in rows and in time: the store stops reading past
+`limit` rows, and PostgreSQL (`statement_timeout`) and ClickHouse
+(`max_execution_time`) stop one that runs past `RHIZODAT_MCP_QUERY_TIMEOUT_S`
+(default 30 seconds). drevo gets it as the Bolt transaction timeout, which a
+drevo server enforces from 0.0.86: **an older server, and embedded drevo,
+cannot stop a running query**, so a heavy Cypher read (a large cross product)
+runs to its end and holds its memory there — on drevo 0.0.43 one such query
+got the server killed in the tests, while 0.0.86 stopped it after the
+timeout. An Iceberg scan has no server to stop it; its row limit bounds it.
 
 As defence in depth, the DSNs can still use read-only accounts.
 
 Configuration is the environment, so secrets stay out of command lines:
 `RHIZODAT_STORE_<NAME>=<dsn>` per store, `RHIZODAT_JOURNAL=<dsn>`, and
-optionally `RHIZODAT_MCP_MAX_ROWS` (default 1000), `RHIZODAT_MCP_ENTITIES`
+optionally `RHIZODAT_MCP_MAX_ROWS` (default 1000),
+`RHIZODAT_MCP_QUERY_TIMEOUT_S` (default 30), `RHIZODAT_MCP_ENTITIES`
 and `RHIZODAT_MCP_WRITES` (below). The former
 `RHIZODAT_MCP_RECOVERY*` settings are refused with an error, so a stale
 configuration does not pass silently. An MCP client starts it over stdio:

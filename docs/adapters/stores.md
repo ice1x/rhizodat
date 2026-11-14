@@ -47,6 +47,11 @@ version every part already has.
 
 ## drevo
 
+- `read_only(..., timeout_s=)` (rhizodat-MCP's query timeout) is sent as the
+  Bolt transaction timeout, which drevo enforces from 0.0.86. **On an older
+  server and on embedded drevo a running query cannot be stopped**: a heavy
+  read (a large cross product) runs to its end and holds its memory there. The
+  test suite still pins drevo 0.0.43.
 - Embedded (`drevo:///`, `drevo+mem://`) needs `drevo-py`, which is not on PyPI
   yet and is built from source with a Rust toolchain; one process at a time.
   Remote (`drevo+bolt://`) works with any Neo4j driver. The native facade

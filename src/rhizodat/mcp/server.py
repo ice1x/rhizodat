@@ -177,6 +177,7 @@ def main() -> None:
         max_rows=config.max_rows,
         entities=entities,
         writes=config.writes,
+        query_timeout_s=config.query_timeout_s,
     )
     try:
         build_server(tools).run()
