@@ -21,6 +21,12 @@ version every part already has.
 - The server needs `max_prepared_transactions > 0` for meta-transactions over
   several stores. In production the journal's database must replicate
   synchronously: the `COMMITTED` record is the commit point.
+- A store or a journal with a `schema` works in that schema (search path
+  `"<schema>", public`). `install` (and `install_part`) and opening the journal
+  create the schema when it is missing, on both facades (0.2.0 and earlier: a missing
+  schema put the tables in `public`). A role that may not create schemas works
+  with one that exists. The commit markers go to `"<schema>".dat_applied`,
+  never to another schema's through the search path.
 - Entity parts: one table per type, a typed column per field, `jsonb` for
   lists, dicts and anything without a native type.
 - Native facade, rows (`uow.store(name).insert`): scalars, decimals, bytes and

@@ -304,6 +304,28 @@ class _Connector:
                 conn.commit()
         return conn  # type: ignore[no-any-return]
 
+    @property
+    def applied_table(self) -> str:
+        """``dat_applied``, qualified by the schema when there is one: the search
+        path falls back to public, where another store's ``dat_applied`` would
+        take this store's markers."""
+        return f'"{self._schema}".dat_applied' if self._schema else "dat_applied"
+
+    def ensure_schema(self, conn: "psycopg.Connection[Any]") -> None:
+        """Create the schema if it does not exist, before any table goes in it.
+
+        The search path is ``"<schema>", public``: with the schema missing, a
+        ``CREATE TABLE`` would land in public. Existence is checked first, so a
+        role that may not create schemas still works with one that exists.
+        """
+        if self._schema is None:
+            return
+        found = conn.execute(
+            "SELECT 1 FROM pg_namespace WHERE nspname = %s", (self._schema,)
+        ).fetchone()
+        if found is None:
+            conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self._schema}"')
+
 
 def _result(cursor: Any) -> Result:  # noqa: ANN401 - psycopg cursor
     if cursor.description is None:
@@ -357,10 +379,11 @@ class PostgresStore:
         return self._connector.connect(autocommit=autocommit)
 
     def install(self) -> None:
-        """Create the service table ``dat_applied`` if it does not exist."""
+        """Create the service table ``dat_applied`` (and the store's schema) if missing."""
         with self.connect(autocommit=True) as conn:
+            self._connector.ensure_schema(conn)
             conn.execute(
-                "CREATE TABLE IF NOT EXISTS dat_applied ("
+                f"CREATE TABLE IF NOT EXISTS {self._connector.applied_table} ("
                 " dat_txn uuid PRIMARY KEY,"
                 " dat_tx_time bigint NOT NULL,"
                 " applied_at timestamptz NOT NULL DEFAULT now())"
@@ -634,7 +657,8 @@ class PostgresBranch:
             )
         self._conn.execute("SET CONSTRAINTS ALL IMMEDIATE")  # fail here, not at prepare
         self._conn.execute(
-            "INSERT INTO dat_applied (dat_txn, dat_tx_time) VALUES (%s, %s)", (dat_txn, dat_tx_time)
+            f"INSERT INTO {self._connector.applied_table} (dat_txn, dat_tx_time) VALUES (%s, %s)",
+            (dat_txn, dat_tx_time),
         )
         return None
 
@@ -692,7 +716,11 @@ class PostgresParticipant:
                 ) from exc
 
     def is_applied(self, branch: BranchRecord, dat_txn: uuid.UUID) -> bool:
-        return bool(self._run("SELECT 1 FROM dat_applied WHERE dat_txn = %s", (dat_txn,)))
+        return bool(
+            self._run(
+                f"SELECT 1 FROM {self._connector.applied_table} WHERE dat_txn = %s", (dat_txn,)
+            )
+        )
 
     def abort(self, branch: BranchRecord) -> None:
         try:
@@ -756,6 +784,7 @@ class PostgresJournal:
         self._wall_ms = wall_ms
         self._lock = threading.Lock()
         self._conn = self._connector.connect(autocommit=True)
+        self._connector.ensure_schema(self._conn)
         self._conn.execute(
             f"CREATE TABLE IF NOT EXISTS {table} ("
             " dat_txn uuid PRIMARY KEY,"
