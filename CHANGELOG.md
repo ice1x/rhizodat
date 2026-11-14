@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.1 — fixes and a hardened MCP server
+
+Fixes and security hardening of the Python packages; the C ABI and the Go
+package (in this repository, not in the wheels) are new and still a preview.
+
 - Fix: an `iceberg` migration's `add_partition` with an unknown transform
   (`"fortnight"`, `"bucket[x]"`) failed with pyiceberg's unrelated message (or
   its own exception type); it now says `unknown transform '...'`.

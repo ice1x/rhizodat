@@ -1,6 +1,6 @@
 [package]
 name = "rhizodat-ffi"
-version = "0.2.0"
+version = "0.2.1"
 description = "The C ABI of the rhizodat core (librhizodat_ffi), for Go and other C callers"
 publish = false
 edition.workspace = true
