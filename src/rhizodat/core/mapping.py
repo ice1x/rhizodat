@@ -74,12 +74,27 @@ class Ref[T]:
 class EntityMapping:
     type_name: str
     stores: Mapping[str, tuple[str, ...]]
-    refs: Mapping[str, str]
+    written_refs: Mapping[str, str]
+    """Each reference field's target as the class wrote it (see ``refs``)."""
     valid_time: bool
     cls: type
     soft_delete: bool = False
     soft_delete_window: timedelta | None = None
     """The type's own window; ``None``: the configured default."""
+
+    @property
+    def refs(self) -> dict[str, str]:
+        """Each reference field's target type name. A forward name (``Ref["Person"]``)
+        becomes the target's declared name once its class exists in the module;
+        until then, or when it names no entity, it stays as written."""
+        namespace = self._namespace()
+        return {f: _declared_name(target, namespace) for f, target in self.written_refs.items()}
+
+    def _namespace(self) -> dict[str, Any]:
+        module = sys.modules.get(self.cls.__module__)
+        namespace = dict(vars(module)) if module is not None else {}
+        namespace.setdefault("Ref", Ref)
+        return namespace
 
     @property
     def fields(self) -> tuple[str, ...]:
@@ -88,9 +103,7 @@ class EntityMapping:
     def field_types(self) -> dict[str, Any]:
         """Each mapped field's type, resolved now that referenced classes exist;
         a field whose annotation still cannot be resolved maps to ``object``."""
-        module = sys.modules.get(self.cls.__module__)
-        namespace = dict(vars(module)) if module is not None else {}
-        namespace.setdefault("Ref", Ref)
+        namespace = self._namespace()
         raw = _own_annotations(self.cls)
         types_: dict[str, Any] = {}
         for f in self.fields:
@@ -210,7 +223,7 @@ def entity(
             EntityMapping(
                 type_name=type_name,
                 stores=types.MappingProxyType(store_fields),
-                refs=types.MappingProxyType(refs),
+                written_refs=types.MappingProxyType(refs),
                 valid_time=valid_time,
                 cls=data_cls,
                 soft_delete=soft,
@@ -318,6 +331,12 @@ def _ref_targets(annotation: object) -> set[str]:
     for arg in args:
         found |= _ref_targets(arg)
     return found
+
+
+def _declared_name(written: str, namespace: dict[str, Any]) -> str:
+    """The declared name of the entity ``written`` names in ``namespace``, else ``written``."""
+    target = namespace.get(written)
+    return mapping_of(target).type_name if is_entity(target) else written
 
 
 def _type_name(target: object) -> str:

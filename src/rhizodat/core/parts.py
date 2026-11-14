@@ -74,7 +74,7 @@ class Part:
             store=store,
             fields=fields,
             types=field_types,
-            refs=frozenset(f for f in fields if f in mapping.refs),
+            refs=frozenset(f for f in fields if f in mapping.written_refs),
         )
 
     @property

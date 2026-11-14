@@ -54,8 +54,43 @@ def test_a_quoted_class_variable_is_not_a_field() -> None:
 
 
 def test_references_name_their_target_however_it_is_written() -> None:
-    # A forward name is kept as written: not the target's declared name (types.Person).
-    assert mapping_of(Task).refs == {"owner": "Person", "deputy": "Person"}
+    """A forward name resolves to the target's declared name once the class exists."""
+    assert mapping_of(Task).refs == {"owner": "types.Person", "deputy": "types.Person"}
+
+
+def test_a_reference_to_a_class_declared_later_resolves_when_read() -> None:
+    @entity(stores={"pg": ["boss"]}, name="types.Team")
+    class Team:
+        boss: "Ref[Lead]"
+
+    before = mapping_of(Team).refs["boss"]
+
+    @entity(stores={"pg": ["name"]}, name="types.Lead")
+    class Lead:
+        name: str
+
+    globals()["Lead"] = Lead
+    try:
+        assert (before, mapping_of(Team).refs["boss"]) == ("Lead", "types.Lead")
+    finally:
+        del globals()["Lead"]
+
+
+def test_a_reference_by_declared_name_or_to_no_class_is_kept() -> None:
+    @entity(stores={"pg": ["a", "b"]}, name="types.Note")
+    class Note:
+        a: Ref["types.Person"]  # type: ignore[name-defined]  # noqa: F821
+        b: "Ref[Nowhere]"  # type: ignore[name-defined]  # noqa: F821
+
+    assert mapping_of(Note).refs == {"a": "types.Person", "b": "Nowhere"}
+
+
+def test_a_name_that_is_not_an_entity_is_kept() -> None:
+    @entity(stores={"pg": ["a"]}, name="types.Odd")
+    class Odd:
+        a: "Ref[uuid]"
+
+    assert mapping_of(Odd).refs == {"a": "uuid"}
 
 
 def test_the_store_of_a_field_and_of_an_unknown_one() -> None:

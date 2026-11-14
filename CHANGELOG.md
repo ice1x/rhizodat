@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix: `EntityMapping.refs` named a forward reference's target as written
+  (`Ref["Person"]` gave `Person`, not the declared `types.Person`); it now
+  resolves to the declared name once the class exists in the module. The
+  names as written are `written_refs`.
+
 ## 0.2.1 — fixes and a hardened MCP server
 
 Fixes and security hardening of the Python packages; the C ABI and the Go
