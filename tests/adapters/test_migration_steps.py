@@ -195,6 +195,28 @@ def test_iceberg_runs_schema_operations(lake: Any) -> None:
         ({"op": "add_column", "table": "{ns}.t", "name": "x", "type": "long"}, "is int, not long"),
         ({"op": "rename_column", "table": "{ns}.t", "from": "a", "to": "b"}, "neither a nor b"),
         ("drop everything", "an iceberg step is a list of operations"),
+        ({"op": "add_column", "table": "{ns}.t", "name": "x", "type": 7}, "type 7"),
+        (
+            {"op": "create_table", "table": "{ns}.u", "columns": [{"name": "a"}]},
+            "column 1 needs a name and a type",
+        ),
+        (
+            {
+                "op": "create_table",
+                "table": "{ns}.u",
+                "columns": [{"name": "a", "type": "int", "pk": True}],
+            },
+            "column 1 takes no pk",
+        ),
+        (
+            {"op": "add_partition", "table": "{ns}.t", "column": "x", "transform": "fortnight"},
+            "unknown transform 'fortnight'",
+        ),
+        (
+            {"op": "add_partition", "table": "{ns}.t", "column": "x", "transform": "bucket[x]"},
+            r"unknown transform 'bucket\[x\]'",
+        ),
+        ({"op": "add_partition", "table": "{ns}.t", "column": "nope"}, "no column nope"),
     ],
 )
 def test_bad_iceberg_operations_are_refused(lake: Any, op: object, message: str) -> None:

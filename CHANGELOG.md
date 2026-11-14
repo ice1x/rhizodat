@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix: an `iceberg` migration's `add_partition` with an unknown transform
+  (`"fortnight"`, `"bucket[x]"`) failed with pyiceberg's unrelated message (or
+  its own exception type); it now says `unknown transform '...'`.
 - Fix: a PostgreSQL store or journal given a schema that does not exist yet
   created its tables in `public` (the search path falls back to it), where
   every such journal met the others. `install` and opening the journal now
