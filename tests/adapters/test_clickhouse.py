@@ -6,6 +6,7 @@ inserted only after the decision, idempotently.
 """
 
 import datetime as dt
+import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -92,6 +93,16 @@ def test_read_only_stops_at_the_limit(store: ClickHouseStore) -> None:
     """An endless query returns: the server stops at the limit."""
     rows = store.read_only("SELECT number FROM system.numbers", limit=3).all()
     assert rows == [{"number": 0}, {"number": 1}, {"number": 2}]
+
+
+def test_read_only_stops_a_query_at_its_timeout(store: ClickHouseStore) -> None:
+    """An endless count is stopped by the server at the timeout."""
+    from clickhouse_connect.driver.exceptions import DatabaseError
+
+    started = time.monotonic()
+    with pytest.raises(DatabaseError, match=r"TIMEOUT_EXCEEDED|timeout"):
+        store.read_only("SELECT count() FROM system.numbers", timeout_s=1)
+    assert time.monotonic() - started < 15
 
 
 def test_install_is_idempotent(store: ClickHouseStore) -> None:

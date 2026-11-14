@@ -412,10 +412,16 @@ class IcebergStore:
         run_operations(self.catalog, body)
 
     def read_only(
-        self, table: str, params: Mapping[str, Any] | None = None, *, limit: int | None = None
+        self,
+        table: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        limit: int | None = None,
+        timeout_s: float | None = None,
     ) -> Result:
         """The same scan as ``execute``: a scan cannot write. ``limit`` caps the
-        scan's own ``limit``."""
+        scan's own ``limit``; ``timeout_s`` is ignored (the scan reads files, with
+        no server to stop it: the limit bounds it)."""
         scan = dict(params or {})
         if limit is not None:
             scan["limit"] = min(limit, scan.get("limit") or limit)

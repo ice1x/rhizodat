@@ -110,7 +110,9 @@ class ReadOnlyQueries(Protocol):
 
     With ``limit``, at most that many rows leave the store: it stops reading
     there, so a query with an endless or huge result neither runs on nor fills
-    the caller's memory (the MCP server relies on it)."""
+    the caller's memory (the MCP server relies on it). With ``timeout_s``, a
+    store that can stop a running query (PostgreSQL, ClickHouse) stops it
+    then; the others ignore it (see each store's limits)."""
 
     def read_only(
         self,
@@ -118,6 +120,7 @@ class ReadOnlyQueries(Protocol):
         params: Any = None,  # noqa: ANN401
         *,
         limit: int | None = None,
+        timeout_s: float | None = None,
     ) -> "Result": ...
 
 

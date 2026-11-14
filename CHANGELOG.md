@@ -8,6 +8,13 @@
   create the schema first, on both facades. A store with a schema also names
   its `dat_applied` with it, so a store not yet installed fails instead of
   writing its commit markers into another store's `dat_applied` in `public`.
+- Security: rhizodat-MCP's `query` is bounded in time too:
+  `RHIZODAT_MCP_QUERY_TIMEOUT_S` (default 30) reaches the store as
+  `read_only(..., timeout_s=)`; PostgreSQL (`statement_timeout`),
+  ClickHouse (`max_execution_time`) and drevo from 0.0.86 (the Bolt
+  transaction timeout) stop the query. An older drevo and embedded drevo
+  cannot stop a running query (a heavy Cypher read can exhaust the server),
+  documented.
 - Security: rhizodat-MCP's `query` no longer reads a whole result into memory.
   `ReadOnlyQueries.read_only` takes `limit`, and every store stops reading
   there (PostgreSQL streams and cancels the query, ClickHouse

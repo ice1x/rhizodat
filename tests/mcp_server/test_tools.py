@@ -30,10 +30,19 @@ class ReadableStore(FakeStoreHandle):
         self.rows = rows
         self.reads: list[tuple[str, object]] = []
         self.limits: list[int | None] = []
+        self.timeouts: list[float | None] = []
 
-    def read_only(self, query: str, params: object = None, *, limit: int | None = None) -> Result:
+    def read_only(
+        self,
+        query: str,
+        params: object = None,
+        *,
+        limit: int | None = None,
+        timeout_s: float | None = None,
+    ) -> Result:
         self.reads.append((query, params))
         self.limits.append(limit)
+        self.timeouts.append(timeout_s)
         columns = tuple(self.rows[0]) if self.rows else ()
         return Result(iter(self.rows), columns=columns)
 
@@ -128,6 +137,13 @@ def test_query_asks_the_store_for_one_row_past_the_limit(
     assert orders.limits == [3, 4]
 
 
+def test_query_gives_the_store_the_timeout(orders: ReadableStore, journal: MemoryJournal) -> None:
+    """The store stops a query that runs too long (where it can: see the store limits)."""
+    tools_for({"orders": orders}, journal, query_timeout_s=2.5).query("orders", "q")
+    tools_for({"orders": orders}, journal).query("orders", "q")
+    assert orders.timeouts == [2.5, 30.0]
+
+
 def test_query_refuses_a_store_without_read_only_access(
     world: World, journal: MemoryJournal
 ) -> None:
@@ -199,9 +215,12 @@ def test_config_from_the_environment(faker: Faker) -> None:
         "RHIZODAT_STORE_LAKE": "iceberg+rest://cat:8181/w",
         "RHIZODAT_JOURNAL": "file:///tmp/j.db",
         "RHIZODAT_MCP_MAX_ROWS": "50",
+        "RHIZODAT_MCP_QUERY_TIMEOUT_S": "2.5",
         "HOME": "/home/x",
     }
     config = config_from_env(env)
+    assert config.query_timeout_s == 2.5
+    assert config_from_env({"RHIZODAT_STORE_A": pg}).query_timeout_s == 30.0
     assert config.stores == {"erp": pg, "lake": "iceberg+rest://cat:8181/w"}
     assert config.journal == "file:///tmp/j.db"
     assert config.max_rows == 50
@@ -214,6 +233,11 @@ def test_config_needs_a_store_and_valid_numbers() -> None:
         config_from_env({"RHIZODAT_STORE_A": "clickhouse://h/db", "RHIZODAT_MCP_MAX_ROWS": "x"})
     with pytest.raises(ConfigError, match="RHIZODAT_MCP_MAX_ROWS"):
         config_from_env({"RHIZODAT_STORE_A": "clickhouse://h/db", "RHIZODAT_MCP_MAX_ROWS": "0"})
+    for bad in ("x", "0", "-1", "nan", "inf"):
+        with pytest.raises(ConfigError, match="RHIZODAT_MCP_QUERY_TIMEOUT_S"):
+            config_from_env(
+                {"RHIZODAT_STORE_A": "clickhouse://h/db", "RHIZODAT_MCP_QUERY_TIMEOUT_S": bad}
+            )
 
 
 def test_config_store_names_are_lower_case() -> None:

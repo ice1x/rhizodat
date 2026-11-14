@@ -67,10 +67,12 @@ class Tools:
         max_rows: int = 1000,
         entities: Sequence[type] = (),
         writes: bool = False,
+        query_timeout_s: float = 30.0,
     ) -> None:
         self._dat = dat
         self._dsns = dict(dsns or {})
         self._max_rows = max_rows
+        self._query_timeout_s = query_timeout_s
         self._types: dict[str, type] = {}
         for cls in entities:
             name = mapping_of(cls).type_name
@@ -88,6 +90,7 @@ class Tools:
         max_rows: int = 1000,
         entities: Sequence[type] = (),
         writes: bool = False,
+        query_timeout_s: float = 30.0,
     ) -> "Tools":
         """Open every store (and the journal) named by its DSN."""
         return cls(
@@ -96,6 +99,7 @@ class Tools:
             max_rows=max_rows,
             entities=entities,
             writes=writes,
+            query_timeout_s=query_timeout_s,
         )
 
     def close(self) -> None:
@@ -142,7 +146,7 @@ class Tools:
         target = self._dat.store(store)
         if not isinstance(target, ReadOnlyQueries):
             raise ValueError(f"store {store!r} offers no read-only queries")
-        result = target.read_only(query, params, limit=limit + 1)
+        result = target.read_only(query, params, limit=limit + 1, timeout_s=self._query_timeout_s)
         try:
             rows = list(itertools.islice(result, limit + 1))
         finally:
