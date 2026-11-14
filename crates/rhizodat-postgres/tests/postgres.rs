@@ -1007,3 +1007,88 @@ async fn the_journal_keeps_the_migration_history_and_a_store_runs_sql_steps() {
     );
     db.drop().await;
 }
+
+/// Tables of `schema`, by name.
+async fn tables_in(db: &Db, schema: &str) -> Vec<String> {
+    db.admin
+        .query(
+            "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
+            &[&schema],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_schema_is_created_instead_of_writing_to_public() {
+    let db = db!();
+    // `<base>_<…>` names: the fixture drops them with the test's schemas.
+    let (journal_schema, store_schema) =
+        (format!("{}_jnew", db.schema), format!("{}_snew", db.schema));
+    let table = format!("dat_journal_{}", &new_id().simple().to_string()[24..]);
+    PostgresJournal::open(&db.dsn, Some(&journal_schema), &table)
+        .await
+        .unwrap();
+    let store =
+        PostgresStore::new(&db.dsn, &format!("new_{}", db.schema), Some(&store_schema)).unwrap();
+    store.install().await.unwrap();
+    store.install().await.unwrap();
+    let in_public = tables_in(&db, "public").await;
+    let (journal_tables, store_tables) = (
+        tables_in(&db, &journal_schema).await,
+        tables_in(&db, &store_schema).await,
+    );
+    db.drop().await;
+    assert_eq!(
+        journal_tables,
+        [table.clone(), format!("{table}_migrations")]
+    );
+    assert_eq!(store_tables, ["dat_applied"]);
+    assert!(!in_public.contains(&table), "the journal went to public");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_store_never_marks_its_commits_in_another_schemas_table() {
+    let db = db!();
+    // A dat_applied in public, reachable through the search path.
+    let created = db
+        .admin
+        .query_one("SELECT to_regclass('public.dat_applied') IS NULL", &[])
+        .await
+        .unwrap()
+        .get::<_, bool>(0);
+    db.admin
+        .batch_execute(
+            "CREATE TABLE IF NOT EXISTS public.dat_applied (dat_txn uuid PRIMARY KEY, \
+             dat_tx_time bigint NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())",
+        )
+        .await
+        .unwrap();
+    // A store whose own schema has no dat_applied (never installed).
+    let schema = format!("{}_bare", db.schema);
+    db.admin
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let store = PostgresStore::new(&db.dsn, &format!("bare_{}", db.schema), Some(&schema)).unwrap();
+    let mut branch = store.branch().await.unwrap();
+    let staged = branch.stage(new_id(), 1).await;
+    branch.rollback().await.ok();
+    if created {
+        db.admin
+            .batch_execute("DROP TABLE IF EXISTS public.dat_applied")
+            .await
+            .unwrap();
+    }
+    db.drop().await;
+    let error = staged.expect_err("the marker went to another schema's dat_applied");
+    let db_error = error
+        .downcast_ref::<tokio_postgres::Error>()
+        .and_then(tokio_postgres::Error::as_db_error)
+        .expect("the server's error");
+    assert_eq!(db_error.code().code(), "42P01", "{db_error}"); // undefined_table
+    assert!(db_error.message().contains("dat_applied"), "{db_error}");
+}

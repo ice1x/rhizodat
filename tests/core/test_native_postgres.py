@@ -354,3 +354,26 @@ def test_a_reserved_column_in_the_rows_is_rejected(
     unit = store.unit()
     with pytest.raises(native.InvalidUnitOfWork):
         unit.insert("t", ["dat_txn"], [[native.new_id()]])
+
+
+def test_a_missing_schema_is_created_instead_of_writing_to_public(pg_dsn: str) -> None:
+    """As the Python adapter: the journal and the store's install create their
+    schema, where the search path would otherwise fall back to public."""
+    journal_schema = f"dat_new_{uuid.uuid4().hex[:12]}"
+    store_schema = f"dat_new_{uuid.uuid4().hex[:12]}"
+    try:
+        native.PostgresJournal(pg_dsn, journal_schema)
+        native.PostgresStore(pg_dsn, "inventory", store_schema).install()
+        with psycopg.connect(pg_dsn) as conn:
+            tables = conn.execute(
+                "SELECT schemaname, tablename FROM pg_tables WHERE schemaname IN (%s, %s)",
+                (journal_schema, store_schema),
+            ).fetchall()
+        assert set(tables) == {
+            (journal_schema, "dat_journal"),
+            (journal_schema, "dat_journal_migrations"),
+            (store_schema, "dat_applied"),
+        }
+    finally:
+        with psycopg.connect(pg_dsn, autocommit=True) as conn:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{journal_schema}", "{store_schema}" CASCADE')

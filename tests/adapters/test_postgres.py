@@ -413,3 +413,88 @@ def test_a_real_constraint_violation_is_a_constraint(store: PostgresStore) -> No
 
 def test_postgres_cannot_tell_its_free_space(store: PostgresStore) -> None:
     assert not isinstance(store, Capacity)  # SQL shows sizes, not the disk's free space
+
+
+# --- a schema that does not exist yet ------------------------------------------------
+
+
+@pytest.fixture
+def missing_schema(pg_dsn: str) -> Iterator[str]:
+    """A schema name nobody created; dropped afterwards if a test made it."""
+    name = f"dat_new_{uuid.uuid4().hex[:12]}"
+    yield name
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
+
+
+def public_tables(pg_dsn: str, *names: str) -> set[str]:
+    return tables_in(pg_dsn, "public") & set(names)
+
+
+def test_a_journal_creates_its_missing_schema_instead_of_writing_to_public(
+    pg_dsn: str, missing_schema: str
+) -> None:
+    """The search path falls back to public: a missing schema used to put the
+    journal there, shared by every journal that made the same mistake."""
+    table = f"dat_journal_{uuid.uuid4().hex[:8]}"
+    journal = PostgresJournal(pg_dsn, schema=missing_schema, table=table)
+    journal.close()
+    assert {table, f"{table}_migrations"} <= tables_in(pg_dsn, missing_schema)
+    assert public_tables(pg_dsn, table, f"{table}_migrations") == set()
+
+
+def test_install_creates_the_stores_missing_schema(pg_dsn: str, missing_schema: str) -> None:
+    store = PostgresStore(pg_dsn, name="inventory", schema=missing_schema)
+    store.install()
+    store.install()  # again: the schema is there now
+    assert "dat_applied" in tables_in(pg_dsn, missing_schema)
+    store.close()
+
+
+def test_an_existing_schema_is_used_as_it_is(pg_dsn: str, pg_schema: str) -> None:
+    store = PostgresStore(pg_dsn, name="inventory", schema=pg_schema)
+    store.install()
+    assert "dat_applied" in tables_in(pg_dsn, pg_schema)
+    store.close()
+
+
+def test_a_store_never_marks_its_commits_in_another_schemas_table(
+    pg_dsn: str, pg_schema: str
+) -> None:
+    """Without its own dat_applied a store fails: it does not fall back through the
+    search path (``"<schema>", public``) to a dat_applied in public, shared with
+    other stores."""
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        created = conn.execute("SELECT to_regclass('public.dat_applied')").fetchone() == (None,)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS public.dat_applied (dat_txn uuid PRIMARY KEY,"
+            " dat_tx_time bigint NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
+        )
+    store = PostgresStore(pg_dsn, name="inventory", schema=pg_schema)
+    branch = store.branch(new_id())
+    try:
+        with pytest.raises(psycopg.errors.UndefinedTable):
+            branch.stage(branch.dat_txn, 1)
+    finally:
+        branch.rollback()
+        store.close()
+        if created:
+            with psycopg.connect(pg_dsn, autocommit=True) as conn:
+                conn.execute("DROP TABLE IF EXISTS public.dat_applied")
+
+
+def test_the_markers_are_read_from_the_stores_own_schema(pg_dsn: str, pg_schema: str) -> None:
+    store = PostgresStore(pg_dsn, name="inventory", schema=pg_schema)
+    store.install()
+    txn = new_id()
+    branch = store.branch(txn)
+    branch.stage(txn, 7)
+    branch.commit_one_phase()
+    record = BranchRecord("inventory", gid_for(txn, "inventory"), True)
+    assert store.participant().is_applied(record, txn)
+    with psycopg.connect(pg_dsn) as conn:
+        found = conn.execute(
+            f'SELECT count(*) FROM "{pg_schema}".dat_applied WHERE dat_txn = %s', (txn,)
+        ).fetchone()
+    assert found == (1,)
+    store.close()

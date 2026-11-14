@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix: a PostgreSQL store or journal given a schema that does not exist yet
+  created its tables in `public` (the search path falls back to it), where
+  every such journal met the others. `install` and opening the journal now
+  create the schema first, on both facades. A store with a schema also names
+  its `dat_applied` with it, so a store not yet installed fails instead of
+  writing its commit markers into another store's `dat_applied` in `public`.
 - Security: rhizodat-MCP's `query` no longer reads a whole result into memory.
   `ReadOnlyQueries.read_only` takes `limit`, and every store stops reading
   there (PostgreSQL streams and cancels the query, ClickHouse

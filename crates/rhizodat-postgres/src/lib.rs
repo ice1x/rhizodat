@@ -265,6 +265,35 @@ impl Connector {
         }
         Ok(client)
     }
+
+    /// `dat_applied`, qualified by the schema when there is one: the search path
+    /// falls back to public, where another store's `dat_applied` would take
+    /// this store's markers.
+    fn applied_table(&self) -> String {
+        self.schema.as_ref().map_or_else(
+            || "dat_applied".to_owned(),
+            |s| format!("\"{s}\".dat_applied"),
+        )
+    }
+
+    /// Create the schema if it does not exist, before any table goes in it: the
+    /// search path is `"<schema>", public`, so with the schema missing a
+    /// `CREATE TABLE` would land in public. Existence is checked first, so a
+    /// role that may not create schemas still works with one that exists.
+    async fn ensure_schema(&self, client: &Client) -> Result<(), tokio_postgres::Error> {
+        let Some(schema) = &self.schema else {
+            return Ok(());
+        };
+        let found = client
+            .query_opt("SELECT 1 FROM pg_namespace WHERE nspname = $1", &[schema])
+            .await?;
+        if found.is_none() {
+            client
+                .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 /// A double-quoted SQL identifier (table or column). The name is checked by
@@ -641,20 +670,22 @@ impl PostgresStore {
         tx.commit().await
     }
 
-    /// Create the service table `dat_applied` if it does not exist.
+    /// Create the service table `dat_applied` (and the store's schema) if missing.
     ///
     /// # Errors
     ///
     /// The driver's error.
     pub async fn install(&self) -> Result<(), tokio_postgres::Error> {
-        self.connect()
-            .await?
-            .batch_execute(
-                "CREATE TABLE IF NOT EXISTS dat_applied (\
+        let client = self.connect().await?;
+        self.connector.ensure_schema(&client).await?;
+        client
+            .batch_execute(&format!(
+                "CREATE TABLE IF NOT EXISTS {} (\
                  dat_txn uuid PRIMARY KEY, \
                  dat_tx_time bigint NOT NULL, \
                  applied_at timestamptz NOT NULL DEFAULT now())",
-            )
+                self.connector.applied_table()
+            ))
             .await
     }
 
@@ -752,13 +783,14 @@ impl Branch for PostgresBranch {
         dat_txn: Uuid,
         dat_tx_time: i64,
     ) -> Result<Option<Vec<u8>>, BoxError> {
+        let applied = self.connector.applied_table();
         let client = self.client()?;
         client
             .batch_execute("SET CONSTRAINTS ALL IMMEDIATE")
             .await?; // fail here, not at prepare
         client
             .execute(
-                "INSERT INTO dat_applied (dat_txn, dat_tx_time) VALUES ($1, $2)",
+                &format!("INSERT INTO {applied} (dat_txn, dat_tx_time) VALUES ($1, $2)"),
                 &[&dat_txn, &dat_tx_time],
             )
             .await?;
@@ -880,7 +912,13 @@ impl Participant for PostgresParticipant {
 
     async fn is_applied(&self, _branch: &BranchRecord, dat_txn: Uuid) -> Result<bool, BoxError> {
         Ok(!self
-            .query("SELECT 1 FROM dat_applied WHERE dat_txn = $1", &[&dat_txn])
+            .query(
+                &format!(
+                    "SELECT 1 FROM {} WHERE dat_txn = $1",
+                    self.connector.applied_table()
+                ),
+                &[&dat_txn],
+            )
             .await?
             .is_empty())
     }
@@ -947,6 +985,12 @@ impl PostgresJournal {
             wall_ms: Box::new(system_ms),
             client: Mutex::new(None),
         };
+        {
+            let mut slot = journal.client.lock().await;
+            let client = journal.ensure(&mut slot).await?;
+            let result = journal.connector.ensure_schema(client).await;
+            Self::settle(&mut slot, result).map_err(backend)?;
+        }
         journal
             .batch(&format!(
                 "CREATE TABLE IF NOT EXISTS {t} (\
