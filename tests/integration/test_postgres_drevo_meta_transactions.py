@@ -199,15 +199,20 @@ def test_crash_while_finishing_is_rolled_forward(editor: Editor, faker: Faker) -
 
 
 def test_a_concurrent_graph_writer_sees_a_retryable_fence(editor: Editor, faker: Faker) -> None:
+    """A writer touching what a prepared chapter touched (the book's chapter count)
+    is refused, retryably, until the meta-transaction ends."""
+    book = f"MATCH (b:{editor.label}Book)"
+    editor.graph.execute(f"CREATE (:{editor.label}Book {{chapters: 0}})")
     txn = new_id()
     graph_branch, chapter_branch = editor.write_chapter(
         txn, faker.sentence(), faker.text(), ["Ada"]
     )
+    graph_branch.execute(f"{book} SET b.chapters = b.chapters + 1")  # type: ignore[attr-defined]
     graph_branch.stage(txn, 1)  # type: ignore[attr-defined]
     graph_branch.prepare(f"dat:{txn}:graph")  # type: ignore[attr-defined]
 
     other = editor.graph.branch(new_id())
-    other.execute(f"CREATE (:{editor.label}Other)")
+    other.execute(f"{book} SET b.chapters = b.chapters + 1")
     fenced = raised(other.commit_one_phase)
     assert other.is_retryable(fenced)
 

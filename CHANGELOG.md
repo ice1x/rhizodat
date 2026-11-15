@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The test suite runs against drevo 0.0.86 (from 0.0.43), which enforces the
+  Bolt transaction timeout: a test now checks that a heavy read through
+  `read_only(..., timeout_s=)` ends and the server keeps serving, and that a
+  read-only query cannot resolve a prepared branch (drevo refuses `drevo.tx.*`
+  inside a transaction). 0.0.86 requires credentials (`DREVO_AUTH`; the test
+  DSN carries them) and fences only the writes that overlap a prepared
+  branch's, so the fence tests write to the same nodes.
 - Fix: `EntityMapping.refs` named a forward reference's target as written
   (`Ref["Person"]` gave `Person`, not the declared `types.Person`); it now
   resolves to the declared name once the class exists in the module. The

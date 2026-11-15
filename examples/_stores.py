@@ -6,7 +6,7 @@ docker compose --profile clickhouse up -d --wait
 import os
 
 PG = os.environ.get("RHIZODAT_PG", "postgresql://postgres:rhizodat@127.0.0.1:55440/rhizodat")
-GRAPH = os.environ.get("RHIZODAT_GRAPH", "drevo+bolt://127.0.0.1:57687")
+GRAPH = os.environ.get("RHIZODAT_GRAPH", "drevo+bolt://rhizodat:rhizodat@127.0.0.1:57687")
 CLICKHOUSE = os.environ.get(
     "RHIZODAT_CLICKHOUSE", "clickhouse://rhizodat:rhizodat@127.0.0.1:58123/rhizodat"
 )
