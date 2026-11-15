@@ -30,10 +30,15 @@ cannot change data:
   asks for READ access. drevo does not honour the access mode yet
   ([ice1x/drevo#825](https://github.com/ice1x/drevo/issues/825)), so the
   rollback is what undoes writes — and **it cannot undo a procedure's effects
-  outside the graph**: on a drevo with an LLM configured, a "read" can call
-  `drevo.extract.*` and spend on the model. Give an agent such a store only
-  when that is acceptable. drevo 0.0.43 has no such procedures, no
-  `LOAD CSV` and no `apoc.load.*`: a query cannot read the server's files.
+  outside the graph**: on a drevo with a chat upstream configured
+  (`DREVO_EXTRACT_UPSTREAM`), a "read" can call `drevo.extract.*` and spend on
+  the model, and `drevo.events.post` runs inside the transaction too. Give an
+  agent such a store only when that is acceptable. Checked on drevo 0.0.86:
+  the procedures that change the server's state (`drevo.tx.*`,
+  `apoc.trigger.install`, `drevo.sequence.create`) refuse to run inside a
+  transaction, so a query cannot resolve another meta-transaction's prepared
+  branch; there is no `LOAD CSV` and no `apoc.load.*`, so it cannot read the
+  server's files.
 - ClickHouse: `readonly = 2`, which also refuses lifting it per query.
 - Iceberg: a scan.
 

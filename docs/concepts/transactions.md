@@ -42,9 +42,10 @@ prepare last and commit first.** The window between prepare and commit must be
 as short as possible:
 
 - A prepared PostgreSQL transaction holds its row locks until `COMMIT PREPARED`.
-- A prepared drevo transaction raises the graph's **prepared fence**: while any
-  prepared transaction exists, every other commit to that graph fails fast with
-  a retryable `TransactionConflict` (reads keep working). See drevo
+- A prepared drevo transaction raises the graph's **prepared fence**: while it
+  awaits its outcome, a commit that writes what it wrote fails fast with a
+  retryable error (reads keep working). From drevo 0.0.86 only such overlapping
+  writes are fenced; before, every other commit to the graph was. See drevo
   `docs/rfc-two-phase-commit.md`.
 - drevo's opt-in `DREVO_PREPARED_TX_TIMEOUT_SECS` heuristically rolls back a
   transaction that stays prepared too long, overriding the coordinator. The

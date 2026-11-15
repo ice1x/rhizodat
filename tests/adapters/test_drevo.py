@@ -1,6 +1,7 @@
 """drevo branch and participant, embedded (drevo-py) and remote (Bolt), against real engines."""
 
 import contextlib
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -109,24 +110,28 @@ def test_rollback_discards_writes(store: DrevoStore) -> None:
     assert count(store, lbl) == 0
 
 
-def test_prepare_fences_other_writers_until_finish(store: DrevoStore) -> None:
+def test_prepare_fences_overlapping_writers_until_finish(store: DrevoStore) -> None:
+    """A write to what a prepared branch wrote waits for its outcome: a retryable
+    refusal. (From drevo 0.0.86 only overlapping writes are fenced; before, every
+    write was, so a write elsewhere may or may not pass depending on the version.)"""
     lbl, txn = label(), new_id()
     gid = gid_for(txn, "graph")
+    store.execute(f"CREATE (:{lbl} {{v: 0}})")
     branch = store.branch(txn)
-    branch.execute(f"CREATE (:{lbl})")
+    branch.execute(f"MATCH (n:{lbl}) SET n.v = 1")
     branch.stage(txn, 1)
     branch.prepare(gid)
     participant = store.participant()
     assert gid in participant.prepared_gids()
 
     other = store.branch(new_id())
-    other.execute(f"CREATE (:{lbl}Other)")
+    other.execute(f"MATCH (n:{lbl}) SET n.v = 2")
     fenced = raised(other.commit_one_phase)
     assert other.is_retryable(fenced)  # the prepared fence is transient
 
     record = BranchRecord("graph", gid, True)
     participant.finish(record, txn, 1)
-    assert count(store, lbl) == 1
+    assert store.execute(f"MATCH (n:{lbl}) RETURN n.v AS v").one()["v"] == 1
     assert gid not in participant.prepared_gids()
     participant.finish(record, txn, 1)  # unknown gid + marker = already done
 
@@ -252,6 +257,44 @@ def test_a_bolt_transaction_gets_the_timeout() -> None:
     _BoltTx(session, timeout_s=2.5)
     _BoltTx(session)
     assert session.kwargs == [{"timeout": 2.5}, {}]
+
+
+def test_drevo_stops_a_read_only_query_past_its_timeout(drevo_bolt_dsn: str) -> None:
+    """A query that would run for a long time ends at ``timeout_s`` with an error,
+    and the server keeps serving (drevo 0.0.86 enforces the transaction timeout)."""
+    store = DrevoStore(drevo_bolt_dsn, name="graph")
+    heavy = (
+        "UNWIND range(1, 2000) AS a UNWIND range(1, 2000) AS b UNWIND range(1, 50) AS c"
+        " RETURN count(*) AS n"
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(Exception, match="TransactionTimedOut"):
+            store.read_only(heavy, timeout_s=1.0).all()
+        assert time.monotonic() - started < 15
+        assert store.read_only("RETURN 1 AS one").one()["one"] == 1
+    finally:
+        store.close()
+
+
+def test_a_read_only_query_cannot_resolve_a_prepared_branch(drevo_bolt_dsn: str) -> None:
+    """rhizodat-MCP's query runs in a transaction, where drevo refuses the procedures
+    that change the server's state: an agent cannot roll back another
+    meta-transaction's prepared branch (checked on drevo 0.0.86)."""
+    store = DrevoStore(drevo_bolt_dsn, name="graph")
+    txn = new_id()
+    gid = gid_for(txn, "graph")
+    branch = store.branch(txn)
+    branch.stage(txn, 1)
+    branch.prepare(gid)
+    try:
+        for call in ("drevo.tx.rollbackPrepared($gid)", "drevo.tx.commitPrepared($gid)"):
+            with pytest.raises(Exception, match="explicit transaction"):
+                store.read_only(f"CALL {call}", {"gid": gid}, timeout_s=10).all()
+        assert gid in store.participant().prepared_gids()
+    finally:
+        branch.rollback()
+        store.close()
 
 
 def test_a_read_only_bolt_session_asks_for_read_access() -> None:

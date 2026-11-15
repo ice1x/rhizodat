@@ -222,7 +222,7 @@ on_both!(
     aborted_gid_is_gone_and_finishing_it_is_a_heuristic_outcome,
     one_phase_commit_and_rollback_of_an_open_branch,
     a_units_buffered_writes_commit_with_the_meta_transaction,
-    the_prepared_fence_rejects_other_writers_with_a_retryable_error,
+    the_prepared_fence_rejects_overlapping_writers_with_a_retryable_error,
     a_bug_and_its_graph_link_commit_together,
     a_crash_after_the_graph_prepared_is_presumed_aborted_elsewhere,
     a_crash_after_the_decision_is_rolled_forward_elsewhere,
@@ -438,20 +438,35 @@ async fn a_units_buffered_writes_commit_with_the_meta_transaction(target: Target
     g.drop().await;
 }
 
-async fn the_prepared_fence_rejects_other_writers_with_a_retryable_error(target: Target) {
+/// A write to what a prepared branch wrote is refused, retryably, until the
+/// branch is finished. (From drevo 0.0.86 only such overlapping writes are
+/// fenced; before, every write was, so a write elsewhere depends on the version.)
+async fn the_prepared_fence_rejects_overlapping_writers_with_a_retryable_error(target: Target) {
     let Some(mut g) = Graph::new(target).await else {
         return;
     };
+    let base = format!("MATCH (n:{} {{title: 'base'}})", g.tag);
+    g.store
+        .write(
+            &format!("CREATE (:{} {{title: 'base', v: 0}})", g.tag),
+            params![],
+        )
+        .await
+        .unwrap();
     let txn = g.txn();
     let gid = g.gid(txn);
-    let mut branch = g.branch_with_task("holds the fence").await;
+    let mut branch = g.store.branch().await.unwrap();
+    branch
+        .run(&format!("{base} SET n.v = 1"), params![])
+        .await
+        .unwrap();
     branch.stage(txn, 1).await.unwrap();
     branch.prepare(&gid).await.unwrap();
 
     let started = std::time::Instant::now();
     let err = g
         .store
-        .write(&format!("CREATE (:{} {{title: 'late'}})", g.tag), params![])
+        .write(&format!("{base} SET n.v = 2"), params![])
         .await
         .unwrap_err();
     assert!(g.store.is_retryable(err.as_ref()), "{err}");
@@ -459,7 +474,13 @@ async fn the_prepared_fence_rejects_other_writers_with_a_retryable_error(target:
         started.elapsed() < Duration::from_secs(10),
         "the fence is reported, not waited on"
     );
-    assert_eq!(g.count(&g.tag).await, 0, "reads pass the fence");
+    let v = |rows: Vec<rhizodat_drevo::Row>| rows[0].int("v").unwrap();
+    let read = format!("{base} RETURN n.v AS v");
+    assert_eq!(
+        v(g.store.read(&read, params![]).await.unwrap()),
+        0,
+        "reads pass the fence"
+    );
 
     g.store
         .participant()
@@ -467,12 +488,10 @@ async fn the_prepared_fence_rejects_other_writers_with_a_retryable_error(target:
         .await
         .unwrap();
     g.store
-        .write(
-            &format!("CREATE (:{} {{title: 'after'}})", g.tag),
-            params![],
-        )
+        .write(&format!("{base} SET n.v = 3"), params![])
         .await
         .unwrap();
+    assert_eq!(v(g.store.read(&read, params![]).await.unwrap()), 3);
     g.drop().await;
 }
 

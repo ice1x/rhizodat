@@ -65,7 +65,7 @@ One `compose.yaml` runs every store the tests need, locally and in CI alike
 
 - ✔ PostgreSQL with `max_prepared_transactions > 0`;
 - ✔ drevo from the pinned multi-arch image with the `drevo.tx.*` 2PC procedures
-  (`ice1x/drevo:0.0.43`, [ice1x/drevo#591](https://github.com/ice1x/drevo/issues/591)),
+  (`ice1x/drevo:0.0.86`, from `0.0.43`; [ice1x/drevo#591](https://github.com/ice1x/drevo/issues/591)),
   so CI now tests drevo over Bolt too;
 - ✔ healthchecks, and `.env.test` with the test DSNs;
 - ✔ ClickHouse behind the `clickhouse` profile, so a test run starts only what
