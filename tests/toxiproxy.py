@@ -7,13 +7,14 @@ refuses new ones: a real network failure, at a step the test chooses.
 
 import json
 import socket
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-__all__ = ["LISTEN_PORTS", "Proxy", "Toxiproxy", "http_reachable", "through"]
+__all__ = ["LISTEN_PORTS", "Proxy", "Toxiproxy", "ToxiproxyError", "http_reachable", "through"]
 
 LISTEN_PORTS = range(58401, 58405)
 
@@ -33,6 +34,10 @@ def through(dsn: str, port: int) -> str:
     auth = parts.netloc.rpartition("@")[0]
     netloc = f"{auth}@127.0.0.1:{port}" if auth else f"127.0.0.1:{port}"
     return urlunsplit(parts._replace(netloc=netloc))
+
+
+class ToxiproxyError(RuntimeError):
+    """The toxiproxy API refused a call; the message carries its answer."""
 
 
 class Proxy:
@@ -62,8 +67,13 @@ class Toxiproxy:
         request = urllib.request.Request(
             self.url + path, data=data, method=method, headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            raw = response.read()
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                answer = exc.read().decode(errors="replace")
+            raise ToxiproxyError(f"{method} {path}: HTTP {exc.code}: {answer}") from None
         return json.loads(raw) if raw else None
 
     @contextmanager

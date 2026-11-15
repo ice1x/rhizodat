@@ -109,6 +109,12 @@ services:
   toxiproxy:
     profiles: ["faults"]
     image: ghcr.io/shopify/toxiproxy:2.12.0
+    # The proxies listen on 58401-58404, inside Linux's default ephemeral range
+    # (32768-60999): a healthcheck client socket left in TIME_WAIT on one of them
+    # made creating that proxy fail ("bind: address already in use"). Keep the
+    # range below them.
+    sysctls:
+      net.ipv4.ip_local_port_range: "32768 58000"
     ports:
       - "127.0.0.1:58474:8474"
       - "127.0.0.1:58401-58404:58401-58404"
