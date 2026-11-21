@@ -223,6 +223,7 @@ on_both!(
     one_phase_commit_and_rollback_of_an_open_branch,
     a_units_buffered_writes_commit_with_the_meta_transaction,
     the_prepared_fence_rejects_overlapping_writers_with_a_retryable_error,
+    a_prepared_branch_lets_writes_elsewhere_pass,
     a_bug_and_its_graph_link_commit_together,
     a_crash_after_the_graph_prepared_is_presumed_aborted_elsewhere,
     a_crash_after_the_decision_is_rolled_forward_elsewhere,
@@ -439,8 +440,7 @@ async fn a_units_buffered_writes_commit_with_the_meta_transaction(target: Target
 }
 
 /// A write to what a prepared branch wrote is refused, retryably, until the
-/// branch is finished. (From drevo 0.0.86 only such overlapping writes are
-/// fenced; before, every write was, so a write elsewhere depends on the version.)
+/// branch is finished (drevo 0.0.86, embedded and remote).
 async fn the_prepared_fence_rejects_overlapping_writers_with_a_retryable_error(target: Target) {
     let Some(mut g) = Graph::new(target).await else {
         return;
@@ -492,6 +492,56 @@ async fn the_prepared_fence_rejects_overlapping_writers_with_a_retryable_error(t
         .await
         .unwrap();
     assert_eq!(v(g.store.read(&read, params![]).await.unwrap()), 3);
+    g.drop().await;
+}
+
+/// Only overlapping writes are fenced: a write to another part of the graph
+/// commits while a branch is prepared.
+async fn a_prepared_branch_lets_writes_elsewhere_pass(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
+    let base = format!("MATCH (n:{} {{title: 'base'}})", g.tag);
+    g.store
+        .write(
+            &format!("CREATE (:{} {{title: 'base', v: 0}})", g.tag),
+            params![],
+        )
+        .await
+        .unwrap();
+    let txn = g.txn();
+    let gid = g.gid(txn);
+    let mut branch = g.store.branch().await.unwrap();
+    branch
+        .run(&format!("{base} SET n.v = 1"), params![])
+        .await
+        .unwrap();
+    branch.stage(txn, 1).await.unwrap();
+    branch.prepare(&gid).await.unwrap();
+
+    g.store
+        .write(
+            &format!("CREATE (:{} {{title: 'elsewhere', v: 2}})", g.tag),
+            params![],
+        )
+        .await
+        .unwrap();
+    let elsewhere = format!("MATCH (n:{} {{title: 'elsewhere'}}) RETURN n.v AS v", g.tag);
+    let rows = g.store.read(&elsewhere, params![]).await.unwrap();
+    assert_eq!(rows[0].int("v").unwrap(), 2);
+
+    g.store
+        .participant()
+        .abort(&BranchRecord::new(g.store.name(), &gid, true))
+        .await
+        .unwrap();
+    let read = format!("{base} RETURN n.v AS v");
+    let rows = g.store.read(&read, params![]).await.unwrap();
+    assert_eq!(
+        rows[0].int("v").unwrap(),
+        0,
+        "the abort undid the prepared write"
+    );
     g.drop().await;
 }
 

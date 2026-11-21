@@ -764,7 +764,7 @@ wheels = [
 [[package]]
 name = "drevo-py"
 version = "0.1.0"
-source = { git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe#cf9c7664e573906f2f7e86bd15639b7c3be559fe" }
+source = { git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d#d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d" }
 
 [[package]]
 name = "faker"
@@ -2946,7 +2946,7 @@ docs = [
     { name = "mkdocs-material", specifier = ">=9.5" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
 ]
-drevo = [{ name = "drevo-py", git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe" }]
+drevo = [{ name = "drevo-py", git = "https://github.com/ice1x/drevo?subdirectory=drevo-py&rev=d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d" }]
 native = [{ name = "rhizodat-native", directory = "crates/rhizodat-py" }]
 
 [[package]]

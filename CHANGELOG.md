@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Embedded drevo (drevo-py and the Rust `embedded` feature) is pinned at the
+  drevo 0.0.86 tag (from a 0.0.43-era commit): like the server, it now fences
+  only the writes that overlap a prepared branch, and a test checks that a
+  write elsewhere commits meanwhile. An embedded query still cannot be stopped
+  by `timeout_s`.
 - The test suite runs against drevo 0.0.86 (from 0.0.43), which enforces the
   Bolt transaction timeout: a test now checks that a heavy read through
   `read_only(..., timeout_s=)` ends and the server keeps serving, and that a
