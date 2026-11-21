@@ -1550,9 +1550,10 @@ dependencies = [
 [[package]]
 name = "drevo"
 version = "0.0.0"
-source = "git+https://github.com/ice1x/drevo?rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe#cf9c7664e573906f2f7e86bd15639b7c3be559fe"
+source = "git+https://github.com/ice1x/drevo?rev=d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d#d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d"
 dependencies = [
  "bincode",
+ "drevo-auth",
  "drevo-core",
  "js-sys",
  "rayon",
@@ -1563,15 +1564,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "drevo-auth"
+version = "0.1.0"
+source = "git+https://github.com/ice1x/drevo?rev=d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d#d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "drevo-core"
-version = "0.1.1"
-source = "git+https://github.com/ice1x/drevo?rev=cf9c7664e573906f2f7e86bd15639b7c3be559fe#cf9c7664e573906f2f7e86bd15639b7c3be559fe"
+version = "0.2.0"
+source = "git+https://github.com/ice1x/drevo?rev=d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d#d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d"
 dependencies = [
  "bincode",
  "js-sys",
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "uuid",
  "windows-sys 0.59.0",
@@ -4575,7 +4585,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

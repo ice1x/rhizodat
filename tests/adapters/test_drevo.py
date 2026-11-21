@@ -112,8 +112,7 @@ def test_rollback_discards_writes(store: DrevoStore) -> None:
 
 def test_prepare_fences_overlapping_writers_until_finish(store: DrevoStore) -> None:
     """A write to what a prepared branch wrote waits for its outcome: a retryable
-    refusal. (From drevo 0.0.86 only overlapping writes are fenced; before, every
-    write was, so a write elsewhere may or may not pass depending on the version.)"""
+    refusal (drevo 0.0.86, embedded and remote, fences only overlapping writes)."""
     lbl, txn = label(), new_id()
     gid = gid_for(txn, "graph")
     store.execute(f"CREATE (:{lbl} {{v: 0}})")
@@ -134,6 +133,26 @@ def test_prepare_fences_overlapping_writers_until_finish(store: DrevoStore) -> N
     assert store.execute(f"MATCH (n:{lbl}) RETURN n.v AS v").one()["v"] == 1
     assert gid not in participant.prepared_gids()
     participant.finish(record, txn, 1)  # unknown gid + marker = already done
+
+
+def test_a_prepared_branch_lets_writes_elsewhere_pass(store: DrevoStore) -> None:
+    """Only overlapping writes are fenced: a write to another part of the graph
+    commits while a branch is prepared."""
+    lbl, txn = label(), new_id()
+    gid = gid_for(txn, "graph")
+    store.execute(f"CREATE (:{lbl} {{v: 0}})")
+    branch = store.branch(txn)
+    branch.execute(f"MATCH (n:{lbl}) SET n.v = 1")
+    branch.stage(txn, 1)
+    branch.prepare(gid)
+
+    other = store.branch(new_id())
+    other.execute(f"CREATE (:{lbl}Elsewhere {{v: 2}})")
+    other.commit_one_phase()
+    assert count(store, f"{lbl}Elsewhere") == 1
+
+    store.participant().abort(BranchRecord("graph", gid, True))
+    assert store.execute(f"MATCH (n:{lbl}) RETURN n.v AS v").one()["v"] == 0
 
 
 def test_prepared_branch_rollback_lifts_the_fence(store: DrevoStore) -> None:

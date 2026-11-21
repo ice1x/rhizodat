@@ -53,16 +53,17 @@ version every part already has.
   read (a large cross product) runs to its end and holds its memory there. The
   test suite pins drevo 0.0.86 (which requires credentials in the DSN).
 - A prepared branch fences the writes that overlap its own until it is
-  finished (retryable); from 0.0.86 writes elsewhere in the graph pass. The
-  journal still belongs in another store: an older drevo, and the embedded one
-  the tests pin, fence every write.
+  finished (retryable); from 0.0.86, remote and embedded (drevo-py is pinned
+  at the 0.0.86 tag), writes elsewhere in the graph pass. The journal still
+  belongs in another store: an older drevo fences every write.
 - Embedded (`drevo:///`, `drevo+mem://`) needs `drevo-py`, which is not on PyPI
   yet and is built from source with a Rust toolchain; one process at a time.
   Remote (`drevo+bolt://`) works with any Neo4j driver. The native facade
   reaches drevo over Bolt.
-- The **prepared fence**: while a branch is prepared, every other write to that
-  graph fails fast with a retryable error, so the journal must live elsewhere
-  and graph write throughput is bounded by the prepare → commit window. The
+- The **prepared fence**: while a branch is prepared, a write overlapping it
+  fails fast with a retryable error (on drevo before 0.0.86, every write to
+  that graph does), so writers of the same nodes are bounded by the
+  prepare → commit window. The
   behaviour of a prepared transaction on failover to a replica is still to be
   confirmed with drevo.
 - Entity parts: one node per version, labelled after the type; `str`, `int`,
