@@ -27,24 +27,34 @@ import psycopg
 import pytest
 from faker import Faker
 
+from own_prepared import release_schemas
+
 native = pytest.importorskip("rhizodat_native")
+
+
+_NAMED: list[str] = []
+"""Store names ``_store_name`` handed out during the running test."""
 
 
 @pytest.fixture(autouse=True)
 def _unfence(drevo_bolt_dsn: str) -> Iterator[None]:
-    """Best-effort: after each test, roll back any prepared branch left on the
-    shared graph, so a failure never fences the graph for the next test."""
+    """Best-effort: after each test, roll back the prepared branches it left on the
+    shared graph, so a failure never fences the graph for the next test. Only its own
+    stores' gids: other test processes prepare theirs on the same server."""
+    _NAMED.clear()
     yield
     with contextlib.suppress(Exception):
         from rhizodat.adapters.drevo import DrevoStore as PyDrevoStore
+        from rhizodat.core.coordinator import parse_gid
         from rhizodat.core.journal import BranchRecord
 
         store = PyDrevoStore(drevo_bolt_dsn, name="graph")
         try:
             participant = store.participant()
             for gid in participant.prepared_gids():
-                if gid.startswith("dat:"):
-                    participant.abort(BranchRecord("graph", gid, True))
+                parsed = parse_gid(gid)
+                if parsed is not None and parsed[1] in _NAMED:
+                    participant.abort(BranchRecord(parsed[1], gid, True))
         finally:
             store.close()
 
@@ -64,24 +74,16 @@ def make_schema(pg_dsn: str) -> Iterator[Callable[[], str]]:
     yield make
 
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
-        conn.execute(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
-            " WHERE datname = current_database() AND pid <> pg_backend_pid()"
-            " AND state LIKE 'idle in transaction%%'"
-        )
-        conn.execute("SET lock_timeout = '10s'")
-        for (gid,) in conn.execute(
-            "SELECT gid FROM pg_prepared_xacts"
-            " WHERE gid LIKE 'dat:%%' AND database = current_database()"
-        ).fetchall():
-            conn.execute(f"ROLLBACK PREPARED '{gid}'")
+        release_schemas(conn, created)  # only this test's sessions and branches
         for name in created:
             conn.execute(f'DROP SCHEMA "{name}" CASCADE')
 
 
 def _store_name() -> str:
     """A store name unique to the test, so branches never share a gid on Bolt."""
-    return f"g{uuid.uuid4().hex[:10]}"
+    name = f"g{uuid.uuid4().hex[:10]}"
+    _NAMED.append(name)
+    return name
 
 
 @pytest.fixture

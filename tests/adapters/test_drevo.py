@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from conftest import drevo_embedded_available
+from own_prepared import OwnBranches
 from rhizodat.adapters.drevo import DrevoBranch, DrevoStore
 from rhizodat.core.coordinator import gid_for
 from rhizodat.core.identity import new_id
@@ -48,10 +49,10 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[DrevoStore
         for branch in opened:  # a failed test must not leave the graph fenced
             with contextlib.suppress(Exception):
                 branch.rollback()
-        participant = s.participant()
-        for gid in participant.prepared_gids():
-            if gid.startswith("dat:"):
-                participant.abort(BranchRecord("graph", gid, True))
+        own = OwnBranches()  # only this test's gids: the Bolt server is shared
+        for branch in opened:
+            own.note(branch.dat_txn)
+        own.abort_prepared(s.name, s.participant())
     finally:
         s.close()
 

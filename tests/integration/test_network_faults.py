@@ -16,11 +16,13 @@ from typing import Any
 import pytest
 from faker import Faker
 
+from own_prepared import OwnBranches
 from rhizodat import Committed, CommittedPending, InDoubt, Retry, Rhizodat, UnitOfWork
 from rhizodat.adapters.clickhouse import ClickHouseStore
 from rhizodat.adapters.drevo import DrevoStore
 from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
-from rhizodat.core.journal import BranchRecord, State
+from rhizodat.core.coordinator import gid_for
+from rhizodat.core.journal import State
 from toxiproxy import Proxy, Toxiproxy, through
 
 
@@ -111,7 +113,9 @@ def tracker(
             "CREATE TABLE activity (task_id UUID, event String, dat_txn UUID, dat_tx_time Int64)"
             " ENGINE = MergeTree ORDER BY task_id"
         )
-        graph = DrevoStore(through(drevo_bolt_dsn, 58404), name="graph")
+        own = OwnBranches()  # only this test's gids: the servers are shared
+        pg = own.track(pg)
+        graph = own.track(DrevoStore(through(drevo_bolt_dsn, 58404), name="graph"))
         wall = Wall()
         journal = PostgresJournal(through(pg_dsn, 58401), schema=pg_schema, wall_ms=wall)
         fast = Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0)
@@ -126,9 +130,7 @@ def tracker(
             yield t
         finally:
             t.heal()
-            for gid in graph.participant().prepared_gids():
-                if gid.startswith("dat:"):
-                    graph.participant().abort(BranchRecord("graph", gid, True))
+            own.abort_prepared(graph.name, graph.participant())
             dat.close()
 
 
@@ -159,15 +161,15 @@ def test_journal_lost_at_the_decision_is_in_doubt_then_presumed_aborted(
     with pytest.raises(InDoubt):
         uow.commit()
     # Prepared in PostgreSQL and drevo (drevo's fence is up), nothing decided.
-    assert tracker.pg.participant().prepared_gids() != []
+    assert gid_for(uow.dat_txn, "pg") in tracker.pg.participant().prepared_gids()
     tracker.heal()
     assert tracker.state(uow.dat_txn) is State.PREPARED
 
     report = tracker.recover()
     assert report.aborted == [uow.dat_txn]
     assert (tracker.tasks(), tracker.activity(), tracker.blockers()) == (0, 0, 0)
-    assert [g for g in tracker.pg.participant().prepared_gids() if g.startswith("dat:")] == []
-    assert [g for g in tracker.graph.participant().prepared_gids() if g.startswith("dat:")] == []
+    for store in (tracker.pg, tracker.graph):
+        assert gid_for(uow.dat_txn, store.name) not in store.participant().prepared_gids()
 
 
 def test_journal_lost_right_after_the_decision_keeps_the_commit(
