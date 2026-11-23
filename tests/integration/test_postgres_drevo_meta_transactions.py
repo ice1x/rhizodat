@@ -10,12 +10,13 @@ from faker import Faker
 
 from conftest import drevo_embedded_available
 from fakes import Crash
+from own_prepared import OwnBranches
 from rhizodat.adapters.drevo import DrevoStore
 from rhizodat.adapters.postgres import PostgresJournal, PostgresStore
 from rhizodat.core.clock import HybridLogicalClock
-from rhizodat.core.coordinator import Committed, Coordinator, Participant, Recovery
+from rhizodat.core.coordinator import Committed, Coordinator, Participant, Recovery, gid_for
 from rhizodat.core.identity import new_id
-from rhizodat.core.journal import BranchRecord, State
+from rhizodat.core.journal import State
 from rhizodat.core.retry import Retry
 
 
@@ -61,9 +62,10 @@ class Editor:
     journal: PostgresJournal
     wall: Wall
     label: str  # unique per test so a shared drevo server stays clean
+    own: OwnBranches  # the meta-transactions this test opened branches for
 
     def participants(self) -> dict[str, Participant]:
-        return {"pg": self.pg.participant(), "graph": self.graph.participant()}
+        return {self.pg.name: self.pg.participant(), self.graph.name: self.graph.participant()}
 
     def coordinator(self, participants: dict[str, Participant] | None = None) -> Coordinator:
         return Coordinator(
@@ -98,8 +100,14 @@ class Editor:
         return int(self.graph.execute(q).one()["n"])
 
     def prepared(self) -> list[str]:
-        gids = self.pg.participant().prepared_gids() + self.graph.participant().prepared_gids()
-        return [g for g in gids if g.startswith("dat:")]
+        """This test's prepared gids (the servers also hold other processes' gids)."""
+        return self.own.prepared(self.pg.name, self.pg.participant()) + self.own.prepared(
+            self.graph.name, self.graph.participant()
+        )
+
+    def release(self) -> None:
+        """Teardown: roll back the graph branches this test left prepared, and only those."""
+        self.own.abort_prepared(self.graph.name, self.graph.participant())
 
 
 @pytest.fixture(params=["embedded", "bolt"])
@@ -112,18 +120,20 @@ def editor(
         dsn = f"drevo://{tmp_path / 'story.drevo'}"
     else:
         pytest.skip("drevo-py with 2PC is not installed")
-    pg = PostgresStore(pg_dsn, name="pg", schema=pg_schema)
+    # Store names unique to the test: on the shared servers, recovery's orphan sweep
+    # then only ever sees this test's gids, never another process's.
+    suffix = uuid.uuid4().hex[:8]
+    own = OwnBranches()
+    pg = own.track(PostgresStore(pg_dsn, name=f"pg_{suffix}", schema=pg_schema))
     pg.install()
     pg.execute("CREATE TABLE chapters (dat_id uuid PRIMARY KEY, title text NOT NULL, body text)")
-    graph = DrevoStore(dsn, name="graph")
+    graph = own.track(DrevoStore(dsn, name=f"graph_{suffix}"))
     wall = Wall()
     journal = PostgresJournal(pg_dsn, schema=pg_schema, wall_ms=wall)
-    ed = Editor(pg, graph, journal, wall, f"Ch{uuid.uuid4().hex[:8]}")
+    ed = Editor(pg, graph, journal, wall, f"Ch{suffix}", own)
     yield ed
     try:
-        for gid in graph.participant().prepared_gids():
-            if gid.startswith("dat:"):
-                graph.participant().abort(BranchRecord("graph", gid, True))
+        ed.release()
     finally:
         journal.close()
         graph.close()
@@ -183,7 +193,7 @@ def test_crash_while_finishing_is_rolled_forward(editor: Editor, faker: Faker) -
     txn = new_id()
     branches = editor.write_chapter(txn, faker.sentence(), faker.text(), ["Ada", "Grace"])
     participants = editor.participants()
-    participants["pg"] = CrashingParticipant(participants["pg"], "finish")  # type: ignore[assignment]
+    participants[editor.pg.name] = CrashingParticipant(participants[editor.pg.name], "finish")  # type: ignore[assignment]
 
     with pytest.raises(Crash):
         editor.coordinator(participants).commit(txn, branches)  # type: ignore[arg-type]
@@ -209,7 +219,7 @@ def test_a_concurrent_graph_writer_sees_a_retryable_fence(editor: Editor, faker:
     )
     graph_branch.execute(f"{book} SET b.chapters = b.chapters + 1")  # type: ignore[attr-defined]
     graph_branch.stage(txn, 1)  # type: ignore[attr-defined]
-    graph_branch.prepare(f"dat:{txn}:graph")  # type: ignore[attr-defined]
+    graph_branch.prepare(gid_for(txn, editor.graph.name))  # type: ignore[attr-defined]
 
     other = editor.graph.branch(new_id())
     other.execute(f"{book} SET b.chapters = b.chapters + 1")
@@ -218,4 +228,33 @@ def test_a_concurrent_graph_writer_sees_a_retryable_fence(editor: Editor, faker:
 
     graph_branch.rollback()  # type: ignore[attr-defined]
     chapter_branch.rollback()  # type: ignore[attr-defined]
+    assert editor.prepared() == []
+
+
+def test_teardown_leaves_another_processes_prepared_branch_alone(
+    editor: Editor, faker: Faker
+) -> None:
+    """The Bolt drevo server is shared with other test processes (``cargo test``, another
+    pytest): the teardown rolls back this test's prepared branches, never theirs."""
+    theirs = new_id()
+    foreign = DrevoStore.branch(editor.graph, theirs)  # not through the editor: not ours
+    foreign.stage(theirs, 1)
+    foreign_gid = gid_for(theirs, editor.graph.name)
+    foreign.prepare(foreign_gid)
+    try:
+        editor.release()
+        assert foreign_gid in editor.graph.participant().prepared_gids()
+    finally:
+        foreign.rollback()
+
+    # The same teardown does roll back a branch the test opened and left prepared.
+    mine = new_id()
+    graph_branch, chapter_branch = editor.write_chapter(
+        mine, faker.sentence(), faker.text(), ["Ada"]
+    )
+    chapter_branch.rollback()  # type: ignore[attr-defined]
+    graph_branch.stage(mine, 1)  # type: ignore[attr-defined]
+    graph_branch.prepare(gid_for(mine, editor.graph.name))  # type: ignore[attr-defined]
+    assert editor.prepared() == [gid_for(mine, editor.graph.name)]
+    editor.release()
     assert editor.prepared() == []

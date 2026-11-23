@@ -39,19 +39,12 @@ def pg_schema(pg_dsn: str) -> Iterator[str]:
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
         conn.execute(f'CREATE SCHEMA "{name}"')
     yield name
+    from own_prepared import release_schemas
+
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
-        # A failed test may leave a branch open; never let it block the cleanup.
-        conn.execute(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
-            " WHERE datname = current_database() AND pid <> pg_backend_pid()"
-            " AND state LIKE 'idle in transaction%%'"
-        )
-        conn.execute("SET lock_timeout = '10s'")
-        for (gid,) in conn.execute(
-            "SELECT gid FROM pg_prepared_xacts"
-            " WHERE gid LIKE 'dat:%%' AND database = current_database()"
-        ).fetchall():
-            conn.execute(f"ROLLBACK PREPARED '{gid}'")
+        # A failed test may leave a branch open or prepared; never let it block the
+        # cleanup, and never touch another test process's branches on the shared server.
+        release_schemas(conn, [name])
         conn.execute(f'DROP SCHEMA "{name}" CASCADE')
 
 

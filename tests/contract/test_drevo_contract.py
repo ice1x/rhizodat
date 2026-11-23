@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 
 from conftest import drevo_embedded_available
+from own_prepared import OwnBranches
 from rhizodat.adapters.drevo import DrevoBranch, DrevoStore
-from rhizodat.core.journal import BranchRecord
 from rhizodat.testing.contract import AdapterContract
 
 
@@ -46,12 +46,11 @@ class DrevoHarness:
         for branch in self.branches:
             with contextlib.suppress(Exception):  # committed or resolved ones refuse: fine
                 branch.rollback()
+        own = OwnBranches()  # only this test's gids: the Bolt server is shared
+        for branch in self.branches:
+            own.note(branch.dat_txn)
         for store in self.stores:
-            participant = store.participant()
-            for gid in participant.prepared_gids():
-                if gid.endswith(f":{store.name}"):
-                    with contextlib.suppress(Exception):
-                        participant.abort(BranchRecord(store.name, gid, True))
+            own.abort_prepared(store.name, store.participant())
             store.close()
 
 

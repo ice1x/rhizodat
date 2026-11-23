@@ -23,6 +23,8 @@ import psycopg
 import pytest
 from faker import Faker
 
+from own_prepared import release_schemas
+
 native = pytest.importorskip("rhizodat_native")
 
 
@@ -41,18 +43,7 @@ def make_schema(pg_dsn: str) -> Iterator[Callable[[], str]]:
     yield make
 
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
-        # A failed test may leave a branch open or a transaction prepared.
-        conn.execute(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
-            " WHERE datname = current_database() AND pid <> pg_backend_pid()"
-            " AND state LIKE 'idle in transaction%%'"
-        )
-        conn.execute("SET lock_timeout = '10s'")
-        for (gid,) in conn.execute(
-            "SELECT gid FROM pg_prepared_xacts"
-            " WHERE gid LIKE 'dat:%%' AND database = current_database()"
-        ).fetchall():
-            conn.execute(f"ROLLBACK PREPARED '{gid}'")
+        release_schemas(conn, created)  # only this test's sessions and branches
         for name in created:
             conn.execute(f'DROP SCHEMA "{name}" CASCADE')
 
@@ -66,11 +57,13 @@ def _applied(pg_dsn: str, schema: str, dat_txn: uuid.UUID) -> bool:
     return bool(rows)
 
 
-def _prepared(pg_dsn: str) -> int:
+def _prepared(pg_dsn: str, dat_txn: uuid.UUID) -> int:
+    """How many of ``dat_txn``'s branches are prepared (other processes share the server)."""
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
         row = conn.execute(
             "SELECT count(*) FROM pg_prepared_xacts"
-            " WHERE gid LIKE 'dat:%%' AND database = current_database()"
+            " WHERE gid LIKE %s AND database = current_database()",
+            (f"dat:{dat_txn}:%",),
         ).fetchone()
     assert row is not None
     return int(row[0])
@@ -146,7 +139,7 @@ def test_a_staging_failure_before_the_decision_commits_nothing(
     assert excinfo.value.dat_txn == txn
     # All-or-nothing: nobody applied, nothing left prepared, the journal not DONE.
     assert not _applied(pg_dsn, schema_a, txn)
-    assert _prepared(pg_dsn) == 0
+    assert _prepared(pg_dsn, txn) == 0
     record = journal.get(txn)
     assert record is None or record["state"] == "ABORTED"
 

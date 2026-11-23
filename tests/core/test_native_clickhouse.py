@@ -18,6 +18,8 @@ from typing import Any
 import psycopg
 import pytest
 
+from own_prepared import release_schemas
+
 native = pytest.importorskip("rhizodat_native")
 
 
@@ -52,17 +54,7 @@ def make_schema(pg_dsn: str) -> Iterator[Callable[[], str]]:
     yield make
 
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
-        conn.execute(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
-            " WHERE datname = current_database() AND pid <> pg_backend_pid()"
-            " AND state LIKE 'idle in transaction%%'"
-        )
-        conn.execute("SET lock_timeout = '10s'")
-        for (gid,) in conn.execute(
-            "SELECT gid FROM pg_prepared_xacts"
-            " WHERE gid LIKE 'dat:%%' AND database = current_database()"
-        ).fetchall():
-            conn.execute(f"ROLLBACK PREPARED '{gid}'")
+        release_schemas(conn, created)  # only this test's sessions and branches
         for name in created:
             conn.execute(f'DROP SCHEMA "{name}" CASCADE')
 
