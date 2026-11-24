@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Docs: `drevo.events.post` inside an MCP read posts nothing (drevo publishes
+  an event only when its transaction commits, and the read is rolled back);
+  the MCP guide said it ran inside the transaction without saying so.
 - Go (preview): references between entities (`rhizodat.Ref[T]`, `RefTo`;
   linked in drevo like Python's `Ref`) and valid time (embed
   `rhizodat.Validity`; reads `AsOf` a moment among the versions known at

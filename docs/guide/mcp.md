@@ -32,8 +32,12 @@ cannot change data:
   rollback is what undoes writes — and **it cannot undo a procedure's effects
   outside the graph**: on a drevo with a chat upstream configured
   (`DREVO_EXTRACT_UPSTREAM`), a "read" can call `drevo.extract.*` and spend on
-  the model, and `drevo.events.post` runs inside the transaction too. Give an
-  agent such a store only when that is acceptable. Checked on drevo 0.0.86:
+  the model. Give an agent such a store only when that is acceptable.
+  `drevo.events.post` is accepted in a read but posts nothing: drevo publishes
+  a posted event to `GET /events` only when its transaction commits (its
+  Cypher reference, and its test
+  `an_explicit_transaction_posts_on_commit_and_nothing_on_rollback`), and the
+  read is always rolled back. Checked on drevo 0.0.86:
   the procedures that change the server's state (`drevo.tx.*`,
   `apoc.trigger.install`, `drevo.sequence.create`) refuse to run inside a
   transaction, so a query cannot resolve another meta-transaction's prepared
