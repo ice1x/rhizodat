@@ -107,8 +107,12 @@ func (s *ClickHouseStore) Close() {
 // concurrent use. Close it when done.
 type DrevoStore struct {
 	ptr  *C.RhizodatDrevoStore
+	name string
 	once sync.Once
 }
+
+// Name is the store's name.
+func (s *DrevoStore) Name() string { return s.name }
 
 // OpenDrevo is a graph store named name over dsn ("drevo+bolt://...").
 func OpenDrevo(dsn, name string) (*DrevoStore, error) {
@@ -120,7 +124,7 @@ func OpenDrevo(dsn, name string) (*DrevoStore, error) {
 	}); err != nil {
 		return nil, err
 	}
-	s := &DrevoStore{ptr: ptr}
+	s := &DrevoStore{ptr: ptr, name: name}
 	runtime.SetFinalizer(s, (*DrevoStore).Close)
 	return s, nil
 }

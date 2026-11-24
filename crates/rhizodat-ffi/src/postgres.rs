@@ -196,7 +196,10 @@ pub(crate) unsafe fn part_spec(spec_json: *const c_char) -> Result<PartSpec, Fai
     let columns = spec
         .columns
         .into_iter()
-        .map(|(name, ty)| Ok((name, ty.parse::<ColumnType>()?)))
+        .map(|column| {
+            let (name, ty, _) = column.into_parts();
+            Ok((name, ty.parse::<ColumnType>()?))
+        })
         .collect::<Result<Vec<_>, ConfigError>>()
         .map_err(|e| (RhizodatStatus::InvalidArgument, e.to_string()))?;
     PartSpec::new(&spec.type_name, &spec.table, columns)

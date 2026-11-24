@@ -10,9 +10,9 @@ var issueSpec = PartSpec{
 	Type:  "tracker.Issue",
 	Table: "tracker_issue",
 	Columns: []PartColumn{
-		{"title", "text"},
-		{"points", "bigint"},
-		{"tags", "jsonb"},
+		{Name: "title", Type: "text"},
+		{Name: "points", Type: "bigint"},
+		{Name: "tags", Type: "jsonb"},
 	},
 }
 
@@ -154,7 +154,7 @@ func TestASoftDeletedPartExpires(t *testing.T) {
 func TestMalformedPartsAreRefused(t *testing.T) {
 	d := newDB(t)
 	pg := d.store("pg")
-	bad := PartSpec{Type: "x", Table: "x", Columns: []PartColumn{{"a", "varchar"}}}
+	bad := PartSpec{Type: "x", Table: "x", Columns: []PartColumn{{Name: "a", Type: "varchar"}}}
 	if err := pg.InstallPart(bad); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("an unknown column type: %v", err)
 	}

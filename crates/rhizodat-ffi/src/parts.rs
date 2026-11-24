@@ -31,7 +31,148 @@ pub(crate) struct Spec {
     #[serde(rename = "type")]
     pub(crate) type_name: String,
     pub(crate) table: String,
-    pub(crate) columns: Vec<(String, String)>,
+    pub(crate) columns: Vec<Column>,
+}
+
+/// One field: `[name, type]`, or `[name, type, is a reference]` (drevo links a
+/// reference field's targets).
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Column {
+    Plain(String, String),
+    Reference(String, String, bool),
+}
+
+impl Column {
+    /// The name, the store type and whether it is a reference.
+    pub(crate) fn into_parts(self) -> (String, String, bool) {
+        match self {
+            Column::Plain(name, ty) => (name, ty, false),
+            Column::Reference(name, ty, reference) => (name, ty, reference),
+        }
+    }
+}
+
+/// A store's committed parts, behind the C ABI's part functions.
+pub(crate) trait PartReads {
+    /// The store's spec type.
+    type Spec;
+    /// The spec as the store's.
+    fn spec(spec: Spec) -> Result<Self::Spec, Failure>;
+    async fn install(&self, spec: &Self::Spec) -> Result<(), Failure>;
+    /// The latest version known at `known_at`, as JSON.
+    async fn read(
+        &self,
+        spec: &Self::Spec,
+        dat_id: Uuid,
+        known_at: Option<i64>,
+    ) -> Result<Option<String>, Failure>;
+    /// Every version, oldest first, as JSON.
+    async fn history(&self, spec: &Self::Spec, dat_id: Uuid) -> Result<Vec<String>, Failure>;
+    /// Every entity's versions known at `known_at`, oldest first, as JSON.
+    async fn versions(
+        &self,
+        spec: &Self::Spec,
+        known_at: Option<i64>,
+    ) -> Result<Vec<(Uuid, String)>, Failure>;
+    async fn expired(
+        &self,
+        spec: &Self::Spec,
+        deleted_before: i64,
+        limit: i64,
+    ) -> Result<Vec<Uuid>, Failure>;
+}
+
+/// `rhizodat_<kind>_store_install_part`.
+///
+/// # Safety
+///
+/// `spec_json` must be null or a NUL-terminated string.
+pub(crate) unsafe fn install<S: PartReads>(
+    store: &S,
+    spec_json: *const c_char,
+) -> Result<(), Failure> {
+    // SAFETY: the caller's contract.
+    let spec = S::spec(unsafe { spec(spec_json) }?)?;
+    crate::runtime()?.block_on(store.install(&spec))
+}
+
+/// `rhizodat_<kind>_store_read_part`: the version's JSON, or `null`.
+///
+/// # Safety
+///
+/// `spec_json` and `dat_id` must be null or NUL-terminated strings; `known_at`
+/// null or readable.
+pub(crate) unsafe fn read<S: PartReads>(
+    store: &S,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    known_at: *const i64,
+) -> Result<String, Failure> {
+    // SAFETY: the caller's contract.
+    let (spec, dat_id, known_at) = unsafe {
+        (
+            S::spec(spec(spec_json)?)?,
+            uuid_arg(dat_id, "dat_id")?,
+            optional_i64(known_at),
+        )
+    };
+    let version = crate::runtime()?.block_on(store.read(&spec, dat_id, known_at))?;
+    Ok(version.unwrap_or_else(|| "null".to_owned()))
+}
+
+/// `rhizodat_<kind>_store_part_history`: a JSON array.
+///
+/// # Safety
+///
+/// `spec_json` and `dat_id` must be null or NUL-terminated strings.
+pub(crate) unsafe fn history<S: PartReads>(
+    store: &S,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+) -> Result<String, Failure> {
+    // SAFETY: the caller's contract.
+    let (spec, dat_id) = unsafe { (S::spec(spec(spec_json)?)?, uuid_arg(dat_id, "dat_id")?) };
+    Ok(json_array(
+        crate::runtime()?.block_on(store.history(&spec, dat_id))?,
+    ))
+}
+
+/// `rhizodat_<kind>_store_part_versions`: a JSON array of versions with their
+/// entity's `dat_id`.
+///
+/// # Safety
+///
+/// `spec_json` must be null or a NUL-terminated string; `known_at` null or
+/// readable.
+pub(crate) unsafe fn versions<S: PartReads>(
+    store: &S,
+    spec_json: *const c_char,
+    known_at: *const i64,
+) -> Result<String, Failure> {
+    // SAFETY: the caller's contract.
+    let (spec, known_at) = unsafe { (S::spec(spec(spec_json)?)?, optional_i64(known_at)) };
+    let versions = crate::runtime()?.block_on(store.versions(&spec, known_at))?;
+    Ok(json_array(
+        versions.iter().map(|(id, v)| entity_version_json(*id, v)),
+    ))
+}
+
+/// `rhizodat_<kind>_store_expired_parts`: a JSON array of ids.
+///
+/// # Safety
+///
+/// `spec_json` must be null or a NUL-terminated string.
+pub(crate) unsafe fn expired<S: PartReads>(
+    store: &S,
+    spec_json: *const c_char,
+    deleted_before: i64,
+    limit: i64,
+) -> Result<String, Failure> {
+    // SAFETY: the caller's contract.
+    let spec = S::spec(unsafe { spec(spec_json) }?)?;
+    let ids = crate::runtime()?.block_on(store.expired(&spec, deleted_before, limit))?;
+    Ok(json_array(ids.iter().map(|id| format!("\"{id}\""))))
 }
 
 /// `spec_json` as a [`Spec`].

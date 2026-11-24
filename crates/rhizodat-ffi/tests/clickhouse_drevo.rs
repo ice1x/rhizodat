@@ -384,3 +384,141 @@ fn bad_inserts_and_parameters_are_refused() {
         rhizodat_clickhouse_store_free(metrics);
     }
 }
+
+// --- entity parts in drevo -----------------------------------------------------------
+
+#[test]
+fn drevo_entity_parts_are_written_in_a_unit_and_read_by_known_time() {
+    let Some(dsn) = dsn("RHIZODAT_TEST_DREVO_BOLT", 57687) else {
+        return;
+    };
+    let store = drevo(&dsn, "graph");
+    let label = format!("FfiPart{}", suffix());
+    let spec = c(&json!({"type": "tracker.Component", "table": label,
+        "columns": [["title", "native"], ["owner", "uuid", false], ["meta", "json"]]})
+    .to_string());
+    // SAFETY: a live handle and a valid string.
+    ok(|e| unsafe { rhizodat_drevo_store_install_part(store, spec.as_ptr(), e) });
+
+    let mut id = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_new_id(&raw mut id, e) });
+    let id = take(id);
+    let owner = "01920000-0000-7000-8000-000000000001";
+    let cid = c(&id);
+    let mut unit = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_unit_new(&raw mut unit, e) });
+    let (fields, values) = (
+        c(r#"["title", "owner", "meta"]"#),
+        c(
+            &json!(["Billing", {"$": "uuid", "v": owner}, {"$": "map", "v": [["tier", 1]]}])
+                .to_string(),
+        ),
+    );
+    // SAFETY: live handles, valid strings, null `created`.
+    ok(|e| unsafe {
+        rhizodat_unit_drevo_write_part(
+            unit,
+            store,
+            spec.as_ptr(),
+            cid.as_ptr(),
+            fields.as_ptr(),
+            values.as_ptr(),
+            ptr::null(),
+            false,
+            e,
+        )
+    });
+    let mut out = ptr::null_mut();
+    // SAFETY: live handles, valid strings, a writable local.
+    ok(|e| unsafe {
+        rhizodat_unit_drevo_own_part(unit, store, spec.as_ptr(), cid.as_ptr(), &raw mut out, e)
+    });
+    let own: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(own["touched"], json!(true));
+    assert_eq!(own["version"]["values"][0], json!("Billing"));
+
+    let mut coordinator = ptr::null_mut();
+    // SAFETY: a writable local; no journal (one store).
+    ok(|e| unsafe { rhizodat_coordinator_new(ptr::null(), &raw mut coordinator, e) });
+    let mut done = ptr::null_mut();
+    // SAFETY: live handles and a writable local.
+    ok(|e| unsafe { rhizodat_coordinator_commit(coordinator, unit, &raw mut done, e) });
+    let done: Value = serde_json::from_str(&take(done)).unwrap();
+    let t = done["dat_tx_time"].as_i64().unwrap();
+
+    let read = |known_at: Option<i64>| -> Value {
+        let known_at = known_at.as_ref().map_or(ptr::null(), ptr::from_ref);
+        let mut out = ptr::null_mut();
+        // SAFETY: a live handle, valid strings, `known_at` null or a live local.
+        ok(|e| unsafe {
+            rhizodat_drevo_store_read_part(
+                store,
+                spec.as_ptr(),
+                cid.as_ptr(),
+                known_at,
+                &raw mut out,
+                e,
+            )
+        });
+        serde_json::from_str(&take(out)).unwrap()
+    };
+    let v = read(None);
+    assert_eq!(v["dat_txn"], done["dat_txn"]);
+    assert_eq!(v["created"], json!(t));
+    assert_eq!(
+        v["values"],
+        json!(["Billing", {"$": "uuid", "v": owner}, {"$": "map", "v": [["tier", 1]]}])
+    );
+    assert_eq!(read(Some(t - 1)), Value::Null);
+
+    let mut out = ptr::null_mut();
+    // SAFETY: a live handle, valid strings, a writable local.
+    ok(|e| unsafe {
+        rhizodat_drevo_store_part_history(store, spec.as_ptr(), cid.as_ptr(), &raw mut out, e)
+    });
+    let history: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 1);
+
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_drevo_store_part_versions(store, spec.as_ptr(), ptr::null(), &raw mut out, e)
+    });
+    let all: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(all[0]["dat_id"], json!(id));
+
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_drevo_store_expired_parts(store, spec.as_ptr(), t + 1, 10, &raw mut out, e)
+    });
+    assert_eq!(take(out), "[]", "a live part does not expire");
+
+    let mut unit2 = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_unit_new(&raw mut unit2, e) });
+    // SAFETY: live handles and valid strings.
+    ok(|e| unsafe { rhizodat_unit_drevo_erase_part(unit2, store, spec.as_ptr(), cid.as_ptr(), e) });
+    let mut done2 = ptr::null_mut();
+    // SAFETY: live handles and a writable local.
+    ok(|e| unsafe { rhizodat_coordinator_commit(coordinator, unit2, &raw mut done2, e) });
+    take(done2);
+    assert_eq!(read(None), Value::Null, "erased");
+
+    let bad = c(r#"{"type": "x", "table": "X", "columns": [["a", "text"]]}"#);
+    // SAFETY: a live handle and a valid string.
+    let (status, message) =
+        run(|e| unsafe { rhizodat_drevo_store_install_part(store, bad.as_ptr(), e) });
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+    assert!(message.contains("text"), "{message}");
+
+    // SAFETY: freed once each.
+    unsafe {
+        rhizodat_unit_free(unit);
+        rhizodat_unit_free(unit2);
+        rhizodat_coordinator_free(coordinator);
+        rhizodat_drevo_store_free(store);
+    }
+}
