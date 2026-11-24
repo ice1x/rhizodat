@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Go (preview): entity parts in ClickHouse (`rhizodat_clickhouse_store_*_part`,
+  `rhizodat_unit_clickhouse_*_part`; `rhizodat-units`' ClickHouse store now
+  carries a unit's parts into the commit), so an entity repository spans
+  ClickHouse too.
 - Go (preview): entity parts in drevo (`rhizodat_drevo_store_*_part`,
   `rhizodat_unit_drevo_*_part`), so an entity repository spans PostgreSQL and
   drevo stores in one meta-transaction. `PartColumn` has a `Reference` flag

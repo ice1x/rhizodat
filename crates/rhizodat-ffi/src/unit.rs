@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::ffi::c_char;
 use std::sync::{Arc, Mutex};
 
+use rhizodat_clickhouse::parts::ClickHouseParts;
 use rhizodat_clickhouse::{ClickHouseBranch, ClickHouseStore};
 use rhizodat_core::clock::HybridLogicalClock;
 use rhizodat_core::coordinator::{CommitError, Outcome};
@@ -29,7 +30,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::arrow::record_batch;
-use crate::clickhouse::RhizodatClickHouseStore;
+use crate::clickhouse::{RhizodatClickHouseStore, clickhouse_spec};
 use crate::drevo::{RhizodatDrevoStore, cypher_params, drevo_spec};
 use crate::iceberg::RhizodatIcebergStore;
 use crate::postgres::{RhizodatJournal, RhizodatPostgresStore, part_spec};
@@ -51,6 +52,7 @@ enum Pending {
         /// names, row lengths), so a bad one is refused at insert.
         check: Box<ClickHouseBranch>,
         inserts: Vec<(String, Vec<String>, Vec<Vec<RowValue>>)>,
+        parts: ClickHouseParts,
     },
     Drevo {
         store: Arc<DrevoStore>,
@@ -75,9 +77,15 @@ impl Pending {
                 rows: rows.clone(),
                 parts: parts.clone(),
             }),
-            Pending::ClickHouse { store, inserts, .. } => Arc::new(ClickHousePending {
+            Pending::ClickHouse {
+                store,
+                inserts,
+                parts,
+                ..
+            } => Arc::new(ClickHousePending {
                 store: store.clone(),
                 inserts: inserts.clone(),
+                parts: parts.clone(),
             }),
             Pending::Drevo {
                 store,
@@ -457,6 +465,160 @@ pub unsafe extern "C" fn rhizodat_unit_drevo_own_part(
     }
 }
 
+fn clickhouse_pending(store: &Arc<ClickHouseStore>) -> Pending {
+    Pending::ClickHouse {
+        store: store.clone(),
+        check: Box::new(store.branch()),
+        inserts: Vec::new(),
+        parts: ClickHouseParts::new(),
+    }
+}
+
+/// The parts buffered for a ClickHouse store, made on first use.
+///
+/// # Safety
+///
+/// `unit` and `store` must be null or live handles.
+unsafe fn clickhouse_parts<R>(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatClickHouseStore,
+    with: impl FnOnce(&mut ClickHouseParts) -> Result<R, Failure>,
+) -> Result<R, Failure> {
+    // SAFETY: the caller's contract.
+    let (unit, store) = unsafe { (handle(unit, "unit")?, handle(store, "store")?.0.clone()) };
+    let mut buffer = unit
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pending = buffer_of(
+        &mut buffer,
+        store.name(),
+        Arc::as_ptr(&store).cast(),
+        || clickhouse_pending(&store),
+    )?;
+    let Pending::ClickHouse { parts, .. } = pending else {
+        unreachable!("a buffer holds its own store's kind")
+    };
+    with(parts)
+}
+
+/// Buffer a version of `dat_id`'s part in a ClickHouse store, as
+/// [`rhizodat_unit_postgres_write_part`] (one-phase: in the journal payload, applied after the decision).
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json`, `dat_id`,
+/// `fields_json` and `values_json` NUL-terminated strings; `created` null or
+/// readable; `error` null or writable.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rhizodat_unit_clickhouse_write_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatClickHouseStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    fields_json: *const c_char,
+    values_json: *const c_char,
+    created: *const i64,
+    deleted: bool,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = clickhouse_spec(parts::spec(spec_json)?)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let values = parts::field_values(fields_json, values_json)?;
+            let created = parts::optional_i64(created);
+            clickhouse_parts(unit, store, |parts| {
+                parts
+                    .write(&spec, dat_id, &values, created, deleted)
+                    .map_err(|e| invalid(e.to_string()))
+            })
+        })
+    }
+}
+
+/// Buffer the removal of every version of `dat_id`'s part in a ClickHouse store.
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_clickhouse_erase_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatClickHouseStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = clickhouse_spec(parts::spec(spec_json)?)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            clickhouse_parts(unit, store, |parts| {
+                parts.erase(&spec, dat_id);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// This unit of work's own latest version of `dat_id`'s part in a ClickHouse store,
+/// as [`rhizodat_unit_postgres_own_part`].
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_clickhouse_own_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatClickHouseStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let spec = clickhouse_spec(parts::spec(spec_json)?)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let (unit, store) = (handle(unit, "unit")?, handle(store, "store")?.0.clone());
+            let buffer = unit
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A read: a store this unit has not written to stays out of it.
+            let own = match buffer.get(store.name()) {
+                Some(Pending::ClickHouse {
+                    store: held, parts, ..
+                }) if Arc::ptr_eq(held, &store) => {
+                    parts.latest(spec.table(), dat_id).map(|version| {
+                        version.map(|v| {
+                            parts::version_json(None, None, v.created, v.deleted, &v.values)
+                        })
+                    })
+                }
+                Some(_) => {
+                    return Err(invalid(format!(
+                        "two stores named {:?} in one unit of work",
+                        store.name()
+                    )));
+                }
+                None => None,
+            };
+            *out = owned_string(parts::own_json(own));
+            Ok(())
+        })
+    }
+}
+
 /// A unit of work: writes buffered per store, committed together.
 pub struct RhizodatUnit(Mutex<BTreeMap<String, Pending>>);
 
@@ -574,11 +736,7 @@ pub unsafe extern "C" fn rhizodat_unit_clickhouse_insert(
                 &mut buffer,
                 store.name(),
                 Arc::as_ptr(&store).cast(),
-                || Pending::ClickHouse {
-                    store: store.clone(),
-                    check: Box::new(store.branch()),
-                    inserts: Vec::new(),
-                },
+                || clickhouse_pending(&store),
             )?;
             let Pending::ClickHouse { check, inserts, .. } = pending else {
                 unreachable!("a buffer holds its own store's kind")
