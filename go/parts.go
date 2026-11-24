@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"runtime"
 	"sort"
 )
@@ -354,4 +355,27 @@ func (u *Unit) OwnPart(store *PostgresStore, spec PartSpec, id UUID) (OwnPart, e
 		own.Version = v
 	}
 	return own, nil
+}
+
+// PartStore of a PostgreSQL store.
+
+func (s *PostgresStore) partColumnType(t reflect.Type) (string, bool) { return postgresColumnType(t) }
+func (s *PostgresStore) installPart(spec PartSpec) error              { return s.InstallPart(spec) }
+func (s *PostgresStore) readPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
+	return s.ReadPart(spec, id, knownAt)
+}
+func (s *PostgresStore) partHistory(spec PartSpec, id UUID) ([]PartVersion, error) {
+	return s.PartHistory(spec, id)
+}
+func (s *PostgresStore) expiredParts(spec PartSpec, deletedBefore, limit int64) ([]UUID, error) {
+	return s.ExpiredParts(spec, deletedBefore, limit)
+}
+func (s *PostgresStore) writePart(u *Unit, spec PartSpec, id UUID, values map[string]any, created *int64, deleted bool) error {
+	return u.WritePart(s, spec, id, values, created, deleted)
+}
+func (s *PostgresStore) erasePart(u *Unit, spec PartSpec, id UUID) error {
+	return u.ErasePart(s, spec, id)
+}
+func (s *PostgresStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error) {
+	return u.OwnPart(s, spec, id)
 }

@@ -459,6 +459,13 @@ Steps:
    entity's versions and the expired soft deletes, in the reference's layout.
    Next: the entity repository in Go over them (add, get, update, delete,
    history, `as_of` / `known_at`), then the parts of the other stores.
+   ✔ The entity repository in Go: a struct embedding `Entity` with its fields
+   tagged by store, the Python facade's tables and column types, and the
+   reference's logic — add, get, update, save, hard and soft delete, restore
+   within the window, purge, history, reads as known at a moment that agree
+   across stores, and a repository inside a caller's unit of work — over
+   PostgreSQL stores. Next: entity parts in ClickHouse, drevo and Iceberg from
+   Go, then references, valid time and a type shared by both facades.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

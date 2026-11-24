@@ -35,8 +35,12 @@ func freeC(ptrs ...*C.char) {
 // concurrent use. Close it when done (a finalizer frees it otherwise).
 type PostgresStore struct {
 	ptr  *C.RhizodatPostgresStore
+	name string
 	once sync.Once
 }
+
+// Name is the store's name.
+func (s *PostgresStore) Name() string { return s.name }
 
 // OpenPostgres is a store named name over dsn ("postgresql://..."), confined
 // to schema unless it is "" (no two stores may share one schema). It connects
@@ -50,7 +54,7 @@ func OpenPostgres(dsn, name, schema string) (*PostgresStore, error) {
 	}); err != nil {
 		return nil, err
 	}
-	s := &PostgresStore{ptr: ptr}
+	s := &PostgresStore{ptr: ptr, name: name}
 	runtime.SetFinalizer(s, (*PostgresStore).Close)
 	return s, nil
 }

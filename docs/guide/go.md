@@ -4,8 +4,8 @@ The rhizodat core has a C ABI, `librhizodat_ffi` (`crates/rhizodat-ffi`), and a
 Go package over it, `github.com/ice1x/rhizodat/go`, linked statically through
 cgo. PostgreSQL, ClickHouse, drevo and Iceberg (REST and Glue catalogs)
 stores, the PostgreSQL and drevo journals and meta-transactions over any of
-them work. Entity repositories (bitemporal parts) are on their way: their
-PostgreSQL parts work, the repository itself is not in Go yet (see the
+them work, and entity repositories over PostgreSQL stores (the other stores'
+entity parts, references and valid time are next, see the
 [plan](../plan.md)). It commits through the same Rust path as the native
 Python facade (`crates/rhizodat-units`).
 
@@ -75,12 +75,61 @@ placeholders server-side; its rows travel as Arrow, so cast a `UUID` column
 (`toString(id)`) and use `Date32` for dates (a `Date` arrives as its day
 number). `DrevoStore.Execute(cypher, params)` returns columns in name order.
 
+## Entities
+
+An entity type is a struct that embeds `rhizodat.Entity` and maps each stored
+field to a store by name:
+
+```go
+type Issue struct {
+	rhizodat.Entity
+	Title  string   `rhizodat:"title,store=tracker"`
+	Points int      `rhizodat:"points,store=tracker"`
+	Labels []string `rhizodat:"labels,store=search"`
+}
+
+tracker, _ := rhizodat.OpenPostgres(dsn, "tracker", "tracker")
+search, _ := rhizodat.OpenPostgres(dsn, "search", "search")
+issues, _ := rhizodat.NewRepository[Issue](coordinator,
+	[]rhizodat.PartStore{tracker, search},
+	rhizodat.EntityOptions{Type: "tracker.Issue", SoftDelete: 30 * 24 * time.Hour})
+_ = issues.Install()
+
+issue := &Issue{Title: "Crash on save", Points: 3}
+_, err := issues.Add(issue) // one meta-transaction over both stores
+// issue.DatID, DatCreatedAt and DatUpdatedAt are stamped
+issue.Points = 5
+_, err = issues.Update(issue)
+
+now, _ := issues.Get(issue.DatID, rhizodat.ReadOptions{})
+then, _ := issues.Get(issue.DatID, rhizodat.ReadOptions{AsOf: &yesterday})
+versions, _ := issues.History(issue.DatID) // oldest first
+```
+
+As in Python, each write adds a version of every part in one
+meta-transaction (re-run while it aborts retryably), and a read assembles the
+parts of one version, as known at `AsOf` / `KnownAt` (a type without valid
+time has one moment of knowledge: give one). `Add` fails with
+`ErrEntityExists`, `Update` and `Delete` with `ErrEntityNotFound`. `Delete`
+erases every version, unless the type has a `SoftDelete` window: then it hides
+the entity, `Restore` brings it back within the window
+(`ErrNotRestorable` after), and `PurgeExpired` erases it once the window is
+over. `issues.In(unit)` is the repository inside your own unit of work: its
+reads see the unit's writes, and they commit with the rest of it.
+
+Tables and columns are the Python facade's (a type `tracker.Issue` lives in
+`tracker_issue`; `string` is `text`, integers `bigint`, floats `double
+precision`, `time.Time` `timestamptz`, `rhizodat.UUID` / `Decimal` / `Date`
+`uuid` / `numeric` / `date`, `[]byte` `bytea`, lists and maps `jsonb`), so a
+type declared alike on both facades shares its versions. A pointer field is
+nullable, and an empty `UUID`, `Decimal` or `Date` is stored as null. A field
+without a `rhizodat` tag is not stored.
+
 ## Entity parts
 
-An entity's fields are split by store; each store's share is a **part**, and
-every write adds a version of it (see [repositories](repository.md)). The Go
-package reaches the parts of a PostgreSQL store directly, in the Python
-facade's layout, so either reads what the other wrote:
+Under a repository, each store's share of an entity is a **part**, and every
+write adds a version of it (see [repositories](repository.md)). The Go
+package also reaches the parts of a PostgreSQL store directly:
 
 ```go
 spec := rhizodat.PartSpec{Type: "tracker.Issue", Table: "tracker_issue",
