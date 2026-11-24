@@ -4,9 +4,9 @@ The rhizodat core has a C ABI, `librhizodat_ffi` (`crates/rhizodat-ffi`), and a
 Go package over it, `github.com/ice1x/rhizodat/go`, linked statically through
 cgo. PostgreSQL, ClickHouse, drevo and Iceberg (REST and Glue catalogs)
 stores, the PostgreSQL and drevo journals and meta-transactions over any of
-them work, and entity repositories over PostgreSQL and drevo stores
-(ClickHouse and Iceberg entity parts, references and valid time are next, see
-the [plan](../plan.md)). It commits through the same Rust path as the native
+them work, and entity repositories over PostgreSQL, drevo and ClickHouse
+stores (Iceberg entity parts, references and valid time are next, see the
+[plan](../plan.md)). It commits through the same Rust path as the native
 Python facade (`crates/rhizodat-units`).
 
 ## Build
@@ -124,7 +124,10 @@ precision`, `time.Time` `timestamptz`, `rhizodat.UUID` / `Decimal` / `Date`
 are drevo's nodes (one per version, labelled `tracker_issue`; strings,
 numbers and booleans as properties, a `UUID` as its text, anything else as
 tagged JSON, a field named `title` as `dat_title`), so a type declared alike
-on both facades shares its versions. An entity may span both kinds of store:
+on both facades shares its versions. ClickHouse keeps a part in a table
+named the same way (strings, integers, floats, booleans, `UUID`, `time.Time`
+and `Date` natively, anything else as tagged JSON in a `String`), applied
+after the decision like its rows. An entity may span every kind of store:
 `NewRepository[Service](coordinator, []rhizodat.PartStore{inventory, graph},
 ...)` writes the PostgreSQL row and the drevo node of each version in one
 meta-transaction. A pointer field is
@@ -135,7 +138,8 @@ without a `rhizodat` tag is not stored.
 
 Under a repository, each store's share of an entity is a **part**, and every
 write adds a version of it (see [repositories](repository.md)). The Go
-package also reaches the parts of a PostgreSQL or drevo store directly:
+package also reaches the parts of a PostgreSQL, drevo or ClickHouse store
+directly:
 
 ```go
 spec := rhizodat.PartSpec{Type: "tracker.Issue", Table: "tracker_issue",

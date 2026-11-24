@@ -47,8 +47,12 @@ func encodeParams(params Params) (*C.char, error) {
 // for concurrent use. Close it when done.
 type ClickHouseStore struct {
 	ptr  *C.RhizodatClickHouseStore
+	name string
 	once sync.Once
 }
+
+// Name is the store's name.
+func (s *ClickHouseStore) Name() string { return s.name }
 
 // OpenClickHouse is a store named name over dsn ("clickhouse://...").
 func OpenClickHouse(dsn, name string) (*ClickHouseStore, error) {
@@ -60,7 +64,7 @@ func OpenClickHouse(dsn, name string) (*ClickHouseStore, error) {
 	}); err != nil {
 		return nil, err
 	}
-	s := &ClickHouseStore{ptr: ptr}
+	s := &ClickHouseStore{ptr: ptr, name: name}
 	runtime.SetFinalizer(s, (*ClickHouseStore).Close)
 	return s, nil
 }

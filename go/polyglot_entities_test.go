@@ -1,6 +1,7 @@
 package rhizodat
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -114,6 +115,113 @@ func TestGoTypesGetThePythonFacadesDrevoKinds(t *testing.T) {
 		}
 	}
 	if _, ok := drevoFieldKind(reflect.TypeOf(make(chan int))); ok {
+		t.Error("a channel is not storable")
+	}
+}
+
+// A probe: its definition in PostgreSQL, its last measurement in ClickHouse.
+type Probe struct {
+	Entity
+	Target   string    `rhizodat:"target,store=inventory"`
+	Interval int       `rhizodat:"interval,store=inventory"`
+	Latency  float64   `rhizodat:"latency,store=telemetry"`
+	At       time.Time `rhizodat:"at,store=telemetry"`
+	Up       bool      `rhizodat:"up,store=telemetry"`
+	Labels   []string  `rhizodat:"labels,store=telemetry"`
+}
+
+func TestAnEntitySpansPostgresAndClickHouse(t *testing.T) {
+	d := newDB(t)
+	suffix := strings.ReplaceAll(string(newUUID(t)), "-", "")[20:]
+	telemetry, err := OpenClickHouse(testDSN(t, "RHIZODAT_TEST_CLICKHOUSE_DSN"), "telemetry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(telemetry.Close)
+	c, err := NewCoordinator(d.journal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	typeName := "ops.Probe" + suffix // the test ClickHouse is shared
+	t.Cleanup(func() { telemetry.Execute("DROP TABLE IF EXISTS "+partTable(typeName), nil) })
+	probes, err := NewRepository[Probe](c, []PartStore{d.namedStore("inventory"), telemetry}, EntityOptions{Type: typeName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probes.Install(); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 11, 24, 10, 0, 0, 123456000, time.UTC)
+	probe := &Probe{Target: "https://billing", Interval: 30, Latency: 12.5, At: at, Up: true, Labels: []string{"eu"}}
+	added, err := probes.Add(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := probes.Get(probe.DatID, ReadOptions{})
+	if err != nil || got == nil {
+		// What each store holds, to tell a part that is missing from one that disagrees.
+		var parts []string
+		for _, store := range []PartStore{probes.stores["inventory"], telemetry} {
+			v, err := store.readPart(probes.kind.specs[store.Name()], probe.DatID, nil)
+			parts = append(parts, fmt.Sprintf("%s: %+v %v", store.Name(), v, err))
+		}
+		t.Fatalf("get: %+v %v; the commit %+v; the parts %v", got, err, added, parts)
+	}
+	if got.Target != probe.Target || got.Interval != 30 || got.Latency != 12.5 || !got.At.Equal(at) || !got.Up ||
+		!reflect.DeepEqual(got.Labels, []string{"eu"}) {
+		t.Fatalf("read back %+v", got)
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	got.Latency, got.Up = 950, false
+	if _, err := probes.Update(got); err != nil {
+		t.Fatal(err)
+	}
+	then := hlcTime(added.DatTxTime)
+	if before, err := probes.Get(probe.DatID, ReadOptions{AsOf: &then}); err != nil || before.Latency != 12.5 || !before.Up {
+		t.Fatalf("as of the add: %+v %v", before, err)
+	}
+	if history, err := probes.History(probe.DatID); err != nil || len(history) != 2 || history[1].Up {
+		t.Fatalf("history %+v %v", history, err)
+	}
+	if _, err := probes.Delete(probe.DatID); err != nil {
+		t.Fatal(err)
+	}
+	if gone, _ := probes.Get(probe.DatID, ReadOptions{IncludeDeleted: true}); gone != nil {
+		t.Fatalf("erased in both stores, still read: %+v", gone)
+	}
+}
+
+func TestGoTypesGetThePythonFacadesClickHouseColumns(t *testing.T) {
+	var (
+		text   string
+		count  int
+		ratio  float32
+		flag   bool
+		id     UUID
+		at     time.Time
+		day    Date
+		price  Decimal
+		blob   []byte
+		labels []string
+	)
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{&text, "String"}, {&count, "Int64"}, {&ratio, "Float64"}, {&flag, "Bool"}, {&id, "UUID"},
+		{&at, "DateTime64(6, 'UTC')"}, {&day, "Date32"}, {&price, "json"}, {&blob, "json"},
+		{&labels, "json"},
+	}
+	for _, c := range cases {
+		typ := reflect.TypeOf(c.value).Elem()
+		if got, ok := clickhouseColumnType(typ); !ok || got != c.want {
+			t.Errorf("%v: %q %v, want %q", typ, got, ok, c.want)
+		}
+	}
+	if _, ok := clickhouseColumnType(reflect.TypeOf(make(chan int))); ok {
 		t.Error("a channel is not storable")
 	}
 }

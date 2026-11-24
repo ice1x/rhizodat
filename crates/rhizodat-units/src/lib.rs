@@ -131,6 +131,8 @@ pub struct ClickHousePending {
     pub store: Arc<rhizodat_clickhouse::ClickHouseStore>,
     /// The inserts in order: table, columns, rows.
     pub inserts: Vec<(String, Vec<String>, Vec<Vec<rhizodat_core::rows::RowValue>>)>,
+    /// The unit of work's entity parts (in the payload, before the rows).
+    pub parts: rhizodat_clickhouse::parts::ClickHouseParts,
 }
 
 #[async_trait]
@@ -145,6 +147,7 @@ impl NativeStore for ClickHousePending {
 
     async fn open_branch(&self) -> Result<Box<dyn Branch>, ConnectError> {
         let mut branch = self.store.branch();
+        branch.load_parts(self.parts.clone());
         for (table, columns, rows) in &self.inserts {
             let columns: Vec<&str> = columns.iter().map(String::as_str).collect();
             branch

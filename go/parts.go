@@ -579,3 +579,135 @@ func drevoFieldKind(t reflect.Type) (string, bool) {
 	}
 	return "json", true
 }
+
+// --- ClickHouse --------------------------------------------------------------------
+
+func (s *ClickHouseStore) parts() partCalls {
+	return partCalls{
+		install: func(spec *C.char, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_clickhouse_store_install_part(s.ptr, spec, e)
+		},
+		read: func(spec, id *C.char, knownAt *C.int64_t, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_clickhouse_store_read_part(s.ptr, spec, id, knownAt, out, e)
+		},
+		history: func(spec, id *C.char, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_clickhouse_store_part_history(s.ptr, spec, id, out, e)
+		},
+		versions: func(spec *C.char, knownAt *C.int64_t, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_clickhouse_store_part_versions(s.ptr, spec, knownAt, out, e)
+		},
+		expired: func(spec *C.char, before, limit C.int64_t, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_clickhouse_store_expired_parts(s.ptr, spec, before, limit, out, e)
+		},
+	}
+}
+
+func (s *ClickHouseStore) unitParts(u *Unit) unitPartCalls {
+	return unitPartCalls{
+		write: func(spec, id, fields, values *C.char, created *C.int64_t, deleted C.bool, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_clickhouse_write_part(u.ptr, s.ptr, spec, id, fields, values, created, deleted, e)
+		},
+		erase: func(spec, id *C.char, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_clickhouse_erase_part(u.ptr, s.ptr, spec, id, e)
+		},
+		own: func(spec, id *C.char, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_clickhouse_own_part(u.ptr, s.ptr, spec, id, out, e)
+		},
+	}
+}
+
+// InstallPart creates the part's table if missing.
+func (s *ClickHouseStore) InstallPart(spec PartSpec) error {
+	defer runtime.KeepAlive(s)
+	return s.parts().installPart(spec)
+}
+
+// ReadPart is the latest committed version of id's part known at knownAt (any,
+// when nil), or nil when there is none.
+func (s *ClickHouseStore) ReadPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().readPart(spec, id, knownAt)
+}
+
+// PartHistory is every committed version of id's part, oldest first.
+func (s *ClickHouseStore) PartHistory(spec PartSpec, id UUID) ([]PartVersion, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().partHistory(spec, id)
+}
+
+// PartVersions is every committed version of every entity's part known at
+// knownAt (all, when nil), oldest first.
+func (s *ClickHouseStore) PartVersions(spec PartSpec, knownAt *int64) ([]EntityVersion, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().partVersions(spec, knownAt)
+}
+
+// ExpiredParts is the entities whose latest version is a soft delete older
+// than deletedBefore, at most limit of them.
+func (s *ClickHouseStore) ExpiredParts(spec PartSpec, deletedBefore int64, limit int64) ([]UUID, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().expiredParts(spec, deletedBefore, limit)
+}
+
+func (s *ClickHouseStore) partColumnType(t reflect.Type) (string, bool) {
+	return clickhouseColumnType(t)
+}
+func (s *ClickHouseStore) installPart(spec PartSpec) error { return s.InstallPart(spec) }
+func (s *ClickHouseStore) readPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
+	return s.ReadPart(spec, id, knownAt)
+}
+func (s *ClickHouseStore) partHistory(spec PartSpec, id UUID) ([]PartVersion, error) {
+	return s.PartHistory(spec, id)
+}
+func (s *ClickHouseStore) expiredParts(spec PartSpec, deletedBefore, limit int64) ([]UUID, error) {
+	return s.ExpiredParts(spec, deletedBefore, limit)
+}
+func (s *ClickHouseStore) writePart(u *Unit, spec PartSpec, id UUID, values map[string]any, created *int64, deleted bool) error {
+	defer runtime.KeepAlive(u)
+	defer runtime.KeepAlive(s)
+	return s.unitParts(u).writePart(spec, id, values, created, deleted)
+}
+func (s *ClickHouseStore) erasePart(u *Unit, spec PartSpec, id UUID) error {
+	defer runtime.KeepAlive(u)
+	defer runtime.KeepAlive(s)
+	return s.unitParts(u).erasePart(spec, id)
+}
+func (s *ClickHouseStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error) {
+	defer runtime.KeepAlive(u)
+	defer runtime.KeepAlive(s)
+	return s.unitParts(u).ownPart(spec, id)
+}
+
+// clickhouseColumnType is the ClickHouse column of a Go type, as the Python
+// facade types its annotations: strings, integers, floats, booleans, ids,
+// times and dates natively, anything else as tagged JSON in a String.
+func clickhouseColumnType(t reflect.Type) (string, bool) {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if _, ok := postgresColumnType(t); !ok {
+		return "", false
+	}
+	switch t {
+	case timeType:
+		return "DateTime64(6, 'UTC')", true
+	case reflect.TypeOf(UUID("")):
+		return "UUID", true
+	case reflect.TypeOf(Date("")):
+		return "Date32", true
+	case reflect.TypeOf(Decimal("")), reflect.TypeOf(NaiveDateTime("")):
+		return "json", true
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "String", true
+	case reflect.Bool:
+		return "Bool", true
+	case reflect.Float32, reflect.Float64:
+		return "Float64", true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "Int64", true
+	}
+	return "json", true
+}

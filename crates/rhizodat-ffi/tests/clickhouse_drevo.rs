@@ -522,3 +522,148 @@ fn drevo_entity_parts_are_written_in_a_unit_and_read_by_known_time() {
         rhizodat_drevo_store_free(store);
     }
 }
+
+// --- entity parts in ClickHouse ------------------------------------------------------
+
+#[test]
+fn clickhouse_entity_parts_are_written_in_a_unit_and_read_by_known_time() {
+    let Some(dsn) = dsn("RHIZODAT_TEST_CLICKHOUSE_DSN", 58123) else {
+        return;
+    };
+    let store = clickhouse(&dsn, "metrics");
+    let table = format!("ffi_part_{}", suffix());
+    let spec = c(&json!({"type": "ops.Probe", "table": table,
+        "columns": [["host", "String"], ["latency", "Float64"], ["at", "DateTime64(6, 'UTC')"],
+                    ["labels", "json"]]})
+    .to_string());
+    // SAFETY: a live handle and a valid string.
+    ok(|e| unsafe { rhizodat_clickhouse_store_install_part(store, spec.as_ptr(), e) });
+
+    let mut id = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_new_id(&raw mut id, e) });
+    let id = take(id);
+    let cid = c(&id);
+    let mut unit = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_unit_new(&raw mut unit, e) });
+    let (fields, values) = (
+        c(r#"["host", "latency", "at", "labels"]"#),
+        c(
+            &json!(["web1", 12.5, {"$": "datetime", "v": "2026-11-24T10:00:00+00:00"}, ["a"]])
+                .to_string(),
+        ),
+    );
+    // SAFETY: live handles, valid strings, null `created`.
+    ok(|e| unsafe {
+        rhizodat_unit_clickhouse_write_part(
+            unit,
+            store,
+            spec.as_ptr(),
+            cid.as_ptr(),
+            fields.as_ptr(),
+            values.as_ptr(),
+            ptr::null(),
+            false,
+            e,
+        )
+    });
+    let mut out = ptr::null_mut();
+    // SAFETY: live handles, valid strings, a writable local.
+    ok(|e| unsafe {
+        rhizodat_unit_clickhouse_own_part(unit, store, spec.as_ptr(), cid.as_ptr(), &raw mut out, e)
+    });
+    let own: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(own["touched"], json!(true));
+    assert_eq!(own["version"]["values"][0], json!("web1"));
+
+    let mut coordinator = ptr::null_mut();
+    // SAFETY: a writable local; no journal (one store).
+    ok(|e| unsafe { rhizodat_coordinator_new(ptr::null(), &raw mut coordinator, e) });
+    let mut done = ptr::null_mut();
+    // SAFETY: live handles and a writable local.
+    ok(|e| unsafe { rhizodat_coordinator_commit(coordinator, unit, &raw mut done, e) });
+    let done: Value = serde_json::from_str(&take(done)).unwrap();
+    let t = done["dat_tx_time"].as_i64().unwrap();
+
+    let mut out = ptr::null_mut();
+    // SAFETY: a live handle, valid strings, null `known_at`, a writable local.
+    ok(|e| unsafe {
+        rhizodat_clickhouse_store_read_part(
+            store,
+            spec.as_ptr(),
+            cid.as_ptr(),
+            ptr::null(),
+            &raw mut out,
+            e,
+        )
+    });
+    let v: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(v["dat_txn"], done["dat_txn"]);
+    assert_eq!(v["created"], json!(t));
+    assert_eq!(v["values"][0], json!("web1"));
+    assert_eq!(v["values"][1], json!(12.5));
+    assert_eq!(v["values"][3], json!(["a"]));
+
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_clickhouse_store_part_history(store, spec.as_ptr(), cid.as_ptr(), &raw mut out, e)
+    });
+    let history: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_clickhouse_store_part_versions(store, spec.as_ptr(), ptr::null(), &raw mut out, e)
+    });
+    let all: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(all[0]["dat_id"], json!(id));
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_clickhouse_store_expired_parts(store, spec.as_ptr(), t + 1, 10, &raw mut out, e)
+    });
+    assert_eq!(take(out), "[]");
+
+    let mut unit2 = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_unit_new(&raw mut unit2, e) });
+    // SAFETY: live handles and valid strings.
+    ok(|e| unsafe {
+        rhizodat_unit_clickhouse_erase_part(unit2, store, spec.as_ptr(), cid.as_ptr(), e)
+    });
+    let mut done2 = ptr::null_mut();
+    // SAFETY: live handles and a writable local.
+    ok(|e| unsafe { rhizodat_coordinator_commit(coordinator, unit2, &raw mut done2, e) });
+    take(done2);
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_clickhouse_store_read_part(
+            store,
+            spec.as_ptr(),
+            cid.as_ptr(),
+            ptr::null(),
+            &raw mut out,
+            e,
+        )
+    });
+    assert_eq!(take(out), "null", "erased");
+
+    let bad = c(r#"{"type": "x", "table": "x", "columns": [["a", "text"]]}"#);
+    // SAFETY: a live handle and a valid string.
+    let (status, message) =
+        run(|e| unsafe { rhizodat_clickhouse_store_install_part(store, bad.as_ptr(), e) });
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+    assert!(message.contains("text"), "{message}");
+
+    ch_sql(store, &format!("DROP TABLE IF EXISTS {table}"), None);
+    // SAFETY: freed once each.
+    unsafe {
+        rhizodat_unit_free(unit);
+        rhizodat_unit_free(unit2);
+        rhizodat_coordinator_free(coordinator);
+        rhizodat_clickhouse_store_free(store);
+    }
+}

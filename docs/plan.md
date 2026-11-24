@@ -469,6 +469,9 @@ Steps:
    ✔ Entity parts in drevo from Go (the C ABI's part functions now shared by
    every store): an entity spans PostgreSQL and drevo in one meta-transaction.
    Next: ClickHouse and Iceberg entity parts from Go.
+   ✔ Entity parts in ClickHouse from Go (carried by the unit's ClickHouse
+   store into the journal payload, as the Python binding's are). Next:
+   Iceberg entity parts from Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the
