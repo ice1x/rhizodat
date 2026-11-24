@@ -44,6 +44,7 @@ class Tracker:
     wall: Wall
     label: str
     proxies: dict[str, Proxy]
+    names: dict[str, str]  # role ("pg", "feed", "graph") -> this test's store name
 
     def tasks(self) -> int:
         return int(self.pg.execute("SELECT count(*) AS n FROM tasks").one()["n"])
@@ -104,10 +105,15 @@ def tracker(
             "feed": stack.enter_context(toxiproxy.proxy("dat_feed", "clickhouse:8123", 58403)),
             "graph": stack.enter_context(toxiproxy.proxy("dat_graph", "drevo:7687", 58404)),
         }
-        pg = PostgresStore(through(pg_dsn, 58402), name="pg", schema=pg_schema)
+        # Store names unique to the test: the servers are shared with other test
+        # processes, and recovery's orphan sweep rolls back any prepared gid of its
+        # store names that its journal does not know.
+        suffix = uuid.uuid4().hex[:8]
+        names = {role: f"{role}_{suffix}" for role in ("pg", "feed", "graph")}
+        pg = PostgresStore(through(pg_dsn, 58402), name=names["pg"], schema=pg_schema)
         pg.install()
         pg.execute("CREATE TABLE tasks (id uuid PRIMARY KEY, title text NOT NULL)")
-        feed = ClickHouseStore(through(clickhouse_dsn, 58403), name="feed")
+        feed = ClickHouseStore(through(clickhouse_dsn, 58403), name=names["feed"])
         feed.install()
         feed.execute(
             "CREATE TABLE activity (task_id UUID, event String, dat_txn UUID, dat_tx_time Int64)"
@@ -115,17 +121,17 @@ def tracker(
         )
         own = OwnBranches()  # only this test's gids: the servers are shared
         pg = own.track(pg)
-        graph = own.track(DrevoStore(through(drevo_bolt_dsn, 58404), name="graph"))
+        graph = own.track(DrevoStore(through(drevo_bolt_dsn, 58404), name=names["graph"]))
         wall = Wall()
         journal = PostgresJournal(through(pg_dsn, 58401), schema=pg_schema, wall_ms=wall)
         fast = Retry(attempts=2, deadline_s=1.0, base_delay_s=0.0, max_delay_s=0.0)
         dat = Rhizodat(
-            stores={"pg": pg, "feed": feed, "graph": graph},
+            stores={store.name: store for store in (pg, feed, graph)},
             journal=journal,
             finish=fast,
             sleep=lambda s: None,
         )
-        t = Tracker(dat, pg, feed, graph, journal, wall, f"Task{uuid.uuid4().hex[:8]}", proxies)
+        t = Tracker(dat, pg, feed, graph, journal, wall, f"Task{suffix}", proxies, names)
         try:
             yield t
         finally:
@@ -134,11 +140,15 @@ def tracker(
             dat.close()
 
 
-def open_task(uow: UnitOfWork, label: str, title: str, blockers: list[str]) -> uuid.UUID:
+def open_task(
+    uow: UnitOfWork, names: dict[str, str], label: str, title: str, blockers: list[str]
+) -> uuid.UUID:
     task_id = uuid.uuid4()
-    uow.store("pg").execute("INSERT INTO tasks (id, title) VALUES (%s, %s)", (task_id, title))
-    uow.store("feed").insert("activity", [{"task_id": task_id, "event": "opened"}])
-    uow.store("graph").execute(
+    uow.store(names["pg"]).execute(
+        "INSERT INTO tasks (id, title) VALUES (%s, %s)", (task_id, title)
+    )
+    uow.store(names["feed"]).insert("activity", [{"task_id": task_id, "event": "opened"}])
+    uow.store(names["graph"]).execute(
         f"CREATE (t:{label} {{dat_id: $id}}) WITH t UNWIND $names AS name "
         f"CREATE (t)-[:BLOCKED_BY]->(:{label}Blocker {{name: name}})",
         {"id": str(task_id), "names": blockers},
@@ -147,7 +157,9 @@ def open_task(uow: UnitOfWork, label: str, title: str, blockers: list[str]) -> u
 
 
 def test_healthy_network_commits_all_three(tracker: Tracker, faker: Faker) -> None:
-    outcome = tracker.dat.transactional(open_task)(tracker.label, faker.sentence(), ["design"])
+    outcome = tracker.dat.transactional(open_task)(
+        tracker.names, tracker.label, faker.sentence(), ["design"]
+    )
     assert isinstance(outcome, Committed)
     assert (tracker.tasks(), tracker.activity(), tracker.blockers()) == (1, 1, 1)
 
@@ -157,11 +169,11 @@ def test_journal_lost_at_the_decision_is_in_doubt_then_presumed_aborted(
 ) -> None:
     tracker.cut_at("journal", State.COMMITTED, after=False)
     uow = tracker.dat.unit_of_work()
-    open_task(uow, tracker.label, faker.sentence(), ["review"])
+    open_task(uow, tracker.names, tracker.label, faker.sentence(), ["review"])
     with pytest.raises(InDoubt):
         uow.commit()
     # Prepared in PostgreSQL and drevo (drevo's fence is up), nothing decided.
-    assert gid_for(uow.dat_txn, "pg") in tracker.pg.participant().prepared_gids()
+    assert gid_for(uow.dat_txn, tracker.pg.name) in tracker.pg.participant().prepared_gids()
     tracker.heal()
     assert tracker.state(uow.dat_txn) is State.PREPARED
 
@@ -177,7 +189,9 @@ def test_journal_lost_right_after_the_decision_keeps_the_commit(
 ) -> None:
     """The decision is durable; only DONE cannot be written. Nothing is undone."""
     tracker.cut_at("journal", State.COMMITTED, after=True)
-    outcome = tracker.dat.transactional(open_task)(tracker.label, faker.sentence(), ["qa"])
+    outcome = tracker.dat.transactional(open_task)(
+        tracker.names, tracker.label, faker.sentence(), ["qa"]
+    )
     assert isinstance(outcome, CommittedPending)
     assert (tracker.tasks(), tracker.activity(), tracker.blockers()) == (1, 1, 1)
     tracker.heal()
@@ -192,7 +206,9 @@ def test_store_lost_after_the_decision_is_pending_then_rolled_forward(
     tracker: Tracker, faker: Faker, store: str
 ) -> None:
     tracker.cut_at(store, State.COMMITTED, after=True)
-    outcome = tracker.dat.transactional(open_task)(tracker.label, faker.sentence(), ["ops"])
+    outcome = tracker.dat.transactional(open_task)(
+        tracker.names, tracker.label, faker.sentence(), ["ops"]
+    )
     assert isinstance(outcome, CommittedPending)
     assert tracker.state(outcome.dat_txn) is State.COMMITTED
     tracker.heal()
@@ -202,3 +218,24 @@ def test_store_lost_after_the_decision_is_pending_then_rolled_forward(
     assert (tracker.tasks(), tracker.activity(), tracker.blockers()) == (1, 1, 1)
     assert tracker.state(outcome.dat_txn) is State.DONE
     tracker.graph.execute(f"CREATE (:{tracker.label}Note)")  # drevo's prepared fence is gone
+
+
+def test_recovery_leaves_another_processes_prepared_branch_alone(
+    tracker: Tracker, drevo_bolt_dsn: str
+) -> None:
+    """The drevo server is shared with other test processes (``cargo test``, another
+    pytest) whose stores may also be called "graph": the tracker's stores have names of
+    their own, so recovery's orphan sweep never takes another process's branch."""
+    other = DrevoStore(drevo_bolt_dsn, name="graph")
+    theirs = uuid.uuid4()
+    foreign = other.branch(theirs)
+    foreign.stage(theirs, 1)
+    foreign_gid = gid_for(theirs, "graph")
+    foreign.prepare(foreign_gid)
+    try:
+        report = tracker.recover()
+        assert foreign_gid not in report.orphans
+        assert foreign_gid in other.participant().prepared_gids()
+    finally:
+        foreign.rollback()
+        other.close()
