@@ -225,3 +225,95 @@ func TestGoTypesGetThePythonFacadesClickHouseColumns(t *testing.T) {
 		t.Error("a channel is not storable")
 	}
 }
+
+// An audited change: its summary in PostgreSQL, its record in the lake.
+type Change struct {
+	Entity
+	Summary string    `rhizodat:"summary,store=inventory"`
+	Actor   string    `rhizodat:"actor,store=lake"`
+	Count   int       `rhizodat:"count,store=lake"`
+	Subject UUID      `rhizodat:"subject,store=lake"`
+	At      time.Time `rhizodat:"at,store=lake"`
+	Detail  []string  `rhizodat:"detail,store=lake"`
+}
+
+func TestAnEntitySpansPostgresAndIceberg(t *testing.T) {
+	d := newDB(t)
+	lake, err := OpenIceberg(testDSN(t, "RHIZODAT_TEST_ICEBERG_REST_DSN"), "lake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(lake.Close)
+	lake.PartsNamespace = "go_parts_" + strings.ReplaceAll(string(newUUID(t)), "-", "")[20:]
+	c, err := NewCoordinator(d.journal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	changes, err := NewRepository[Change](c, []PartStore{d.namedStore("inventory"), lake}, EntityOptions{Type: "ops.Change"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := changes.Install(); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 11, 24, 11, 0, 0, 0, time.UTC)
+	change := &Change{Summary: "scale billing", Actor: "ops-bot", Count: 3, Subject: newUUID(t), At: at, Detail: []string{"+2"}}
+	if _, err := changes.Add(change); err != nil {
+		t.Fatal(err)
+	}
+	got, err := changes.Get(change.DatID, ReadOptions{})
+	if err != nil || got == nil {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+	if got.Summary != change.Summary || got.Actor != "ops-bot" || got.Count != 3 || got.Subject != change.Subject ||
+		!got.At.Equal(at) || !reflect.DeepEqual(got.Detail, []string{"+2"}) {
+		t.Fatalf("read back %+v", got)
+	}
+	got.Count = 4
+	if _, err := changes.Update(got); err != nil {
+		t.Fatal(err)
+	}
+	if history, err := changes.History(change.DatID); err != nil || len(history) != 2 || history[1].Count != 4 {
+		t.Fatalf("history %+v %v", history, err)
+	}
+	rows, err := lake.Scan(lake.PartsNamespace+".ops_change", ScanOptions{Columns: []string{"actor"}})
+	if err != nil || len(rows.Values) != 2 {
+		t.Fatalf("the lake's versions %+v %v", rows, err)
+	}
+	if _, err := changes.Delete(change.DatID); err != nil {
+		t.Fatal(err)
+	}
+	if gone, _ := changes.Get(change.DatID, ReadOptions{IncludeDeleted: true}); gone != nil {
+		t.Fatalf("erased in both stores, still read: %+v", gone)
+	}
+}
+
+func TestGoTypesGetThePythonFacadesIcebergKinds(t *testing.T) {
+	var (
+		text   string
+		count  int
+		ratio  float32
+		flag   bool
+		id     UUID
+		at     time.Time
+		day    Date
+		price  Decimal
+		blob   []byte
+		labels []string
+	)
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{&text, "string"}, {&count, "long"}, {&ratio, "double"}, {&flag, "boolean"}, {&id, "id"},
+		{&at, "timestamptz"}, {&day, "date"}, {&price, "json"}, {&blob, "binary"}, {&labels, "json"},
+	}
+	for _, c := range cases {
+		typ := reflect.TypeOf(c.value).Elem()
+		if got, ok := icebergFieldKind(typ); !ok || got != c.want {
+			t.Errorf("%v: %q %v, want %q", typ, got, ok, c.want)
+		}
+	}
+}

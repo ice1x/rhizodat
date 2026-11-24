@@ -346,6 +346,72 @@ enum RhizodatStatus rhizodat_iceberg_store_scan(const struct RhizodatIcebergStor
 // `store` must be null or a store handle not freed before.
 void rhizodat_iceberg_store_free(struct RhizodatIcebergStore *store);
 
+// Create the part's namespace and table if missing. Idempotent.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+// `error` null or writable.
+enum RhizodatStatus rhizodat_iceberg_store_install_part(const struct RhizodatIcebergStore *store,
+                                                        const char *spec_json,
+                                                        char **error);
+
+// The latest committed version of `dat_id`'s part known at `*known_at` (any,
+// when null), as JSON, or `null`.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` and `dat_id`
+// NUL-terminated strings; `known_at` null or readable; `out` writable for one
+// pointer; `error` null or writable.
+enum RhizodatStatus rhizodat_iceberg_store_read_part(const struct RhizodatIcebergStore *store,
+                                                     const char *spec_json,
+                                                     const char *dat_id,
+                                                     const int64_t *known_at,
+                                                     char **out,
+                                                     char **error);
+
+// Every committed version of `dat_id`'s part, oldest first, as a JSON array.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` and `dat_id`
+// NUL-terminated strings; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_iceberg_store_part_history(const struct RhizodatIcebergStore *store,
+                                                        const char *spec_json,
+                                                        const char *dat_id,
+                                                        char **out,
+                                                        char **error);
+
+// Every committed version of every entity's part known at `*known_at` (all,
+// when null), oldest first, as a JSON array of versions with their `dat_id`.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+// `known_at` null or readable; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_iceberg_store_part_versions(const struct RhizodatIcebergStore *store,
+                                                         const char *spec_json,
+                                                         const int64_t *known_at,
+                                                         char **out,
+                                                         char **error);
+
+// The entities whose latest version is a soft delete older than
+// `deleted_before`, at most `limit`, as a JSON array of ids.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+// `out` writable for one pointer; `error` null or writable.
+enum RhizodatStatus rhizodat_iceberg_store_expired_parts(const struct RhizodatIcebergStore *store,
+                                                         const char *spec_json,
+                                                         int64_t deleted_before,
+                                                         int64_t limit,
+                                                         char **out,
+                                                         char **error);
+
 // A store named `name` over `dsn`, confined to `schema` when it is not null
 // (no two stores may share one schema's marker table). Connects on first use.
 //
@@ -619,6 +685,53 @@ enum RhizodatStatus rhizodat_unit_clickhouse_own_part(const struct RhizodatUnit 
                                                       const char *dat_id,
                                                       char **out,
                                                       char **error);
+
+// Buffer a version of `dat_id`'s part in an Iceberg store, as
+// [`rhizodat_unit_postgres_write_part`] (one-phase: its data file is written at
+// stage and appended after the decision).
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json`, `dat_id`,
+// `fields_json` and `values_json` NUL-terminated strings; `created` null or
+// readable; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_iceberg_write_part(const struct RhizodatUnit *unit,
+                                                     const struct RhizodatIcebergStore *store,
+                                                     const char *spec_json,
+                                                     const char *dat_id,
+                                                     const char *fields_json,
+                                                     const char *values_json,
+                                                     const int64_t *created,
+                                                     bool deleted,
+                                                     char **error);
+
+// Buffer the removal of every version of `dat_id`'s part in an Iceberg store
+// (a copy-on-write of its files, after the decision).
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+// NUL-terminated strings; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_iceberg_erase_part(const struct RhizodatUnit *unit,
+                                                     const struct RhizodatIcebergStore *store,
+                                                     const char *spec_json,
+                                                     const char *dat_id,
+                                                     char **error);
+
+// This unit of work's own latest version of `dat_id`'s part in an Iceberg
+// store, as [`rhizodat_unit_postgres_own_part`].
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+// NUL-terminated strings; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_unit_iceberg_own_part(const struct RhizodatUnit *unit,
+                                                   const struct RhizodatIcebergStore *store,
+                                                   const char *spec_json,
+                                                   const char *dat_id,
+                                                   char **out,
+                                                   char **error);
 
 // An empty unit of work.
 //

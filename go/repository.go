@@ -56,6 +56,7 @@ type PartStore interface {
 	// Name is the store's name, the one entity tags refer to.
 	Name() string
 	partColumnType(t reflect.Type) (string, bool)
+	partTable(table string) string
 	installPart(spec PartSpec) error
 	readPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error)
 	partHistory(spec PartSpec, id UUID) ([]PartVersion, error)
@@ -195,7 +196,8 @@ func newKind(t reflect.Type, stores map[string]PartStore, options EntityOptions)
 		return nil, fmt.Errorf("rhizodat: %s: no field is mapped to a store", options.Type)
 	}
 	for _, store := range k.stores {
-		k.specs[store] = PartSpec{Type: options.Type, Table: partTable(options.Type), Columns: columns[store]}
+		table := stores[store].partTable(partTable(options.Type))
+		k.specs[store] = PartSpec{Type: options.Type, Table: table, Columns: columns[store]}
 	}
 	return k, nil
 }

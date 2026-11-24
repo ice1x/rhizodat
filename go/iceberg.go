@@ -16,8 +16,15 @@ import (
 // It connects on each call. It is safe for concurrent use. Close it when done.
 type IcebergStore struct {
 	ptr  *C.RhizodatIcebergStore
+	name string
 	once sync.Once
+	// PartsNamespace is where entity parts live ("dat" when empty, the Python
+	// facade's default).
+	PartsNamespace string
 }
+
+// Name is the store's name.
+func (s *IcebergStore) Name() string { return s.name }
 
 // OpenIceberg is a store named name over dsn ("iceberg+rest://..." or
 // "iceberg+glue://<region>?warehouse=s3://...").
@@ -30,7 +37,7 @@ func OpenIceberg(dsn, name string) (*IcebergStore, error) {
 	}); err != nil {
 		return nil, err
 	}
-	s := &IcebergStore{ptr: ptr}
+	s := &IcebergStore{ptr: ptr, name: name}
 	runtime.SetFinalizer(s, (*IcebergStore).Close)
 	return s, nil
 }

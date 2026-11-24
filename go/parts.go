@@ -432,6 +432,7 @@ func (s *PostgresStore) ExpiredParts(spec PartSpec, deletedBefore int64, limit i
 }
 
 func (s *PostgresStore) partColumnType(t reflect.Type) (string, bool) { return postgresColumnType(t) }
+func (s *PostgresStore) partTable(table string) string                { return table }
 func (s *PostgresStore) installPart(spec PartSpec) error              { return s.InstallPart(spec) }
 func (s *PostgresStore) readPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
 	return s.ReadPart(spec, id, knownAt)
@@ -529,6 +530,7 @@ func (s *DrevoStore) ExpiredParts(spec PartSpec, deletedBefore int64, limit int6
 }
 
 func (s *DrevoStore) partColumnType(t reflect.Type) (string, bool) { return drevoFieldKind(t) }
+func (s *DrevoStore) partTable(table string) string                { return table }
 func (s *DrevoStore) installPart(spec PartSpec) error              { return s.InstallPart(spec) }
 func (s *DrevoStore) readPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
 	return s.ReadPart(spec, id, knownAt)
@@ -652,6 +654,7 @@ func (s *ClickHouseStore) ExpiredParts(spec PartSpec, deletedBefore int64, limit
 func (s *ClickHouseStore) partColumnType(t reflect.Type) (string, bool) {
 	return clickhouseColumnType(t)
 }
+func (s *ClickHouseStore) partTable(table string) string   { return table }
 func (s *ClickHouseStore) installPart(spec PartSpec) error { return s.InstallPart(spec) }
 func (s *ClickHouseStore) readPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
 	return s.ReadPart(spec, id, knownAt)
@@ -710,4 +713,145 @@ func clickhouseColumnType(t reflect.Type) (string, bool) {
 		return "Int64", true
 	}
 	return "json", true
+}
+
+// --- Iceberg ----------------------------------------------------------------------
+
+func (s *IcebergStore) parts() partCalls {
+	return partCalls{
+		install: func(spec *C.char, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_iceberg_store_install_part(s.ptr, spec, e)
+		},
+		read: func(spec, id *C.char, knownAt *C.int64_t, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_iceberg_store_read_part(s.ptr, spec, id, knownAt, out, e)
+		},
+		history: func(spec, id *C.char, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_iceberg_store_part_history(s.ptr, spec, id, out, e)
+		},
+		versions: func(spec *C.char, knownAt *C.int64_t, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_iceberg_store_part_versions(s.ptr, spec, knownAt, out, e)
+		},
+		expired: func(spec *C.char, before, limit C.int64_t, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_iceberg_store_expired_parts(s.ptr, spec, before, limit, out, e)
+		},
+	}
+}
+
+func (s *IcebergStore) unitParts(u *Unit) unitPartCalls {
+	return unitPartCalls{
+		write: func(spec, id, fields, values *C.char, created *C.int64_t, deleted C.bool, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_iceberg_write_part(u.ptr, s.ptr, spec, id, fields, values, created, deleted, e)
+		},
+		erase: func(spec, id *C.char, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_iceberg_erase_part(u.ptr, s.ptr, spec, id, e)
+		},
+		own: func(spec, id *C.char, out, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_iceberg_own_part(u.ptr, s.ptr, spec, id, out, e)
+		},
+	}
+}
+
+// InstallPart creates the part's namespace and table if missing. The part's
+// Table is namespace.table.
+func (s *IcebergStore) InstallPart(spec PartSpec) error {
+	defer runtime.KeepAlive(s)
+	return s.parts().installPart(spec)
+}
+
+// ReadPart is the latest committed version of id's part known at knownAt (any,
+// when nil), or nil when there is none.
+func (s *IcebergStore) ReadPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().readPart(spec, id, knownAt)
+}
+
+// PartHistory is every committed version of id's part, oldest first.
+func (s *IcebergStore) PartHistory(spec PartSpec, id UUID) ([]PartVersion, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().partHistory(spec, id)
+}
+
+// PartVersions is every committed version of every entity's part known at
+// knownAt (all, when nil), oldest first.
+func (s *IcebergStore) PartVersions(spec PartSpec, knownAt *int64) ([]EntityVersion, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().partVersions(spec, knownAt)
+}
+
+// ExpiredParts is the entities whose latest version is a soft delete older
+// than deletedBefore, at most limit of them.
+func (s *IcebergStore) ExpiredParts(spec PartSpec, deletedBefore int64, limit int64) ([]UUID, error) {
+	defer runtime.KeepAlive(s)
+	return s.parts().expiredParts(spec, deletedBefore, limit)
+}
+
+func (s *IcebergStore) partColumnType(t reflect.Type) (string, bool) { return icebergFieldKind(t) }
+func (s *IcebergStore) installPart(spec PartSpec) error              { return s.InstallPart(spec) }
+func (s *IcebergStore) readPart(spec PartSpec, id UUID, knownAt *int64) (*PartVersion, error) {
+	return s.ReadPart(spec, id, knownAt)
+}
+func (s *IcebergStore) partHistory(spec PartSpec, id UUID) ([]PartVersion, error) {
+	return s.PartHistory(spec, id)
+}
+func (s *IcebergStore) expiredParts(spec PartSpec, deletedBefore, limit int64) ([]UUID, error) {
+	return s.ExpiredParts(spec, deletedBefore, limit)
+}
+func (s *IcebergStore) writePart(u *Unit, spec PartSpec, id UUID, values map[string]any, created *int64, deleted bool) error {
+	defer runtime.KeepAlive(u)
+	defer runtime.KeepAlive(s)
+	return s.unitParts(u).writePart(spec, id, values, created, deleted)
+}
+func (s *IcebergStore) erasePart(u *Unit, spec PartSpec, id UUID) error {
+	defer runtime.KeepAlive(u)
+	defer runtime.KeepAlive(s)
+	return s.unitParts(u).erasePart(spec, id)
+}
+func (s *IcebergStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error) {
+	defer runtime.KeepAlive(u)
+	defer runtime.KeepAlive(s)
+	return s.unitParts(u).ownPart(spec, id)
+}
+
+// icebergFieldKind is the Iceberg type of a Go type, as the Python facade
+// types its annotations (id: a UUID as text; json: tagged JSON text).
+func icebergFieldKind(t reflect.Type) (string, bool) {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if _, ok := postgresColumnType(t); !ok {
+		return "", false
+	}
+	switch t {
+	case timeType:
+		return "timestamptz", true
+	case reflect.TypeOf(UUID("")):
+		return "id", true
+	case reflect.TypeOf(Date("")):
+		return "date", true
+	case bytesType:
+		return "binary", true
+	case reflect.TypeOf(Decimal("")), reflect.TypeOf(NaiveDateTime("")):
+		return "json", true
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "string", true
+	case reflect.Bool:
+		return "boolean", true
+	case reflect.Float32, reflect.Float64:
+		return "double", true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "long", true
+	}
+	return "json", true
+}
+
+// partTable is namespace.table: an Iceberg table lives in a namespace.
+func (s *IcebergStore) partTable(table string) string {
+	namespace := s.PartsNamespace
+	if namespace == "" {
+		namespace = "dat"
+	}
+	return namespace + "." + table
 }

@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::arrow::record_batch;
 use crate::clickhouse::{RhizodatClickHouseStore, clickhouse_spec};
 use crate::drevo::{RhizodatDrevoStore, cypher_params, drevo_spec};
-use crate::iceberg::RhizodatIcebergStore;
+use crate::iceberg::{RhizodatIcebergStore, iceberg_spec};
 use crate::postgres::{RhizodatJournal, RhizodatPostgresStore, part_spec};
 use crate::{
     Failure, IDS, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
@@ -66,6 +66,7 @@ enum Pending {
         dsn: Arc<str>,
         name: Arc<str>,
         batches: IcebergBatches,
+        parts: IcebergParts,
     },
 }
 
@@ -97,11 +98,15 @@ impl Pending {
                 parts: parts.clone(),
             }),
             Pending::Iceberg {
-                dsn, name, batches, ..
+                dsn,
+                name,
+                batches,
+                parts,
+                ..
             } => Arc::new(IcebergPending {
                 lake: IcebergLake::new(dsn.clone(), name.clone()),
                 batches: batches.clone(),
-                parts: IcebergParts::default(),
+                parts: parts.clone(),
             }),
         }
     }
@@ -619,6 +624,159 @@ pub unsafe extern "C" fn rhizodat_unit_clickhouse_own_part(
     }
 }
 
+fn iceberg_pending(id: usize, store: &RhizodatIcebergStore) -> Pending {
+    Pending::Iceberg {
+        id,
+        dsn: store.dsn.clone(),
+        name: store.name.clone(),
+        batches: IcebergBatches::new(),
+        parts: IcebergParts::new(),
+    }
+}
+
+/// The parts buffered for an Iceberg store, made on first use.
+///
+/// # Safety
+///
+/// `unit` and `store` must be null or live handles.
+unsafe fn iceberg_parts<R>(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatIcebergStore,
+    with: impl FnOnce(&mut IcebergParts) -> Result<R, Failure>,
+) -> Result<R, Failure> {
+    let id = store as usize;
+    // SAFETY: the caller's contract.
+    let (unit, store) = unsafe { (handle(unit, "unit")?, handle(store, "store")?) };
+    let mut buffer = unit
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pending = buffer_of(&mut buffer, &store.name, id as *const (), || {
+        iceberg_pending(id, store)
+    })?;
+    let Pending::Iceberg { parts, .. } = pending else {
+        unreachable!("a buffer holds its own store's kind")
+    };
+    with(parts)
+}
+
+/// Buffer a version of `dat_id`'s part in an Iceberg store, as
+/// [`rhizodat_unit_postgres_write_part`] (one-phase: its data file is written at
+/// stage and appended after the decision).
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json`, `dat_id`,
+/// `fields_json` and `values_json` NUL-terminated strings; `created` null or
+/// readable; `error` null or writable.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rhizodat_unit_iceberg_write_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    fields_json: *const c_char,
+    values_json: *const c_char,
+    created: *const i64,
+    deleted: bool,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = iceberg_spec(parts::spec(spec_json)?)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let values = parts::field_values(fields_json, values_json)?;
+            let created = parts::optional_i64(created);
+            iceberg_parts(unit, store, |parts| {
+                parts
+                    .write(&spec, dat_id, &values, created, deleted)
+                    .map_err(|e| invalid(e.to_string()))
+            })
+        })
+    }
+}
+
+/// Buffer the removal of every version of `dat_id`'s part in an Iceberg store
+/// (a copy-on-write of its files, after the decision).
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_iceberg_erase_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = iceberg_spec(parts::spec(spec_json)?)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            iceberg_parts(unit, store, |parts| {
+                parts.erase(&spec, dat_id);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// This unit of work's own latest version of `dat_id`'s part in an Iceberg
+/// store, as [`rhizodat_unit_postgres_own_part`].
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_iceberg_own_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let spec = iceberg_spec(parts::spec(spec_json)?)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let id = store as usize;
+            let (unit, store) = (handle(unit, "unit")?, handle(store, "store")?);
+            let buffer = unit
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A read: a store this unit has not written to stays out of it.
+            let own = match buffer.get(&*store.name) {
+                Some(Pending::Iceberg {
+                    id: held, parts, ..
+                }) if *held == id => parts.latest(spec.table(), dat_id).map(|version| {
+                    version
+                        .map(|v| parts::version_json(None, None, v.created, v.deleted, &v.values))
+                }),
+                Some(_) => {
+                    return Err(invalid(format!(
+                        "two stores named {:?} in one unit of work",
+                        store.name
+                    )));
+                }
+                None => None,
+            };
+            *out = owned_string(parts::own_json(own));
+            Ok(())
+        })
+    }
+}
+
 /// A unit of work: writes buffered per store, committed together.
 pub struct RhizodatUnit(Mutex<BTreeMap<String, Pending>>);
 
@@ -832,12 +990,7 @@ pub unsafe extern "C" fn rhizodat_unit_iceberg_append(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let pending = buffer_of(&mut buffer, &store.name, id as *const (), || {
-                Pending::Iceberg {
-                    id,
-                    dsn: store.dsn.clone(),
-                    name: store.name.clone(),
-                    batches: IcebergBatches::new(),
-                }
+                iceberg_pending(id, store)
             })?;
             let Pending::Iceberg { batches, .. } = pending else {
                 unreachable!("a buffer holds its own store's kind")
