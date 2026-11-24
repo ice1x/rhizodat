@@ -470,7 +470,7 @@ impl ClickHouseBranch {
 }
 
 impl ClickHouseStore {
-    /// Create the part's table if missing. Idempotent.
+    /// Create the part's table (and `dat_applied`) if missing. Idempotent.
     ///
     /// # Errors
     ///
@@ -479,6 +479,8 @@ impl ClickHouseStore {
         &self,
         spec: &ClickHousePartSpec,
     ) -> Result<(), clickhouse::error::Error> {
+        // The one-phase finish records its marker in `dat_applied`.
+        self.install().await?;
         self.client.query(&spec.create()).execute().await
     }
 

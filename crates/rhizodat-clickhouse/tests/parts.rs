@@ -353,3 +353,25 @@ async fn erase_removes_older_versions_and_soft_deletes_expire() {
     assert_eq!(db.store.part_history(&s, kept).await.unwrap().len(), 1);
     db.drop().await;
 }
+
+/// Installing a part prepares the store too, as PostgreSQL's does: a one-phase
+/// finish records its applied marker in `dat_applied`, so a store whose only
+/// install was a part's must have it (else every commit stays pending).
+#[tokio::test(flavor = "multi_thread")]
+async fn installing_a_part_creates_the_applied_marker_table() {
+    let db = db!();
+    db.admin
+        .query("DROP TABLE dat_applied SYNC")
+        .execute()
+        .await
+        .unwrap();
+    db.store.install_part(&issue()).await.unwrap();
+    let exists: u8 = db
+        .admin
+        .query("EXISTS TABLE dat_applied")
+        .fetch_one()
+        .await
+        .unwrap();
+    assert_eq!(exists, 1);
+    db.drop().await;
+}
