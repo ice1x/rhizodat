@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Go (preview): entity parts in drevo (`rhizodat_drevo_store_*_part`,
+  `rhizodat_unit_drevo_*_part`), so an entity repository spans PostgreSQL and
+  drevo stores in one meta-transaction. `PartColumn` has a `Reference` flag
+  (use keyed literals), and `Unit.WritePart` / `ErasePart` / `OwnPart` take any
+  `PartStore`.
 - Go (preview): entity repositories over PostgreSQL stores. An entity type is
   a struct embedding `rhizodat.Entity` with fields tagged
   `rhizodat:"field,store=name"`; `NewRepository[T]` adds, reads (as known at

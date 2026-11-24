@@ -185,7 +185,7 @@ func newKind(t reflect.Type, stores map[string]PartStore, options EntityOptions)
 		if _, known := columns[store]; !known {
 			k.stores = append(k.stores, store)
 		}
-		columns[store] = append(columns[store], PartColumn{name, column})
+		columns[store] = append(columns[store], PartColumn{Name: name, Type: column})
 		k.fields = append(k.fields, mappedField{name: name, store: store, index: f.Index})
 	}
 	if k.entity == nil {

@@ -466,6 +466,9 @@ Steps:
    across stores, and a repository inside a caller's unit of work — over
    PostgreSQL stores. Next: entity parts in ClickHouse, drevo and Iceberg from
    Go, then references, valid time and a type shared by both facades.
+   ✔ Entity parts in drevo from Go (the C ABI's part functions now shared by
+   every store): an entity spans PostgreSQL and drevo in one meta-transaction.
+   Next: ClickHouse and Iceberg entity parts from Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

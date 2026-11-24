@@ -4,9 +4,9 @@ The rhizodat core has a C ABI, `librhizodat_ffi` (`crates/rhizodat-ffi`), and a
 Go package over it, `github.com/ice1x/rhizodat/go`, linked statically through
 cgo. PostgreSQL, ClickHouse, drevo and Iceberg (REST and Glue catalogs)
 stores, the PostgreSQL and drevo journals and meta-transactions over any of
-them work, and entity repositories over PostgreSQL stores (the other stores'
-entity parts, references and valid time are next, see the
-[plan](../plan.md)). It commits through the same Rust path as the native
+them work, and entity repositories over PostgreSQL and drevo stores
+(ClickHouse and Iceberg entity parts, references and valid time are next, see
+the [plan](../plan.md)). It commits through the same Rust path as the native
 Python facade (`crates/rhizodat-units`).
 
 ## Build
@@ -120,8 +120,14 @@ reads see the unit's writes, and they commit with the rest of it.
 Tables and columns are the Python facade's (a type `tracker.Issue` lives in
 `tracker_issue`; `string` is `text`, integers `bigint`, floats `double
 precision`, `time.Time` `timestamptz`, `rhizodat.UUID` / `Decimal` / `Date`
-`uuid` / `numeric` / `date`, `[]byte` `bytea`, lists and maps `jsonb`), so a
-type declared alike on both facades shares its versions. A pointer field is
+`uuid` / `numeric` / `date`, `[]byte` `bytea`, lists and maps `jsonb`), and so
+are drevo's nodes (one per version, labelled `tracker_issue`; strings,
+numbers and booleans as properties, a `UUID` as its text, anything else as
+tagged JSON, a field named `title` as `dat_title`), so a type declared alike
+on both facades shares its versions. An entity may span both kinds of store:
+`NewRepository[Service](coordinator, []rhizodat.PartStore{inventory, graph},
+...)` writes the PostgreSQL row and the drevo node of each version in one
+meta-transaction. A pointer field is
 nullable, and an empty `UUID`, `Decimal` or `Date` is stored as null. A field
 without a `rhizodat` tag is not stored.
 
@@ -129,11 +135,11 @@ without a `rhizodat` tag is not stored.
 
 Under a repository, each store's share of an entity is a **part**, and every
 write adds a version of it (see [repositories](repository.md)). The Go
-package also reaches the parts of a PostgreSQL store directly:
+package also reaches the parts of a PostgreSQL or drevo store directly:
 
 ```go
 spec := rhizodat.PartSpec{Type: "tracker.Issue", Table: "tracker_issue",
-	Columns: []rhizodat.PartColumn{{"title", "text"}, {"points", "bigint"}}}
+	Columns: []rhizodat.PartColumn{{Name: "title", Type: "text"}, {Name: "points", Type: "bigint"}}}
 _ = pg.InstallPart(spec)
 coordinator.Transactional(3, func(u *rhizodat.Unit) error {
 	return u.WritePart(pg, spec, id, map[string]any{"title": "Crash", "points": 3},

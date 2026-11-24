@@ -6,12 +6,13 @@ use std::ffi::c_char;
 use std::sync::Arc;
 
 use rhizodat_core::rows::RowValue;
-use rhizodat_drevo::{DrevoJournal, DrevoStore, Params, Value};
+use rhizodat_drevo::parts::{DrevoPartSpec, FieldKind, PartVersion};
+use rhizodat_drevo::{ConfigError, DrevoJournal, DrevoStore, Params, Value};
 
 use crate::postgres::RhizodatJournal;
 use crate::{
     Failure, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
-    owned_string, rows_json, runtime, text, writable,
+    owned_string, parts, rows_json, runtime, text, writable,
 };
 
 /// One drevo graph as a rhizodat store.
@@ -175,6 +176,240 @@ pub unsafe extern "C" fn rhizodat_drevo_journal_open(
             let journal =
                 DrevoJournal::new(text(dsn, "dsn")?, label).map_err(|e| invalid(e.to_string()))?;
             *out = into_handle(RhizodatJournal(Arc::new(journal)));
+            Ok(())
+        })
+    }
+}
+
+// --- entity parts ----------------------------------------------------------------------
+
+fn drevo_version(version: &PartVersion) -> String {
+    parts::version_json(
+        Some(version.dat_txn),
+        version.dat_tx_time,
+        version.created,
+        version.deleted,
+        &version.values,
+    )
+}
+
+fn failed(error: impl std::fmt::Display) -> Failure {
+    (RhizodatStatus::Failed, error.to_string())
+}
+
+/// `spec_json` as a drevo part spec: the `table` is the versions' label, and
+/// each column `[field, kind]` or `[field, kind, is a reference]` with the kind
+/// `native` (strings, numbers, booleans), `uuid` (its text) or `json` (tagged
+/// JSON).
+pub(crate) fn drevo_spec(spec: parts::Spec) -> Result<DrevoPartSpec, Failure> {
+    let fields = spec
+        .columns
+        .into_iter()
+        .map(|column| {
+            let (name, kind, reference) = column.into_parts();
+            Ok((name, kind.parse::<FieldKind>()?, reference))
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()
+        .map_err(|e| invalid(e.to_string()))?;
+    DrevoPartSpec::new(&spec.type_name, &spec.table, fields).map_err(|e| invalid(e.to_string()))
+}
+
+impl parts::PartReads for DrevoStore {
+    type Spec = DrevoPartSpec;
+
+    fn spec(spec: parts::Spec) -> Result<DrevoPartSpec, Failure> {
+        drevo_spec(spec)
+    }
+
+    async fn install(&self, spec: &DrevoPartSpec) -> Result<(), Failure> {
+        self.install_part(spec).await.map_err(failed)
+    }
+
+    async fn read(
+        &self,
+        spec: &DrevoPartSpec,
+        dat_id: uuid::Uuid,
+        known_at: Option<i64>,
+    ) -> Result<Option<String>, Failure> {
+        let version = self
+            .read_part(spec, dat_id, known_at)
+            .await
+            .map_err(failed)?;
+        Ok(version.as_ref().map(drevo_version))
+    }
+
+    async fn history(
+        &self,
+        spec: &DrevoPartSpec,
+        dat_id: uuid::Uuid,
+    ) -> Result<Vec<String>, Failure> {
+        let versions = self.part_history(spec, dat_id).await.map_err(failed)?;
+        Ok(versions.iter().map(drevo_version).collect())
+    }
+
+    async fn versions(
+        &self,
+        spec: &DrevoPartSpec,
+        known_at: Option<i64>,
+    ) -> Result<Vec<(uuid::Uuid, String)>, Failure> {
+        let versions = self.part_versions(spec, known_at).await.map_err(failed)?;
+        Ok(versions
+            .iter()
+            .map(|(id, v)| (*id, drevo_version(v)))
+            .collect())
+    }
+
+    async fn expired(
+        &self,
+        spec: &DrevoPartSpec,
+        deleted_before: i64,
+        limit: i64,
+    ) -> Result<Vec<uuid::Uuid>, Failure> {
+        self.expired_parts(spec, deleted_before, limit)
+            .await
+            .map_err(failed)
+    }
+}
+
+/// Create the index the part's versions need if missing. Idempotent.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_drevo_store_install_part(
+    store: *const RhizodatDrevoStore,
+    spec_json: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            parts::install(handle(store, "store")?.0.as_ref(), spec_json)
+        })
+    }
+}
+
+/// The latest committed version of `dat_id`'s part known at `*known_at` (any,
+/// when null), as JSON, or `null`.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` and `dat_id`
+/// NUL-terminated strings; `known_at` null or readable; `out` writable for one
+/// pointer; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_drevo_store_read_part(
+    store: *const RhizodatDrevoStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    known_at: *const i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let json = parts::read(
+                handle(store, "store")?.0.as_ref(),
+                spec_json,
+                dat_id,
+                known_at,
+            )?;
+            *out = owned_string(json);
+            Ok(())
+        })
+    }
+}
+
+/// Every committed version of `dat_id`'s part, oldest first, as a JSON array.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` and `dat_id`
+/// NUL-terminated strings; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_drevo_store_part_history(
+    store: *const RhizodatDrevoStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            *out = owned_string(parts::history(
+                handle(store, "store")?.0.as_ref(),
+                spec_json,
+                dat_id,
+            )?);
+            Ok(())
+        })
+    }
+}
+
+/// Every committed version of every entity's part known at `*known_at` (all,
+/// when null), oldest first, as a JSON array of versions with their `dat_id`.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `known_at` null or readable; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_drevo_store_part_versions(
+    store: *const RhizodatDrevoStore,
+    spec_json: *const c_char,
+    known_at: *const i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            *out = owned_string(parts::versions(
+                handle(store, "store")?.0.as_ref(),
+                spec_json,
+                known_at,
+            )?);
+            Ok(())
+        })
+    }
+}
+
+/// The entities whose latest version is a soft delete older than
+/// `deleted_before`, at most `limit`, as a JSON array of ids.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `out` writable for one pointer; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_drevo_store_expired_parts(
+    store: *const RhizodatDrevoStore,
+    spec_json: *const c_char,
+    deleted_before: i64,
+    limit: i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let ids = parts::expired(
+                handle(store, "store")?.0.as_ref(),
+                spec_json,
+                deleted_before,
+                limit,
+            )?;
+            *out = owned_string(ids);
             Ok(())
         })
     }
