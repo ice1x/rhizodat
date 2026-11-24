@@ -39,6 +39,56 @@ type Entity struct {
 	DatDeletedAt time.Time
 }
 
+// Ref is a reference to another entity of type T, by its id: stored as the
+// id (a uuid column, the id's text in drevo and Iceberg), and in drevo each
+// version links the entities it refers to. The zero Ref refers to nothing and
+// is stored as null.
+type Ref[T any] struct {
+	DatID UUID
+}
+
+func (r Ref[T]) refID() UUID { return r.DatID }
+
+// RefTo is a reference to target, an entity (a struct embedding Entity).
+func RefTo[T any](target *T) Ref[T] {
+	id := reflect.ValueOf(target).Elem().FieldByName("DatID")
+	if !id.IsValid() || id.Type() != reflect.TypeOf(UUID("")) {
+		return Ref[T]{}
+	}
+	return Ref[T]{DatID: UUID(id.String())}
+}
+
+type reference interface{ refID() UUID }
+
+var referenceType = reflect.TypeOf((*reference)(nil)).Elem()
+
+// isRef is whether t is a Ref.
+func isRef(t reflect.Type) bool { return t.Kind() == reflect.Struct && t.Implements(referenceType) }
+
+// holdsRefs is whether values of t hold references (a Ref, or a list or map of them).
+func holdsRefs(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return holdsRefs(t.Elem())
+	case reflect.Map:
+		return holdsRefs(t.Elem())
+	}
+	return isRef(t)
+}
+
+// Validity is the period an entity's version holds for (valid time), from
+// ValidFrom (inclusive) to ValidTo (exclusive); a zero end is open. Embed it in
+// an entity type to make it bitemporal: every part stores the period
+// (valid_from and valid_to, as the Python facade's valid_time types do), and a
+// read as of a moment returns, among the versions known then, the latest one
+// whose period holds at it.
+type Validity struct {
+	ValidFrom time.Time
+	ValidTo   time.Time
+}
+
+var validityType = reflect.TypeOf(Validity{})
+
 // Errors of entity writes, for errors.Is.
 var (
 	// ErrEntityExists is an Add of an entity that has versions (live or
@@ -120,6 +170,7 @@ type kind struct {
 	stores   []string // in declaration order
 	specs    map[string]PartSpec
 	entity   []int // the index of the embedded Entity
+	validity []int // the index of the embedded Validity; nil without valid time
 	soft     time.Duration
 }
 
@@ -160,6 +211,10 @@ func newKind(t reflect.Type, stores map[string]PartStore, options EntityOptions)
 			k.entity = f.Index
 			continue
 		}
+		if f.Anonymous && f.Type == validityType {
+			k.validity = f.Index
+			continue
+		}
 		tag, ok := f.Tag.Lookup("rhizodat")
 		if !ok {
 			continue
@@ -170,6 +225,9 @@ func newKind(t reflect.Type, stores map[string]PartStore, options EntityOptions)
 		}
 		if !f.IsExported() {
 			return nil, fmt.Errorf("rhizodat: %s.%s: a mapped field must be exported", options.Type, f.Name)
+		}
+		if name == "valid_from" || name == "valid_to" {
+			return nil, fmt.Errorf("rhizodat: %s: %q is the validity's (embed rhizodat.Validity)", options.Type, name)
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("rhizodat: %s: field %q is mapped twice", options.Type, name)
@@ -186,7 +244,7 @@ func newKind(t reflect.Type, stores map[string]PartStore, options EntityOptions)
 		if _, known := columns[store]; !known {
 			k.stores = append(k.stores, store)
 		}
-		columns[store] = append(columns[store], PartColumn{Name: name, Type: column})
+		columns[store] = append(columns[store], PartColumn{Name: name, Type: column, Reference: holdsRefs(f.Type)})
 		k.fields = append(k.fields, mappedField{name: name, store: store, index: f.Index})
 	}
 	if k.entity == nil {
@@ -196,6 +254,11 @@ func newKind(t reflect.Type, stores map[string]PartStore, options EntityOptions)
 		return nil, fmt.Errorf("rhizodat: %s: no field is mapped to a store", options.Type)
 	}
 	for _, store := range k.stores {
+		if k.validity != nil { // every part carries the period its version holds for
+			column, _ := stores[store].partColumnType(reflect.TypeOf((*time.Time)(nil)))
+			columns[store] = append(columns[store],
+				PartColumn{Name: "valid_from", Type: column}, PartColumn{Name: "valid_to", Type: column})
+		}
 		table := stores[store].partTable(partTable(options.Type))
 		k.specs[store] = PartSpec{Type: options.Type, Table: table, Columns: columns[store]}
 	}
@@ -216,16 +279,47 @@ func parseTag(tag string) (name, store string, err error) {
 	return name, store, nil
 }
 
-// split is obj's values by store, as stored.
-func (k *kind) split(obj reflect.Value) map[string]map[string]any {
+// split is obj's values by store, as stored, with its period in each part.
+func (k *kind) split(obj reflect.Value) (map[string]map[string]any, error) {
 	parts := make(map[string]map[string]any, len(k.stores))
+	for _, store := range k.stores {
+		parts[store] = map[string]any{}
+	}
 	for _, f := range k.fields {
-		if parts[f.store] == nil {
-			parts[f.store] = map[string]any{}
-		}
 		parts[f.store][f.name] = storable(obj.FieldByIndex(f.index))
 	}
-	return parts
+	if k.validity != nil {
+		v := obj.FieldByIndex(k.validity).Interface().(Validity)
+		if !v.ValidFrom.IsZero() && !v.ValidTo.IsZero() && !v.ValidFrom.Before(v.ValidTo) {
+			return nil, fmt.Errorf("rhizodat: %s: ValidFrom must be before ValidTo (%s >= %s)",
+				k.typeName, v.ValidFrom.Format(time.RFC3339), v.ValidTo.Format(time.RFC3339))
+		}
+		for _, values := range parts {
+			values["valid_from"], values["valid_to"] = optionalTimeValue(v.ValidFrom), optionalTimeValue(v.ValidTo)
+		}
+	}
+	return parts, nil
+}
+
+func optionalTimeValue(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+// period is the validity of a snapshot's version.
+func (k *kind) period(s snapshot) Validity {
+	v, spec := k.first(s), k.specs[k.stores[0]]
+	from, _ := v.Get(spec, "valid_from").(time.Time)
+	to, _ := v.Get(spec, "valid_to").(time.Time)
+	return Validity{ValidFrom: from, ValidTo: to}
+}
+
+// holds is whether the version's period contains at.
+func (k *kind) holds(s snapshot, at time.Time) bool {
+	p := k.period(s)
+	return (p.ValidFrom.IsZero() || !at.Before(p.ValidFrom)) && (p.ValidTo.IsZero() || at.Before(p.ValidTo))
 }
 
 // snapshot is the parts of one version of one entity, by store.
@@ -260,6 +354,9 @@ func (k *kind) assemble(id UUID, s snapshot, into reflect.Value) error {
 		}
 	}
 	into.FieldByIndex(k.entity).Set(reflect.ValueOf(e))
+	if k.validity != nil {
+		into.FieldByIndex(k.validity).Set(reflect.ValueOf(k.period(s)))
+	}
 	for _, f := range k.fields {
 		value := s[f.store].Get(k.specs[f.store], f.name)
 		if err := assign(into.FieldByIndex(f.index), value); err != nil {
@@ -274,6 +371,12 @@ func (k *kind) assemble(id UUID, s snapshot, into reflect.Value) error {
 // storable is a field's value as the package's value types carry it. An empty
 // UUID, Decimal or Date (the zero value) is null: it has no value to parse.
 func storable(v reflect.Value) any {
+	if isRef(v.Type()) {
+		if id := v.Interface().(reference).refID(); id != "" {
+			return id
+		}
+		return nil
+	}
 	switch v.Type() {
 	case reflect.TypeOf(UUID("")), reflect.TypeOf(Decimal("")), reflect.TypeOf(Date("")):
 		if v.String() == "" {
@@ -326,6 +429,12 @@ func assign(dst reflect.Value, src any) error {
 	if s := reflect.ValueOf(src); s.Type() == t {
 		dst.Set(s)
 		return nil
+	}
+	if isRef(t) {
+		if s := reflect.ValueOf(src); s.Kind() == reflect.String {
+			dst.Field(0).SetString(s.String())
+			return nil
+		}
 	}
 	switch t.Kind() {
 	case reflect.Pointer:
@@ -406,6 +515,9 @@ func postgresColumnType(t reflect.Type) (string, bool) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if isRef(t) {
+		return "uuid", true
+	}
 	switch t {
 	case timeType:
 		return "timestamptz", true
@@ -447,7 +559,7 @@ func jsonColumn(t reflect.Type) (string, bool) {
 	if t == timeType {
 		return "jsonb", true
 	}
-	if t.Kind() == reflect.Struct {
+	if t.Kind() == reflect.Struct && !isRef(t) {
 		return "", false
 	}
 	return postgresColumnType(t)
@@ -504,6 +616,9 @@ func (r *Repository[T]) assemble(id UUID, s snapshot) (*T, error) {
 // Get is the entity as known at the read's moment (now when none), nil when
 // it has no live version then (or none at all, with IncludeDeleted).
 func (r *Repository[T]) Get(id UUID, options ReadOptions) (*T, error) {
+	if r.kind.validity != nil {
+		return r.getValid(id, options)
+	}
 	if options.AsOf != nil && options.KnownAt != nil {
 		return nil, fmt.Errorf("rhizodat: %s has no valid time: AsOf and KnownAt are the same moment, give one", r.kind.typeName)
 	}
@@ -520,6 +635,30 @@ func (r *Repository[T]) Get(id UUID, options ReadOptions) (*T, error) {
 		return nil, err
 	}
 	return r.assemble(id, s)
+}
+
+// getValid is Get for a type with valid time: among the versions known at
+// KnownAt (now when nil), the latest one whose period holds at AsOf (now).
+func (r *Repository[T]) getValid(id UUID, options ReadOptions) (*T, error) {
+	var bound *int64
+	if options.KnownAt != nil {
+		b := hlcBound(*options.KnownAt)
+		bound = &b
+	}
+	known, err := r.snapshots(id, bound)
+	if err != nil || len(known) == 0 || (r.kind.first(known[len(known)-1]).Deleted && !options.IncludeDeleted) {
+		return nil, err
+	}
+	at := time.Now()
+	if options.AsOf != nil {
+		at = *options.AsOf
+	}
+	for i := len(known) - 1; i >= 0; i-- {
+		if r.kind.holds(known[i], at) {
+			return r.assemble(id, known[i])
+		}
+	}
+	return nil, nil
 }
 
 // consistent reads the parts of one version. Stores finish a meta-transaction
@@ -564,6 +703,24 @@ func timeOf(v *PartVersion) int64 {
 
 // History is every committed version, oldest first (soft deletes included).
 func (r *Repository[T]) History(id UUID) ([]T, error) {
+	complete, err := r.snapshots(id, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, len(complete))
+	for i, s := range complete {
+		obj, err := r.assemble(id, s)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = *obj
+	}
+	return out, nil
+}
+
+// snapshots is every version every store has (and knew at knownAt, when it is
+// not nil), oldest first.
+func (r *Repository[T]) snapshots(id UUID, knownAt *int64) ([]snapshot, error) {
 	byTxn := map[UUID]snapshot{}
 	for _, store := range r.kind.stores {
 		versions, err := r.stores[store].partHistory(r.kind.specs[store], id)
@@ -572,6 +729,9 @@ func (r *Repository[T]) History(id UUID) ([]T, error) {
 		}
 		for i := range versions {
 			v := versions[i]
+			if knownAt != nil && (v.DatTxTime == nil || *v.DatTxTime > *knownAt) {
+				continue
+			}
 			if byTxn[v.DatTxn] == nil {
 				byTxn[v.DatTxn] = snapshot{}
 			}
@@ -587,15 +747,7 @@ func (r *Repository[T]) History(id UUID) ([]T, error) {
 	sort.Slice(complete, func(i, j int) bool {
 		return timeOf(r.kind.first(complete[i])) < timeOf(r.kind.first(complete[j]))
 	})
-	out := make([]T, len(complete))
-	for i, s := range complete {
-		obj, err := r.assemble(id, s)
-		if err != nil {
-			return nil, err
-		}
-		out[i] = *obj
-	}
-	return out, nil
+	return complete, nil
 }
 
 // run runs work as one meta-transaction and the creation times of what it wrote.
@@ -787,7 +939,11 @@ func (in *UnitRepository[T]) Add(obj *T) error {
 	if s != nil {
 		return fmt.Errorf("%w: %s %s", ErrEntityExists, in.repo.kind.typeName, e.DatID)
 	}
-	return in.write(e.DatID, in.repo.kind.split(reflect.ValueOf(obj).Elem()), nil, false)
+	parts, err := in.repo.kind.split(reflect.ValueOf(obj).Elem())
+	if err != nil {
+		return err
+	}
+	return in.write(e.DatID, parts, nil, false)
 }
 
 // Update buffers a new version of a live entity.
@@ -797,7 +953,11 @@ func (in *UnitRepository[T]) Update(obj *T) error {
 	if err != nil {
 		return err
 	}
-	return in.write(id, in.repo.kind.split(reflect.ValueOf(obj).Elem()), in.repo.kind.first(s).Created, false)
+	parts, err := in.repo.kind.split(reflect.ValueOf(obj).Elem())
+	if err != nil {
+		return err
+	}
+	return in.write(id, parts, in.repo.kind.first(s).Created, false)
 }
 
 // Save is Add or Update, whichever applies; ErrEntityExists over a soft delete.
@@ -817,7 +977,11 @@ func (in *UnitRepository[T]) Save(obj *T) error {
 		}
 		created = in.repo.kind.first(s).Created
 	}
-	return in.write(e.DatID, in.repo.kind.split(reflect.ValueOf(obj).Elem()), created, false)
+	parts, err := in.repo.kind.split(reflect.ValueOf(obj).Elem())
+	if err != nil {
+		return err
+	}
+	return in.write(e.DatID, parts, created, false)
 }
 
 // Delete buffers the erase of every version, or a soft delete.

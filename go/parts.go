@@ -564,6 +564,9 @@ func drevoFieldKind(t reflect.Type) (string, bool) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if isRef(t) {
+		return "uuid", true
+	}
 	if _, ok := postgresColumnType(t); !ok {
 		return "", false
 	}
@@ -687,6 +690,9 @@ func (s *ClickHouseStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, err
 func clickhouseColumnType(t reflect.Type) (string, bool) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if isRef(t) {
+		return "UUID", true
 	}
 	if _, ok := postgresColumnType(t); !ok {
 		return "", false
@@ -817,6 +823,9 @@ func (s *IcebergStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error)
 func icebergFieldKind(t reflect.Type) (string, bool) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if isRef(t) {
+		return "id", true
 	}
 	if _, ok := postgresColumnType(t); !ok {
 		return "", false

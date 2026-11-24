@@ -4,8 +4,8 @@ The rhizodat core has a C ABI, `librhizodat_ffi` (`crates/rhizodat-ffi`), and a
 Go package over it, `github.com/ice1x/rhizodat/go`, linked statically through
 cgo. PostgreSQL, ClickHouse, drevo and Iceberg (REST and Glue catalogs)
 stores, the PostgreSQL and drevo journals and meta-transactions over any of
-them work, and entity repositories over any of these stores (references and
-valid time are next, see the [plan](../plan.md)). It commits through the same Rust path as the native
+them work, and entity repositories over any of these stores, with
+references and valid time. It commits through the same Rust path as the native
 Python facade (`crates/rhizodat-units`).
 
 ## Build
@@ -135,6 +135,34 @@ store:
 meta-transaction. A pointer field is
 nullable, and an empty `UUID`, `Decimal` or `Date` is stored as null. A field
 without a `rhizodat` tag is not stored.
+
+### References and valid time
+
+A field of type `rhizodat.Ref[Person]` (or a list or map of them) refers to
+other entities by id, as Python's `Ref["Person"]`: stored as the id, and in
+drevo every version links the entities it names (`-[:assignee]->` an anchor
+node). `rhizodat.RefTo(person)` makes one; the zero `Ref` is null.
+
+A type that embeds `rhizodat.Validity` is bitemporal (Python's
+`valid_time=True`): `ValidFrom` / `ValidTo` are the period a version holds
+for (a zero end is open), every part stores them, and `Get` with `AsOf`
+returns, among the versions known at `KnownAt`, the latest one whose period
+holds at `AsOf`:
+
+```go
+type Contract struct {
+	rhizodat.Entity
+	rhizodat.Validity
+	Price int `rhizodat:"price,store=billing"`
+}
+march := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+c, _ := contracts.Get(id, rhizodat.ReadOptions{AsOf: &march})                     // the price that held then
+c, _ = contracts.Get(id, rhizodat.ReadOptions{AsOf: &march, KnownAt: &lastWeek}) // as it was known
+```
+
+A type declared alike on both facades is one type: the Go test
+`TestATypeIsSharedWithThePythonFacade` writes an issue from Go that the
+Python facade reads, and updates one the Python facade wrote.
 
 ## Entity parts
 
