@@ -1,6 +1,7 @@
 package rhizodat
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -160,7 +161,13 @@ func TestAnEntitySpansPostgresAndClickHouse(t *testing.T) {
 	}
 	got, err := probes.Get(probe.DatID, ReadOptions{})
 	if err != nil || got == nil {
-		t.Fatalf("get: %+v %v", got, err)
+		// What each store holds, to tell a part that is missing from one that disagrees.
+		var parts []string
+		for _, store := range []PartStore{probes.stores["inventory"], telemetry} {
+			v, err := store.readPart(probes.kind.specs[store.Name()], probe.DatID, nil)
+			parts = append(parts, fmt.Sprintf("%s: %+v %v", store.Name(), v, err))
+		}
+		t.Fatalf("get: %+v %v; the commit %+v; the parts %v", got, err, added, parts)
 	}
 	if got.Target != probe.Target || got.Interval != 30 || got.Latency != 12.5 || !got.At.Equal(at) || !got.Up ||
 		!reflect.DeepEqual(got.Labels, []string{"eu"}) {
