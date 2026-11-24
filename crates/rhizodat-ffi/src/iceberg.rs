@@ -10,13 +10,14 @@ use std::ffi::c_char;
 use std::sync::Arc;
 
 use rhizodat_iceberg::filter::parse_filter;
-use rhizodat_iceberg::{IcebergStore, Scan};
+use rhizodat_iceberg::parts::{FieldKind, IcebergPartSpec, PartVersion};
+use rhizodat_iceberg::{IcebergError, IcebergStore, Scan};
 use serde_json::Value as Json;
 
 use crate::arrow::batch_rows;
 use crate::{
     Failure, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
-    owned_string, rows_json, runtime, text, writable,
+    owned_string, parts, rows_json, runtime, text, writable,
 };
 
 /// One Iceberg catalog as a rhizodat store.
@@ -205,4 +206,238 @@ pub unsafe extern "C" fn rhizodat_iceberg_store_scan(
 pub unsafe extern "C" fn rhizodat_iceberg_store_free(store: *mut RhizodatIcebergStore) {
     // SAFETY: the caller's contract.
     unsafe { free_handle(store) }
+}
+
+// --- entity parts ----------------------------------------------------------------------
+
+fn iceberg_version(version: &PartVersion) -> String {
+    parts::version_json(
+        Some(version.dat_txn),
+        version.dat_tx_time,
+        version.created,
+        version.deleted,
+        &version.values,
+    )
+}
+
+/// `spec_json` as an Iceberg part spec: the `table` is `namespace.table`, each
+/// column `[field, kind]` with the kind `string`, `boolean`, `long`, `double`,
+/// `binary`, `timestamptz`, `date`, `id` (a UUID as text) or `json` (tagged
+/// JSON text).
+pub(crate) fn iceberg_spec(spec: parts::Spec) -> Result<IcebergPartSpec, Failure> {
+    let fields = spec
+        .columns
+        .into_iter()
+        .map(|column| {
+            let (name, kind, _) = column.into_parts();
+            Ok((name, kind.parse::<FieldKind>()?))
+        })
+        .collect::<Result<Vec<_>, IcebergError>>()
+        .map_err(|e| invalid(e.to_string()))?;
+    IcebergPartSpec::new(&spec.type_name, &spec.table, fields).map_err(|e| invalid(e.to_string()))
+}
+
+impl RhizodatIcebergStore {
+    async fn lake(&self) -> Result<IcebergStore, Failure> {
+        IcebergStore::connect(&self.dsn, &self.name)
+            .await
+            .map_err(failed)
+    }
+}
+
+impl parts::PartReads for RhizodatIcebergStore {
+    type Spec = IcebergPartSpec;
+
+    fn spec(spec: parts::Spec) -> Result<IcebergPartSpec, Failure> {
+        iceberg_spec(spec)
+    }
+
+    async fn install(&self, spec: &IcebergPartSpec) -> Result<(), Failure> {
+        self.lake().await?.install_part(spec).await.map_err(failed)
+    }
+
+    async fn read(
+        &self,
+        spec: &IcebergPartSpec,
+        dat_id: uuid::Uuid,
+        known_at: Option<i64>,
+    ) -> Result<Option<String>, Failure> {
+        let version = self
+            .lake()
+            .await?
+            .read_part(spec, dat_id, known_at)
+            .await
+            .map_err(failed)?;
+        Ok(version.as_ref().map(iceberg_version))
+    }
+
+    async fn history(
+        &self,
+        spec: &IcebergPartSpec,
+        dat_id: uuid::Uuid,
+    ) -> Result<Vec<String>, Failure> {
+        let versions = self
+            .lake()
+            .await?
+            .part_history(spec, dat_id)
+            .await
+            .map_err(failed)?;
+        Ok(versions.iter().map(iceberg_version).collect())
+    }
+
+    async fn versions(
+        &self,
+        spec: &IcebergPartSpec,
+        known_at: Option<i64>,
+    ) -> Result<Vec<(uuid::Uuid, String)>, Failure> {
+        let versions = self
+            .lake()
+            .await?
+            .part_versions(spec, known_at)
+            .await
+            .map_err(failed)?;
+        Ok(versions
+            .iter()
+            .map(|(id, v)| (*id, iceberg_version(v)))
+            .collect())
+    }
+
+    async fn expired(
+        &self,
+        spec: &IcebergPartSpec,
+        deleted_before: i64,
+        limit: i64,
+    ) -> Result<Vec<uuid::Uuid>, Failure> {
+        self.lake()
+            .await?
+            .expired_parts(spec, deleted_before, limit)
+            .await
+            .map_err(failed)
+    }
+}
+
+/// Create the part's namespace and table if missing. Idempotent.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_iceberg_store_install_part(
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe { boundary(error, || parts::install(handle(store, "store")?, spec_json)) }
+}
+
+/// The latest committed version of `dat_id`'s part known at `*known_at` (any,
+/// when null), as JSON, or `null`.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` and `dat_id`
+/// NUL-terminated strings; `known_at` null or readable; `out` writable for one
+/// pointer; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_iceberg_store_read_part(
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    known_at: *const i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let json = parts::read(handle(store, "store")?, spec_json, dat_id, known_at)?;
+            *out = owned_string(json);
+            Ok(())
+        })
+    }
+}
+
+/// Every committed version of `dat_id`'s part, oldest first, as a JSON array.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` and `dat_id`
+/// NUL-terminated strings; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_iceberg_store_part_history(
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            *out = owned_string(parts::history(handle(store, "store")?, spec_json, dat_id)?);
+            Ok(())
+        })
+    }
+}
+
+/// Every committed version of every entity's part known at `*known_at` (all,
+/// when null), oldest first, as a JSON array of versions with their `dat_id`.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `known_at` null or readable; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_iceberg_store_part_versions(
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    known_at: *const i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            *out = owned_string(parts::versions(
+                handle(store, "store")?,
+                spec_json,
+                known_at,
+            )?);
+            Ok(())
+        })
+    }
+}
+
+/// The entities whose latest version is a soft delete older than
+/// `deleted_before`, at most `limit`, as a JSON array of ids.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `out` writable for one pointer; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_iceberg_store_expired_parts(
+    store: *const RhizodatIcebergStore,
+    spec_json: *const c_char,
+    deleted_before: i64,
+    limit: i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let ids = parts::expired(handle(store, "store")?, spec_json, deleted_before, limit)?;
+            *out = owned_string(ids);
+            Ok(())
+        })
+    }
 }

@@ -472,6 +472,9 @@ Steps:
    ✔ Entity parts in ClickHouse from Go (carried by the unit's ClickHouse
    store into the journal payload, as the Python binding's are). Next:
    Iceberg entity parts from Go.
+   ✔ Entity parts in Iceberg from Go, in the store's parts namespace: every
+   shipped store holds entity parts from Go. Next: references, valid time and
+   a type shared by both facades.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

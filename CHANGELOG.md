@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Go (preview): entity parts in Iceberg (`rhizodat_iceberg_store_*_part`,
+  `rhizodat_unit_iceberg_*_part`), in the store's `PartsNamespace` (`dat` by
+  default), so an entity repository spans every shipped store.
 - Go (preview): entity parts in ClickHouse (`rhizodat_clickhouse_store_*_part`,
   `rhizodat_unit_clickhouse_*_part`; `rhizodat-units`' ClickHouse store now
   carries a unit's parts into the commit), so an entity repository spans

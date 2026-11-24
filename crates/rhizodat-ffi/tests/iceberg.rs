@@ -296,3 +296,133 @@ fn what_iceberg_cannot_take_is_refused() {
         rhizodat_iceberg_store_free(store);
     }
 }
+
+// --- entity parts --------------------------------------------------------------------
+
+#[test]
+fn iceberg_entity_parts_are_written_in_a_unit_and_read_by_known_time() {
+    let Some(dsn) = dsn("RHIZODAT_TEST_ICEBERG_REST_DSN", 58181) else {
+        return;
+    };
+    let store = lake(&dsn);
+    let table = format!("ffi_parts_{}.audit", suffix());
+    let spec = c(&json!({"type": "ops.Audit", "table": table,
+        "columns": [["actor", "string"], ["count", "long"], ["subject", "id"], ["detail", "json"]]})
+    .to_string());
+    // SAFETY: a live handle and a valid string.
+    ok(|e| unsafe { rhizodat_iceberg_store_install_part(store, spec.as_ptr(), e) });
+
+    let mut id = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_new_id(&raw mut id, e) });
+    let id = take(id);
+    let cid = c(&id);
+    let subject = "01920000-0000-7000-8000-000000000002";
+    let mut unit = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_unit_new(&raw mut unit, e) });
+    let (fields, values) = (
+        c(r#"["actor", "count", "subject", "detail"]"#),
+        c(&json!(["ops-bot", 3, {"$": "uuid", "v": subject}, ["scale"]]).to_string()),
+    );
+    // SAFETY: live handles, valid strings, null `created`.
+    ok(|e| unsafe {
+        rhizodat_unit_iceberg_write_part(
+            unit,
+            store,
+            spec.as_ptr(),
+            cid.as_ptr(),
+            fields.as_ptr(),
+            values.as_ptr(),
+            ptr::null(),
+            false,
+            e,
+        )
+    });
+    let mut out = ptr::null_mut();
+    // SAFETY: live handles, valid strings, a writable local.
+    ok(|e| unsafe {
+        rhizodat_unit_iceberg_own_part(unit, store, spec.as_ptr(), cid.as_ptr(), &raw mut out, e)
+    });
+    let own: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(own["touched"], json!(true));
+
+    let mut coordinator = ptr::null_mut();
+    // SAFETY: a writable local; no journal (one store).
+    ok(|e| unsafe { rhizodat_coordinator_new(ptr::null(), &raw mut coordinator, e) });
+    let mut done = ptr::null_mut();
+    // SAFETY: live handles and a writable local.
+    ok(|e| unsafe { rhizodat_coordinator_commit(coordinator, unit, &raw mut done, e) });
+    let done: Value = serde_json::from_str(&take(done)).unwrap();
+    let t = done["dat_tx_time"].as_i64().unwrap();
+
+    let read = || -> Value {
+        let mut out = ptr::null_mut();
+        // SAFETY: a live handle, valid strings, null `known_at`, a writable local.
+        ok(|e| unsafe {
+            rhizodat_iceberg_store_read_part(
+                store,
+                spec.as_ptr(),
+                cid.as_ptr(),
+                ptr::null(),
+                &raw mut out,
+                e,
+            )
+        });
+        serde_json::from_str(&take(out)).unwrap()
+    };
+    let v = read();
+    assert_eq!(v["dat_txn"], done["dat_txn"]);
+    assert_eq!(v["created"], json!(t));
+    assert_eq!(
+        v["values"],
+        json!(["ops-bot", 3, {"$": "uuid", "v": subject}, ["scale"]])
+    );
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_iceberg_store_part_history(store, spec.as_ptr(), cid.as_ptr(), &raw mut out, e)
+    });
+    let history: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_iceberg_store_part_versions(store, spec.as_ptr(), ptr::null(), &raw mut out, e)
+    });
+    let all: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(all[0]["dat_id"], json!(id));
+    let mut out = ptr::null_mut();
+    // SAFETY: as above.
+    ok(|e| unsafe {
+        rhizodat_iceberg_store_expired_parts(store, spec.as_ptr(), t + 1, 10, &raw mut out, e)
+    });
+    assert_eq!(take(out), "[]");
+
+    let mut unit2 = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_unit_new(&raw mut unit2, e) });
+    // SAFETY: live handles and valid strings.
+    ok(|e| unsafe {
+        rhizodat_unit_iceberg_erase_part(unit2, store, spec.as_ptr(), cid.as_ptr(), e)
+    });
+    let mut done2 = ptr::null_mut();
+    // SAFETY: live handles and a writable local.
+    ok(|e| unsafe { rhizodat_coordinator_commit(coordinator, unit2, &raw mut done2, e) });
+    take(done2);
+    assert_eq!(read(), Value::Null, "erased");
+
+    let bad = c(r#"{"type": "x", "table": "no_namespace", "columns": [["a", "string"]]}"#);
+    // SAFETY: a live handle and a valid string.
+    let (status, _) =
+        run(|e| unsafe { rhizodat_iceberg_store_install_part(store, bad.as_ptr(), e) });
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+
+    // SAFETY: freed once each.
+    unsafe {
+        rhizodat_unit_free(unit);
+        rhizodat_unit_free(unit2);
+        rhizodat_coordinator_free(coordinator);
+        rhizodat_iceberg_store_free(store);
+    }
+}
