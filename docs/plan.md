@@ -475,6 +475,9 @@ Steps:
    ✔ Entity parts in Iceberg from Go, in the store's parts namespace: every
    shipped store holds entity parts from Go. Next: references, valid time and
    a type shared by both facades.
+   ✔ References (`Ref[T]`, linked in drevo) and valid time (`Validity`) in
+   Go, and a type shared by both facades, tested both ways (Go writes, the
+   Python facade reads, and back). Entity repositories are in Go.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

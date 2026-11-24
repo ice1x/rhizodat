@@ -87,6 +87,11 @@ jobs:
         run: |
           docker compose --profile clickhouse --profile iceberg up -d --wait postgres clickhouse drevo iceberg-rest
           grep -E '^RHIZODAT_TEST_(PG_DSN|CLICKHOUSE_DSN|DREVO_BOLT|ICEBERG_REST_DSN)=' .env.test >> "$GITHUB_ENV"
+      # The Python facade, for the test of a type both facades share.
+      - uses: astral-sh/setup-uv@v6
+        if: runner.os == 'Linux'
+      - if: runner.os == 'Linux'
+        run: uv sync --locked --no-dev --extra postgres
       - uses: actions/setup-go@v6
         with:
           go-version-file: go/go.mod

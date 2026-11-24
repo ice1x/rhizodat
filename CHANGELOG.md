@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Go (preview): references between entities (`rhizodat.Ref[T]`, `RefTo`;
+  linked in drevo like Python's `Ref`) and valid time (embed
+  `rhizodat.Validity`; reads `AsOf` a moment among the versions known at
+  `KnownAt`). A type declared alike in Go and Python is shared: a test writes
+  from each facade and reads from the other (CI's go job now installs the
+  Python facade for it).
 - Go (preview): entity parts in Iceberg (`rhizodat_iceberg_store_*_part`,
   `rhizodat_unit_iceberg_*_part`), in the store's `PartsNamespace` (`dat` by
   default), so an entity repository spans every shipped store.
