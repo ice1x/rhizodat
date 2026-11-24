@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Go (preview): entity repositories over PostgreSQL stores. An entity type is
+  a struct embedding `rhizodat.Entity` with fields tagged
+  `rhizodat:"field,store=name"`; `NewRepository[T]` adds, reads (as known at
+  a moment), updates, saves, deletes (hard or soft), restores, purges and
+  lists the history of entities, each write one meta-transaction, in the
+  Python facade's tables. `Repository.In(unit)` works inside a unit of work.
 - Go (preview): entity parts in a PostgreSQL store, through new C ABI
   functions (`rhizodat_postgres_store_install_part`, `_read_part`,
   `_part_history`, `_part_versions`, `_expired_parts`, and
