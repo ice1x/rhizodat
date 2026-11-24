@@ -421,3 +421,282 @@ fn a_bad_dsn_is_an_invalid_argument() {
     assert_eq!(status, RhizodatStatus::InvalidArgument, "{message}");
     assert!(store.is_null());
 }
+
+// --- entity parts --------------------------------------------------------------------
+
+const SPEC: &str = r#"{"type": "tracker.Issue", "table": "tracker_issue",
+    "columns": [["title", "text"], ["points", "bigint"], ["tags", "jsonb"]]}"#;
+
+fn new_id() -> String {
+    let mut id = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_new_id(&raw mut id, e) });
+    take(id)
+}
+
+fn install_part(store: *mut RhizodatPostgresStore, spec: &str) {
+    let spec = c(spec);
+    // SAFETY: a live handle and a valid string.
+    ok(|e| unsafe { rhizodat_postgres_store_install_part(store, spec.as_ptr(), e) });
+}
+
+fn write_part(
+    unit: *mut RhizodatUnit,
+    store: *mut RhizodatPostgresStore,
+    dat_id: &str,
+    values: &Value,
+    created: Option<i64>,
+    deleted: bool,
+) -> (RhizodatStatus, String) {
+    let (spec, id) = (c(SPEC), c(dat_id));
+    let fields: Vec<&str> = values
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let row: Vec<Value> = values.as_object().unwrap().values().cloned().collect();
+    let (f, v) = (c(&json!(fields).to_string()), c(&json!(row).to_string()));
+    let created = created.as_ref().map_or(ptr::null(), ptr::from_ref);
+    // SAFETY: live handles, valid strings, `created` null or a live local.
+    run(|e| unsafe {
+        rhizodat_unit_postgres_write_part(
+            unit,
+            store,
+            spec.as_ptr(),
+            id.as_ptr(),
+            f.as_ptr(),
+            v.as_ptr(),
+            created,
+            deleted,
+            e,
+        )
+    })
+}
+
+fn read_part(store: *mut RhizodatPostgresStore, dat_id: &str, known_at: Option<i64>) -> Value {
+    let (spec, id) = (c(SPEC), c(dat_id));
+    let known_at = known_at.as_ref().map_or(ptr::null(), ptr::from_ref);
+    let mut out = ptr::null_mut();
+    // SAFETY: a live handle, valid strings, writable locals.
+    ok(|e| unsafe {
+        rhizodat_postgres_store_read_part(
+            store,
+            spec.as_ptr(),
+            id.as_ptr(),
+            known_at,
+            &raw mut out,
+            e,
+        )
+    });
+    serde_json::from_str(&take(out)).unwrap()
+}
+
+fn own_part(unit: *mut RhizodatUnit, store: *mut RhizodatPostgresStore, dat_id: &str) -> Value {
+    let (spec, id) = (c(SPEC), c(dat_id));
+    let mut out = ptr::null_mut();
+    // SAFETY: live handles, valid strings, a writable local.
+    ok(|e| unsafe {
+        rhizodat_unit_postgres_own_part(unit, store, spec.as_ptr(), id.as_ptr(), &raw mut out, e)
+    });
+    serde_json::from_str(&take(out)).unwrap()
+}
+
+fn empty_unit() -> *mut RhizodatUnit {
+    let mut unit = ptr::null_mut();
+    // SAFETY: a writable local.
+    ok(|e| unsafe { rhizodat_unit_new(&raw mut unit, e) });
+    unit
+}
+
+#[test]
+fn entity_parts_are_written_in_a_unit_and_read_by_known_time() {
+    let Some(dsn) = pg_dsn() else { return };
+    let db = Db::new(&dsn);
+    let store = db.store("pg");
+    install_part(store, SPEC);
+    install_part(store, SPEC); // idempotent
+    let coordinator = coordinator(ptr::null());
+    let id = new_id();
+
+    let unit = empty_unit();
+    assert_eq!(own_part(unit, store, &id), json!({"touched": false}));
+    let first = json!({"title": "Crash on save", "points": 3, "tags": ["ui", "p1"]});
+    let (status, message) = write_part(unit, store, &id, &first, None, false);
+    assert_eq!(status, RhizodatStatus::Ok, "{message}");
+    let own = own_part(unit, store, &id);
+    assert_eq!(own["touched"], json!(true));
+    assert_eq!(own["version"]["created"], Value::Null);
+    assert_eq!(
+        own["version"]["values"],
+        json!(["Crash on save", 3, ["ui", "p1"]])
+    );
+    let (status, done) = commit(coordinator, unit);
+    assert_eq!(status, RhizodatStatus::Ok, "{done}");
+    let t1 = done["dat_tx_time"].as_i64().unwrap();
+
+    let v1 = read_part(store, &id, None);
+    assert_eq!(v1["dat_txn"], done["dat_txn"]);
+    assert_eq!(v1["dat_tx_time"], json!(t1));
+    assert_eq!(v1["created"], json!(t1), "the first version's own time");
+    assert_eq!(v1["deleted"], json!(false));
+    assert_eq!(v1["values"], json!(["Crash on save", 3, ["ui", "p1"]]));
+
+    let unit2 = empty_unit();
+    let second = json!({"title": "Crash on save", "points": 5});
+    let (status, message) = write_part(unit2, store, &id, &second, Some(t1), false);
+    assert_eq!(status, RhizodatStatus::Ok, "{message}");
+    let (status, done2) = commit(coordinator, unit2);
+    assert_eq!(status, RhizodatStatus::Ok, "{done2}");
+
+    let latest = read_part(store, &id, None);
+    assert_eq!(latest["values"], json!(["Crash on save", 5, null]));
+    assert_eq!(latest["created"], json!(t1));
+    assert_eq!(read_part(store, &id, Some(t1))["values"][1], json!(3));
+    assert_eq!(read_part(store, &id, Some(t1 - 1)), Value::Null);
+
+    let (spec, cid) = (c(SPEC), c(&id));
+    let mut out = ptr::null_mut();
+    // SAFETY: a live handle, valid strings, a writable local.
+    ok(|e| unsafe {
+        rhizodat_postgres_store_part_history(store, spec.as_ptr(), cid.as_ptr(), &raw mut out, e)
+    });
+    let history: Value = serde_json::from_str(&take(out)).unwrap();
+    let points: Vec<&Value> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| &v["values"][1])
+        .collect();
+    assert_eq!(points, [&json!(3), &json!(5)], "oldest first");
+
+    let mut out = ptr::null_mut();
+    // SAFETY: as above; null `known_at` is every version.
+    ok(|e| unsafe {
+        rhizodat_postgres_store_part_versions(store, spec.as_ptr(), ptr::null(), &raw mut out, e)
+    });
+    let all: Value = serde_json::from_str(&take(out)).unwrap();
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    assert_eq!(all[0]["dat_id"], json!(id));
+
+    let unit3 = empty_unit();
+    // SAFETY: live handles and valid strings.
+    ok(|e| unsafe {
+        rhizodat_unit_postgres_erase_part(unit3, store, spec.as_ptr(), cid.as_ptr(), e)
+    });
+    assert_eq!(
+        own_part(unit3, store, &id),
+        json!({"touched": true, "version": null})
+    );
+    let (status, done3) = commit(coordinator, unit3);
+    assert_eq!(status, RhizodatStatus::Ok, "{done3}");
+    assert_eq!(
+        read_part(store, &id, None),
+        Value::Null,
+        "erased, every version"
+    );
+
+    // SAFETY: freed once each.
+    unsafe {
+        rhizodat_unit_free(unit);
+        rhizodat_unit_free(unit2);
+        rhizodat_unit_free(unit3);
+        rhizodat_coordinator_free(coordinator);
+        rhizodat_postgres_store_free(store);
+    }
+}
+
+#[test]
+fn a_soft_deleted_part_expires() {
+    let Some(dsn) = pg_dsn() else { return };
+    let db = Db::new(&dsn);
+    let store = db.store("pg");
+    install_part(store, SPEC);
+    let coordinator = coordinator(ptr::null());
+    let (live, gone) = (new_id(), new_id());
+    let unit = empty_unit();
+    let values = json!({"title": "t"});
+    for (id, deleted) in [(&live, false), (&gone, true)] {
+        let (status, message) = write_part(unit, store, id, &values, None, deleted);
+        assert_eq!(status, RhizodatStatus::Ok, "{message}");
+    }
+    let (status, done) = commit(coordinator, unit);
+    assert_eq!(status, RhizodatStatus::Ok, "{done}");
+    let t = done["dat_tx_time"].as_i64().unwrap();
+
+    let spec = c(SPEC);
+    let expired = |before: i64| -> Value {
+        let mut out = ptr::null_mut();
+        // SAFETY: a live handle, a valid string, a writable local.
+        ok(|e| unsafe {
+            rhizodat_postgres_store_expired_parts(store, spec.as_ptr(), before, 10, &raw mut out, e)
+        });
+        serde_json::from_str(&take(out)).unwrap()
+    };
+    assert_eq!(expired(t), json!([]), "not older than the bound");
+    assert_eq!(expired(t + 1), json!([gone]));
+    assert_eq!(read_part(store, &gone, None)["deleted"], json!(true));
+
+    // SAFETY: freed once each.
+    unsafe {
+        rhizodat_unit_free(unit);
+        rhizodat_coordinator_free(coordinator);
+        rhizodat_postgres_store_free(store);
+    }
+}
+
+#[test]
+fn malformed_parts_are_refused() {
+    let Some(dsn) = pg_dsn() else { return };
+    let db = Db::new(&dsn);
+    let store = db.store("pg");
+    let unit = empty_unit();
+    let id = new_id();
+
+    let (bad, dat_id) = (c(r#"{"type": "x", "table": "x"}"#), c(&id));
+    // SAFETY: a live handle and valid strings.
+    let (status, message) =
+        run(|e| unsafe { rhizodat_postgres_store_install_part(store, bad.as_ptr(), e) });
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+    assert!(message.contains("spec_json"), "{message}");
+
+    let bad_type = c(r#"{"type": "x", "table": "x", "columns": [["a", "varchar"]]}"#);
+    // SAFETY: as above.
+    let (status, message) =
+        run(|e| unsafe { rhizodat_postgres_store_install_part(store, bad_type.as_ptr(), e) });
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+    assert!(message.contains("varchar"), "{message}");
+
+    let (status, message) = write_part(unit, store, &id, &json!({"nope": 1}), None, false);
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+    assert!(message.contains("nope"), "{message}");
+
+    let (status, message) = write_part(unit, store, "not-a-uuid", &json!({}), None, false);
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+    assert!(message.contains("dat_id"), "{message}");
+
+    let (spec, mismatched) = (c(SPEC), c(r#"["title"]"#));
+    let two = c(r#"["a", "b"]"#);
+    // SAFETY: live handles and valid strings.
+    let (status, message) = run(|e| unsafe {
+        rhizodat_unit_postgres_write_part(
+            unit,
+            store,
+            spec.as_ptr(),
+            dat_id.as_ptr(),
+            mismatched.as_ptr(),
+            two.as_ptr(),
+            ptr::null(),
+            false,
+            e,
+        )
+    });
+    assert_eq!(status, RhizodatStatus::InvalidArgument);
+    assert!(message.contains("one value per field"), "{message}");
+
+    // SAFETY: freed once each.
+    unsafe {
+        rhizodat_unit_free(unit);
+        rhizodat_postgres_store_free(store);
+    }
+}

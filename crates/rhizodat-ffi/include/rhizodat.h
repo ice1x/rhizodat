@@ -279,6 +279,125 @@ enum RhizodatStatus rhizodat_postgres_journal_open(const char *dsn,
 // `journal` must be null or a journal handle not freed before.
 void rhizodat_journal_free(struct RhizodatJournal *journal);
 
+// Create the part's table and index (and `dat_applied`) if missing. Idempotent.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+// `error` null or writable.
+enum RhizodatStatus rhizodat_postgres_store_install_part(const struct RhizodatPostgresStore *store,
+                                                         const char *spec_json,
+                                                         char **error);
+
+// The latest committed version of `dat_id`'s part with `dat_tx_time <=
+// *known_at` (any, when `known_at` is null), as JSON (see the C ABI's parts),
+// or `null` when there is none.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` and `dat_id`
+// NUL-terminated strings; `known_at` null or readable; `out` writable for one
+// pointer; `error` null or writable.
+enum RhizodatStatus rhizodat_postgres_store_read_part(const struct RhizodatPostgresStore *store,
+                                                      const char *spec_json,
+                                                      const char *dat_id,
+                                                      const int64_t *known_at,
+                                                      char **out,
+                                                      char **error);
+
+// Every committed version of `dat_id`'s part, oldest first, as a JSON array.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` and `dat_id`
+// NUL-terminated strings; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_postgres_store_part_history(const struct RhizodatPostgresStore *store,
+                                                         const char *spec_json,
+                                                         const char *dat_id,
+                                                         char **out,
+                                                         char **error);
+
+// Every committed version of every entity's part with `dat_tx_time <=
+// *known_at` (all, when `known_at` is null), oldest first, as a JSON array of
+// versions with their entity's `dat_id`.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+// `known_at` null or readable; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_postgres_store_part_versions(const struct RhizodatPostgresStore *store,
+                                                          const char *spec_json,
+                                                          const int64_t *known_at,
+                                                          char **out,
+                                                          char **error);
+
+// The entities whose latest version is a soft delete with `dat_tx_time <
+// deleted_before`, at most `limit`, as a JSON array of ids.
+//
+// # Safety
+//
+// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+// `out` writable for one pointer; `error` null or writable.
+enum RhizodatStatus rhizodat_postgres_store_expired_parts(const struct RhizodatPostgresStore *store,
+                                                          const char *spec_json,
+                                                          int64_t deleted_before,
+                                                          int64_t limit,
+                                                          char **out,
+                                                          char **error);
+
+// Buffer a version of `dat_id`'s part in a PostgreSQL store: `fields_json` a
+// JSON array of field names, `values_json` a JSON array of their tagged
+// values (fields left out are `NULL`); `created` the time of the entity's
+// first version, or null when this is the first; `deleted` for a soft delete.
+// It is written at the commit, stamped with the meta-transaction.
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json`, `dat_id`,
+// `fields_json` and `values_json` NUL-terminated strings; `created` null or
+// readable; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_postgres_write_part(const struct RhizodatUnit *unit,
+                                                      const struct RhizodatPostgresStore *store,
+                                                      const char *spec_json,
+                                                      const char *dat_id,
+                                                      const char *fields_json,
+                                                      const char *values_json,
+                                                      const int64_t *created,
+                                                      bool deleted,
+                                                      char **error);
+
+// Buffer the physical removal of every version of `dat_id`'s part in a
+// PostgreSQL store (committed ones too), at the commit.
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+// NUL-terminated strings; `error` null or writable.
+enum RhizodatStatus rhizodat_unit_postgres_erase_part(const struct RhizodatUnit *unit,
+                                                      const struct RhizodatPostgresStore *store,
+                                                      const char *spec_json,
+                                                      const char *dat_id,
+                                                      char **error);
+
+// This unit of work's own latest version of `dat_id`'s part in a PostgreSQL
+// store: `{"touched": false}` when it did not touch it, else `{"touched":
+// true, "version": null | {...}}` (null: it erased it last; a version has no
+// `dat_txn` and no `dat_tx_time` yet).
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+// NUL-terminated strings; `out` writable for one pointer; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_unit_postgres_own_part(const struct RhizodatUnit *unit,
+                                                    const struct RhizodatPostgresStore *store,
+                                                    const char *spec_json,
+                                                    const char *dat_id,
+                                                    char **out,
+                                                    char **error);
+
 // An empty unit of work.
 //
 // # Safety

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Go (preview): entity parts in a PostgreSQL store, through new C ABI
+  functions (`rhizodat_postgres_store_install_part`, `_read_part`,
+  `_part_history`, `_part_versions`, `_expired_parts`, and
+  `rhizodat_unit_postgres_write_part`, `_erase_part`, `_own_part`): a part
+  is written in a unit of work and read back as known at a transaction time,
+  in the Python facade's layout. The entity repository in Go builds on them.
 - Embedded drevo (drevo-py and the Rust `embedded` feature) is pinned at the
   drevo 0.0.86 tag (from a 0.0.43-era commit): like the server, it now fences
   only the writes that overlap a prepared branch, and a test checks that a

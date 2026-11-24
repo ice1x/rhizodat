@@ -453,6 +453,12 @@ Steps:
    before the incident from the `dat_tx_time` every row carries, and its audit
    trail scanned in the lake. The C ABI for Go is done for application data.
    Next: entity repositories (bitemporal parts) from Go.
+   ✔ Entity parts in PostgreSQL from Go: a part's spec as JSON, its install,
+   versions written, erased and read back inside a unit of work, and committed
+   versions read as known at a transaction time, with their history, every
+   entity's versions and the expired soft deletes, in the reference's layout.
+   Next: the entity repository in Go over them (add, get, update, delete,
+   history, `as_of` / `known_at`), then the parts of the other stores.
 6. ✔ **CI**: `cargo test`, `cargo clippy`, `cargo fmt --check` (the `rust` job, on
    stable and the MSRV, against the compose stores), and the conformance
    suite against both implementations: the Rust vectors in `cargo test`, the

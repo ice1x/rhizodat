@@ -6,12 +6,13 @@ use std::ffi::c_char;
 use std::sync::Arc;
 
 use rhizodat_core::journal::Journal;
+use rhizodat_postgres::parts::{ColumnType, PartSpec, PartVersion};
 use rhizodat_postgres::query::query;
-use rhizodat_postgres::{PostgresJournal, PostgresStore};
+use rhizodat_postgres::{ConfigError, PostgresJournal, PostgresStore};
 
 use crate::{
     Failure, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
-    owned_string, rows_json, runtime, text, values, writable,
+    owned_string, parts, rows_json, runtime, text, values, writable,
 };
 
 /// One PostgreSQL database as a rhizodat store.
@@ -178,4 +179,196 @@ pub unsafe extern "C" fn rhizodat_postgres_journal_open(
 pub unsafe extern "C" fn rhizodat_journal_free(journal: *mut RhizodatJournal) {
     // SAFETY: the caller's contract.
     unsafe { free_handle(journal) }
+}
+
+// --- entity parts ----------------------------------------------------------------------
+
+/// `spec_json` as a PostgreSQL part spec (column types as SQL: `text`,
+/// `boolean`, `bigint`, `double precision`, `numeric`, `timestamptz`, `date`,
+/// `uuid`, `bytea`, `jsonb`).
+///
+/// # Safety
+///
+/// `spec_json` must be null or a NUL-terminated string.
+pub(crate) unsafe fn part_spec(spec_json: *const c_char) -> Result<PartSpec, Failure> {
+    // SAFETY: the caller's contract.
+    let spec = unsafe { parts::spec(spec_json) }?;
+    let columns = spec
+        .columns
+        .into_iter()
+        .map(|(name, ty)| Ok((name, ty.parse::<ColumnType>()?)))
+        .collect::<Result<Vec<_>, ConfigError>>()
+        .map_err(|e| (RhizodatStatus::InvalidArgument, e.to_string()))?;
+    PartSpec::new(&spec.type_name, &spec.table, columns)
+        .map_err(|e| (RhizodatStatus::InvalidArgument, e.to_string()))
+}
+
+fn version_json(version: &PartVersion) -> String {
+    parts::version_json(
+        Some(version.dat_txn),
+        version.dat_tx_time,
+        version.created,
+        version.deleted,
+        &version.values,
+    )
+}
+
+/// Create the part's table and index (and `dat_applied`) if missing. Idempotent.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_postgres_store_install_part(
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let store = handle(store, "store")?.0.clone();
+            let spec = part_spec(spec_json)?;
+            runtime()?
+                .block_on(store.install_part(&spec))
+                .map_err(|e| failed(server_message(&e)))
+        })
+    }
+}
+
+/// The latest committed version of `dat_id`'s part with `dat_tx_time <=
+/// *known_at` (any, when `known_at` is null), as JSON (see the C ABI's parts),
+/// or `null` when there is none.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` and `dat_id`
+/// NUL-terminated strings; `known_at` null or readable; `out` writable for one
+/// pointer; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_postgres_store_read_part(
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    known_at: *const i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let store = handle(store, "store")?.0.clone();
+            let spec = part_spec(spec_json)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let version = runtime()?
+                .block_on(store.read_part(&spec, dat_id, parts::optional_i64(known_at)))
+                .map_err(|e| failed(server_message(e.as_ref())))?;
+            *out = owned_string(
+                version
+                    .as_ref()
+                    .map_or_else(|| "null".to_owned(), version_json),
+            );
+            Ok(())
+        })
+    }
+}
+
+/// Every committed version of `dat_id`'s part, oldest first, as a JSON array.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` and `dat_id`
+/// NUL-terminated strings; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_postgres_store_part_history(
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let store = handle(store, "store")?.0.clone();
+            let spec = part_spec(spec_json)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let versions = runtime()?
+                .block_on(store.part_history(&spec, dat_id))
+                .map_err(|e| failed(server_message(e.as_ref())))?;
+            *out = owned_string(parts::json_array(versions.iter().map(version_json)));
+            Ok(())
+        })
+    }
+}
+
+/// Every committed version of every entity's part with `dat_tx_time <=
+/// *known_at` (all, when `known_at` is null), oldest first, as a JSON array of
+/// versions with their entity's `dat_id`.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `known_at` null or readable; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_postgres_store_part_versions(
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    known_at: *const i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let store = handle(store, "store")?.0.clone();
+            let spec = part_spec(spec_json)?;
+            let versions = runtime()?
+                .block_on(store.part_versions(&spec, parts::optional_i64(known_at)))
+                .map_err(|e| failed(server_message(e.as_ref())))?;
+            *out = owned_string(parts::json_array(
+                versions
+                    .iter()
+                    .map(|(id, v)| parts::entity_version_json(*id, &version_json(v))),
+            ));
+            Ok(())
+        })
+    }
+}
+
+/// The entities whose latest version is a soft delete with `dat_tx_time <
+/// deleted_before`, at most `limit`, as a JSON array of ids.
+///
+/// # Safety
+///
+/// `store` must be a live store handle; `spec_json` a NUL-terminated string;
+/// `out` writable for one pointer; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_postgres_store_expired_parts(
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    deleted_before: i64,
+    limit: i64,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let store = handle(store, "store")?.0.clone();
+            let spec = part_spec(spec_json)?;
+            let ids = runtime()?
+                .block_on(store.expired_parts(&spec, deleted_before, limit))
+                .map_err(|e| failed(server_message(e.as_ref())))?;
+            *out = owned_string(parts::json_array(ids.iter().map(|id| format!("\"{id}\""))));
+            Ok(())
+        })
+    }
 }

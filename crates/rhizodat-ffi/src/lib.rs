@@ -57,6 +57,7 @@ mod arrow;
 mod clickhouse;
 mod drevo;
 mod iceberg;
+mod parts;
 mod postgres;
 mod unit;
 

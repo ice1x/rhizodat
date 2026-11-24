@@ -25,6 +25,7 @@ rhizodat-drevo = { path = "../rhizodat-drevo" }
 rhizodat-iceberg = { path = "../rhizodat-iceberg" }
 rhizodat-postgres = { path = "../rhizodat-postgres" }
 rhizodat-units = { path = "../rhizodat-units" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt"] }
 tokio-postgres = "0.7"
