@@ -32,10 +32,10 @@ use crate::arrow::record_batch;
 use crate::clickhouse::RhizodatClickHouseStore;
 use crate::drevo::{RhizodatDrevoStore, cypher_params};
 use crate::iceberg::RhizodatIcebergStore;
-use crate::postgres::{RhizodatJournal, RhizodatPostgresStore};
+use crate::postgres::{RhizodatJournal, RhizodatPostgresStore, part_spec};
 use crate::{
     Failure, IDS, RhizodatStatus, boundary, free_handle, handle, into_handle, optional_text,
-    owned_string, runtime, text, values, writable,
+    owned_string, parts, runtime, text, values, writable,
 };
 
 /// One store's buffered writes.
@@ -43,6 +43,7 @@ enum Pending {
     Postgres {
         store: Arc<PostgresStore>,
         rows: PostgresRows,
+        parts: PostgresParts,
     },
     ClickHouse {
         store: Arc<ClickHouseStore>,
@@ -68,10 +69,10 @@ enum Pending {
 impl Pending {
     fn native(&self) -> Arc<dyn NativeStore> {
         match self {
-            Pending::Postgres { store, rows } => Arc::new(PostgresPending {
+            Pending::Postgres { store, rows, parts } => Arc::new(PostgresPending {
                 store: store.clone(),
                 rows: rows.clone(),
-                parts: PostgresParts::default(),
+                parts: parts.clone(),
             }),
             Pending::ClickHouse { store, inserts, .. } => Arc::new(ClickHousePending {
                 store: store.clone(),
@@ -137,6 +138,165 @@ fn table_rows(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok((columns, rows))
+}
+
+fn postgres_pending(store: &Arc<PostgresStore>) -> Pending {
+    Pending::Postgres {
+        store: store.clone(),
+        rows: PostgresRows::new(),
+        parts: PostgresParts::new(),
+    }
+}
+
+/// The parts buffered for a PostgreSQL store, made on first use.
+///
+/// # Safety
+///
+/// `unit` and `store` must be null or live handles.
+unsafe fn postgres_parts<R>(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatPostgresStore,
+    with: impl FnOnce(&mut PostgresParts) -> Result<R, Failure>,
+) -> Result<R, Failure> {
+    // SAFETY: the caller's contract.
+    let (unit, store) = unsafe { (handle(unit, "unit")?, handle(store, "store")?.0.clone()) };
+    let mut buffer = unit
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pending = buffer_of(
+        &mut buffer,
+        store.name(),
+        Arc::as_ptr(&store).cast(),
+        || postgres_pending(&store),
+    )?;
+    let Pending::Postgres { parts, .. } = pending else {
+        unreachable!("a buffer holds its own store's kind")
+    };
+    with(parts)
+}
+
+/// Buffer a version of `dat_id`'s part in a PostgreSQL store: `fields_json` a
+/// JSON array of field names, `values_json` a JSON array of their tagged
+/// values (fields left out are `NULL`); `created` the time of the entity's
+/// first version, or null when this is the first; `deleted` for a soft delete.
+/// It is written at the commit, stamped with the meta-transaction.
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json`, `dat_id`,
+/// `fields_json` and `values_json` NUL-terminated strings; `created` null or
+/// readable; `error` null or writable.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rhizodat_unit_postgres_write_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    fields_json: *const c_char,
+    values_json: *const c_char,
+    created: *const i64,
+    deleted: bool,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = part_spec(spec_json)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let values = parts::field_values(fields_json, values_json)?;
+            let created = parts::optional_i64(created);
+            postgres_parts(unit, store, |parts| {
+                parts
+                    .write(&spec, dat_id, &values, created, deleted)
+                    .map_err(|e| invalid(e.to_string()))
+            })
+        })
+    }
+}
+
+/// Buffer the physical removal of every version of `dat_id`'s part in a
+/// PostgreSQL store (committed ones too), at the commit.
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `error` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_postgres_erase_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = part_spec(spec_json)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            postgres_parts(unit, store, |parts| {
+                parts.erase(&spec, dat_id);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// This unit of work's own latest version of `dat_id`'s part in a PostgreSQL
+/// store: `{"touched": false}` when it did not touch it, else `{"touched":
+/// true, "version": null | {...}}` (null: it erased it last; a version has no
+/// `dat_txn` and no `dat_tx_time` yet).
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `out` writable for one pointer; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_postgres_own_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    out: *mut *mut c_char,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let out = writable(out, "out")?;
+            let spec = part_spec(spec_json)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let (unit, store) = (handle(unit, "unit")?, handle(store, "store")?.0.clone());
+            let buffer = unit
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A read: a store this unit has not written to stays out of it.
+            let own = match buffer.get(store.name()) {
+                Some(Pending::Postgres {
+                    store: held, parts, ..
+                }) if Arc::ptr_eq(held, &store) => {
+                    parts.latest(spec.table(), dat_id).map(|version| {
+                        version.map(|v| {
+                            parts::version_json(None, None, v.created, v.deleted, &v.values)
+                        })
+                    })
+                }
+                Some(_) => {
+                    return Err(invalid(format!(
+                        "two stores named {:?} in one unit of work",
+                        store.name()
+                    )));
+                }
+                None => None,
+            };
+            *out = owned_string(parts::own_json(own));
+            Ok(())
+        })
+    }
 }
 
 /// A unit of work: writes buffered per store, committed together.
@@ -208,10 +368,7 @@ pub unsafe extern "C" fn rhizodat_unit_postgres_insert(
                 &mut buffer,
                 store.name(),
                 Arc::as_ptr(&store).cast(),
-                || Pending::Postgres {
-                    store: store.clone(),
-                    rows: PostgresRows::new(),
-                },
+                || postgres_pending(&store),
             )?;
             let Pending::Postgres { rows: buffered, .. } = pending else {
                 unreachable!("a buffer holds its own store's kind")

@@ -3876,6 +3876,7 @@ dependencies = [
  "rhizodat-iceberg",
  "rhizodat-postgres",
  "rhizodat-units",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-postgres",

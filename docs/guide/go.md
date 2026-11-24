@@ -4,7 +4,8 @@ The rhizodat core has a C ABI, `librhizodat_ffi` (`crates/rhizodat-ffi`), and a
 Go package over it, `github.com/ice1x/rhizodat/go`, linked statically through
 cgo. PostgreSQL, ClickHouse, drevo and Iceberg (REST and Glue catalogs)
 stores, the PostgreSQL and drevo journals and meta-transactions over any of
-them work. Entity repositories (bitemporal parts) are not in Go yet (see the
+them work. Entity repositories (bitemporal parts) are on their way: their
+PostgreSQL parts work, the repository itself is not in Go yet (see the
 [plan](../plan.md)). It commits through the same Rust path as the native
 Python facade (`crates/rhizodat-units`).
 
@@ -73,6 +74,33 @@ meta-transaction, with `$1..$n` bound by the statement's types; it returns
 placeholders server-side; its rows travel as Arrow, so cast a `UUID` column
 (`toString(id)`) and use `Date32` for dates (a `Date` arrives as its day
 number). `DrevoStore.Execute(cypher, params)` returns columns in name order.
+
+## Entity parts
+
+An entity's fields are split by store; each store's share is a **part**, and
+every write adds a version of it (see [repositories](repository.md)). The Go
+package reaches the parts of a PostgreSQL store directly, in the Python
+facade's layout, so either reads what the other wrote:
+
+```go
+spec := rhizodat.PartSpec{Type: "tracker.Issue", Table: "tracker_issue",
+	Columns: []rhizodat.PartColumn{{"title", "text"}, {"points", "bigint"}}}
+_ = pg.InstallPart(spec)
+coordinator.Transactional(3, func(u *rhizodat.Unit) error {
+	return u.WritePart(pg, spec, id, map[string]any{"title": "Crash", "points": 3},
+		nil /* created: this is the first version */, false /* deleted */)
+})
+latest, _ := pg.ReadPart(spec, id, nil)       // nil: whatever is known now
+before, _ := pg.ReadPart(spec, id, &knownAt) // as known at a transaction time
+history, _ := pg.PartHistory(spec, id)       // every version, oldest first
+```
+
+`u.OwnPart` is the unit of work's own latest version (before the commit),
+`u.ErasePart` removes every version at the commit, `PartVersions` scans every
+entity's versions and `ExpiredParts` finds soft deletes past a time. Column
+types are PostgreSQL's (`text`, `boolean`, `bigint`, `double precision`,
+`numeric`, `timestamptz`, `date`, `uuid`, `bytea`, and `jsonb` for anything
+else, lists and maps included).
 
 ## Values
 
