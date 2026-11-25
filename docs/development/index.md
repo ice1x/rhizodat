@@ -19,7 +19,7 @@ DSN set in the environment is used as is, so a store that is down fails the run
 `RHIZODAT_TEST_PG_DSN`, `RHIZODAT_TEST_DREVO_BOLT`,
 `RHIZODAT_TEST_CLICKHOUSE_DSN`, `RHIZODAT_TEST_ICEBERG_REST_DSN` and
 `RHIZODAT_TEST_TOXIPROXY`. The drevo server must be
-**disposable**: 2PC raises the prepared fence and blocks other writers.
+**disposable**: 2PC raises the prepared fence, which holds back overlapping writers, and the tests abort prepared `dat:` branches they find.
 
 `tests/scenarios/` holds the five end-to-end scenarios of the roadmap (cloud
 operations, a bug tracker, an ERP, an IT task manager, a story editor), each run
