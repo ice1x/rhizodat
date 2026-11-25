@@ -535,3 +535,6 @@ safe). The open design question is the transaction model over the network:
   statements.
 
 The library stays the core; the server is built on it, not instead of it.
+
+The proposal for this question, with a recommendation, is in
+[Server mode (proposal)](development/server.md).
