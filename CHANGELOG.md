@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- drevo 0.0.90 (from 0.0.86): the test server image and the embedded drevo
+  pin (drevo-py and `rhizodat-drevo`'s `embedded` feature). The server now
+  honours the READ access mode `read_only` already asked for
+  (ice1x/drevo#825): an MCP read is refused a write or a procedure with
+  outside effects (`drevo.extract.*`, `drevo.events.post`, `drevo.tx.*`)
+  before it runs, instead of relying on the rollback. Embedded drevo still has
+  no access mode. 0.0.90 also makes a prepare conflict per record, like a
+  commit.
 - Docs: `drevo.events.post` inside an MCP read posts nothing (drevo publishes
   an event only when its transaction commits, and the read is rolled back);
   the MCP guide said it ran inside the transaction without saying so.

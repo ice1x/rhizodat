@@ -16,7 +16,7 @@ embedded = ["dep:drevo", "tokio/rt"]
 [dependencies]
 async-trait = "0.1"
 rhizodat-core = { path = "../rhizodat-core", features = ["tokio"] }
-drevo = { git = "https://github.com/ice1x/drevo", rev = "d5baef73cb0416aacc116b7f0ccb4a6fdb51c53d", default-features = false, optional = true }
+drevo = { git = "https://github.com/ice1x/drevo", rev = "e9dc852c82dba832a7973964c7d06b78131e6f3b", default-features = false, optional = true }
 # A release candidate (the 0.9 line is the one with Bolt 5 and typed errors); pinned exactly.
 neo4rs = "=0.9.0-rc.10"
 serde = { version = "1", features = ["derive"] }

@@ -51,10 +51,10 @@ version every part already has.
   Bolt transaction timeout, which drevo enforces from 0.0.86. **On an older
   server and on embedded drevo a running query cannot be stopped**: a heavy
   read (a large cross product) runs to its end and holds its memory there. The
-  test suite pins drevo 0.0.86 (which requires credentials in the DSN).
+  test suite pins drevo 0.0.90 (which requires credentials in the DSN).
 - A prepared branch fences the writes that overlap its own until it is
   finished (retryable); from 0.0.86, remote and embedded (drevo-py is pinned
-  at the 0.0.86 tag), writes elsewhere in the graph pass. The journal still
+  at the 0.0.90 tag), writes elsewhere in the graph pass. The journal still
   belongs in another store: an older drevo fences every write.
 - Embedded (`drevo:///`, `drevo+mem://`) needs `drevo-py`, which is not on PyPI
   yet and is built from source with a Rust toolchain; one process at a time.
