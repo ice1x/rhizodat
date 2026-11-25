@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.0 — entity repositories in Go
+
+The Go package (in this repository, not in the wheels; still a preview) gets
+entity repositories over every shipped store, with references, valid time and
+types shared with the Python facade. The Python packages get a fix and drevo
+0.0.90 for the tests and the embedded build.
+
 - drevo 0.0.90 (from 0.0.86): the test server image and the embedded drevo
   pin (drevo-py and `rhizodat-drevo`'s `embedded` feature). The server now
   honours the READ access mode `read_only` already asked for
