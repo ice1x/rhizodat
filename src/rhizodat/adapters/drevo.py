@@ -159,7 +159,7 @@ class _Embedded:
         return Result(iter(r.rows), columns=tuple(r.columns), raw=r)
 
     def begin(self, timeout_s: float | None = None, *, read: bool = False) -> _Tx:
-        # Embedded drevo has no transaction timeout and no access mode.
+        # Embedded drevo has no transaction timeout and no access mode (ice1x/drevo#853).
         del timeout_s, read
         return _EmbeddedTx(self._db.begin())
 
