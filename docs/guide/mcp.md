@@ -27,22 +27,22 @@ cannot change data:
   tests showed `SET TRANSACTION READ WRITE` or `COMMIT; INSERT …` getting
   through.
 - drevo: a transaction that is always rolled back, in a Bolt session that
-  asks for READ access. drevo does not honour the access mode yet
-  ([ice1x/drevo#825](https://github.com/ice1x/drevo/issues/825)), so the
-  rollback is what undoes writes — and **it cannot undo a procedure's effects
-  outside the graph**: on a drevo with a chat upstream configured
-  (`DREVO_EXTRACT_UPSTREAM`), a "read" can call `drevo.extract.*` and spend on
-  the model. Give an agent such a store only when that is acceptable.
-  `drevo.events.post` is accepted in a read but posts nothing: drevo publishes
-  a posted event to `GET /events` only when its transaction commits (its
-  Cypher reference, and its test
-  `an_explicit_transaction_posts_on_commit_and_nothing_on_rollback`), and the
-  read is always rolled back. Checked on drevo 0.0.86:
-  the procedures that change the server's state (`drevo.tx.*`,
+  asks for READ access. From 0.0.90 the drevo server honours the access mode
+  ([ice1x/drevo#825](https://github.com/ice1x/drevo/issues/825)): it refuses
+  a writing clause and any procedure not on its read list
+  (`Neo.ClientError.Statement.AccessMode`) before the query runs, so a "read"
+  can neither write nor call `drevo.extract.*`, `drevo.events.post` or the
+  `drevo.tx.*` procedures that would resolve another meta-transaction's
+  prepared branch (all checked in the tests). **An older server, and embedded
+  drevo, ignore the access mode**: there the rollback is what undoes writes,
+  and it cannot undo a procedure's effects outside the graph (with a chat
+  upstream configured, `DREVO_EXTRACT_UPSTREAM`, a "read" can call
+  `drevo.extract.*` and spend on the model); `drevo.events.post` posts
+  nothing, since drevo publishes an event only when its transaction commits;
+  and from 0.0.86 the state-changing procedures (`drevo.tx.*`,
   `apoc.trigger.install`, `drevo.sequence.create`) refuse to run inside a
-  transaction, so a query cannot resolve another meta-transaction's prepared
-  branch; there is no `LOAD CSV` and no `apoc.load.*`, so it cannot read the
-  server's files.
+  transaction. There is no `LOAD CSV` and no `apoc.load.*`, so a query cannot
+  read the server's files.
 - ClickHouse: `readonly = 2`, which also refuses lifting it per query.
 - Iceberg: a scan.
 

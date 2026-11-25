@@ -74,13 +74,21 @@ def test_execute_returns_rows(store: DrevoStore) -> None:
     assert result.all() == [{"heading": "hello"}]
 
 
-def test_read_only_reads_and_never_keeps_a_write(store: DrevoStore) -> None:
+def test_read_only_reads_and_never_keeps_a_write(
+    store: DrevoStore, request: pytest.FixtureRequest
+) -> None:
     lbl = label()
     store.execute(f"CREATE (:{lbl} {{heading: 'kept'}})")
     rows = store.read_only(f"MATCH (n:{lbl}) RETURN n.heading AS heading").all()
     assert rows == [{"heading": "kept"}]
-    # A write inside a read is rolled back with it.
-    store.read_only(f"CREATE (:{lbl} {{heading: 'dropped'}})")
+    write = f"CREATE (:{lbl} {{heading: 'dropped'}})"
+    if request.node.callspec.params["store"] == "bolt":
+        # The server refuses a write in a READ session (drevo 0.0.90, ice1x/drevo#825).
+        with pytest.raises(Exception, match="READ session or transaction may not write"):
+            store.read_only(write)
+    else:
+        # Embedded drevo has no access mode: the write is rolled back with the read.
+        store.read_only(write)
     assert count(store, lbl) == 1
 
 
@@ -298,9 +306,10 @@ def test_drevo_stops_a_read_only_query_past_its_timeout(drevo_bolt_dsn: str) -> 
 
 
 def test_a_read_only_query_cannot_resolve_a_prepared_branch(drevo_bolt_dsn: str) -> None:
-    """rhizodat-MCP's query runs in a transaction, where drevo refuses the procedures
-    that change the server's state: an agent cannot roll back another
-    meta-transaction's prepared branch (checked on drevo 0.0.86)."""
+    """rhizodat-MCP's query runs in a READ transaction, where drevo refuses the
+    procedures that change the server's state: an agent cannot roll back another
+    meta-transaction's prepared branch (drevo 0.0.90 refuses them for the access
+    mode; 0.0.86 already did inside any explicit transaction)."""
     store = DrevoStore(drevo_bolt_dsn, name="graph")
     txn = new_id()
     gid = gid_for(txn, "graph")
@@ -309,11 +318,33 @@ def test_a_read_only_query_cannot_resolve_a_prepared_branch(drevo_bolt_dsn: str)
     branch.prepare(gid)
     try:
         for call in ("drevo.tx.rollbackPrepared($gid)", "drevo.tx.commitPrepared($gid)"):
-            with pytest.raises(Exception, match="explicit transaction"):
+            with pytest.raises(Exception, match="READ session or transaction may not call"):
                 store.read_only(f"CALL {call}", {"gid": gid}, timeout_s=10).all()
         assert gid in store.participant().prepared_gids()
     finally:
         branch.rollback()
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "drevo.events.post('rhizodat.test', {})",
+        "drevo.extract.entities('Ada wrote the first program')",
+        "apoc.trigger.install('neo4j', 't', 'RETURN 1', {})",
+    ],
+)
+def test_a_read_only_query_cannot_call_a_procedure_with_outside_effects(
+    drevo_bolt_dsn: str, call: str
+) -> None:
+    """A READ session is refused any procedure off drevo's read list before it
+    runs (drevo 0.0.90): an agent's "read" cannot post events, call the chat
+    model or install a trigger."""
+    store = DrevoStore(drevo_bolt_dsn, name="graph")
+    try:
+        with pytest.raises(Exception, match="READ session or transaction may not call"):
+            store.read_only(f"CALL {call}").all()
+    finally:
         store.close()
 
 

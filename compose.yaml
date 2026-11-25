@@ -19,9 +19,10 @@ services:
       retries: 30
 
   drevo:
-    # 0.0.86: the drevo.tx.* two-phase commit procedures and Bolt transaction
-    # timeouts; it requires credentials (DREVO_AUTH sets the first user).
-    image: ice1x/drevo:0.0.86
+    # 0.0.90: the drevo.tx.* two-phase commit procedures and Bolt transaction
+    # timeouts (from 0.0.86), and a prepare that conflicts per record (0.0.90);
+    # it requires credentials (DREVO_AUTH sets the first user).
+    image: ice1x/drevo:0.0.90
     environment:
       DREVO_AUTH: rhizodat/rhizodat
     ports: ["127.0.0.1:57687:7687"]

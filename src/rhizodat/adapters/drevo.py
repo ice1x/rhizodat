@@ -597,8 +597,9 @@ class DrevoStore:
         limit: int | None = None,
         timeout_s: float | None = None,
     ) -> Result:
-        """A native read that never keeps a write: it runs in a transaction that is
-        always rolled back (drevo has no read-only mode). With ``limit``, no more
+        """A native read that never keeps a write: it runs in a READ transaction
+        that is always rolled back (a drevo server refuses writes in it from
+        0.0.90; embedded drevo has no access mode). With ``limit``, no more
         rows than that are taken from the result. ``timeout_s`` becomes the Bolt
         transaction timeout, which drevo enforces from 0.0.86; an older server and
         embedded drevo cannot stop a running query."""
