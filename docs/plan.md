@@ -506,15 +506,20 @@ guarantees then depend on how each store fails over.
 - **ClickHouse**: `ReplicatedMergeTree` for deduplication tokens; the
   "already applied" check reads with sequential consistency or after quorum
   inserts.
-- **drevo**: the server over Bolt, not the embedded mode. A prepared transaction
-  survives a restart (restored from the WAL); its behaviour on failover to a
-  replica is still to be confirmed with drevo.
+- **drevo**: the server over Bolt, not the embedded mode, as a single primary
+  on durable storage. A prepared transaction survives a restart (restored from
+  the WAL). drevo has no failover: its replication is a library substrate not
+  wired into the server, and a read replica applies only `CommitPrepared`, so
+  a prepared branch lives on the primary alone (drevo's admin guide, section 8,
+  and `rfc-two-phase-commit.md`, 2.5). Availability comes from restarting the
+  primary on its volume (drevo's Helm chart runs one replica with `Recreate`).
 - **Iceberg**: a highly available catalog; commit conflicts after the decision
   are retried.
 - **Latency**: a commit over several stores costs four journal writes plus a
   prepare and a commit per two-phase store. Keep the journal close to the
-  coordinators. While a drevo transaction is prepared, all other writes to that
-  graph wait, so graph write throughput is bounded by the prepare→commit window.
+  coordinators. While a drevo transaction is prepared, the writes that overlap
+  its own wait (retryable; from drevo 0.0.86, embedded too), so contended graph
+  records are bounded by the prepare→commit window; other writes pass.
 - **Clocks**: NTP on every host; the HLC absorbs the remaining skew and refuses
   timestamps beyond `max_offset_ms`.
 - **Operations**: per-call timeouts, connection pools, metrics and alerts for

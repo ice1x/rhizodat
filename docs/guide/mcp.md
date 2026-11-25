@@ -34,7 +34,8 @@ cannot change data:
   can neither write nor call `drevo.extract.*`, `drevo.events.post` or the
   `drevo.tx.*` procedures that would resolve another meta-transaction's
   prepared branch (all checked in the tests). **An older server, and embedded
-  drevo, ignore the access mode**: there the rollback is what undoes writes,
+  drevo, ignore the access mode** (embedded:
+  [ice1x/drevo#853](https://github.com/ice1x/drevo/issues/853)): there the rollback is what undoes writes,
   and it cannot undo a procedure's effects outside the graph (with a chat
   upstream configured, `DREVO_EXTRACT_UPSTREAM`, a "read" can call
   `drevo.extract.*` and spend on the model); `drevo.events.post` posts
