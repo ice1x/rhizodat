@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "rhizodat-ffi"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -3924,7 +3924,7 @@ dependencies = [
 
 [[package]]
 name = "rhizodat-py"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
