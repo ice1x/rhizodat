@@ -7,13 +7,15 @@ reads see them.
 ```python
 orders = dat.repository(Order)
 orders.add(order)                     # fails if the dat_id exists (EntityExists)
-orders.update(order)                  # fails without a live version (EntityNotFound)
+orders.update(order)                  # fails without a live version (EntityNotFound),
+                                      # or if order was read at an older one (VersionConflict)
 orders.save(order)                    # add or update
 orders.get(order_id)                  # None when missing or deleted
 orders.get(order_id, as_of=t)         # the version known at t
 orders.get(order_id, include_deleted=True)
 orders.history(order_id)              # every version, oldest first
 orders.delete(order_id)               # hard: erased everywhere; soft: hidden
+orders.delete(order_id, expected_version=order.dat_version)  # only if still the latest
 orders.restore(order_id)              # soft delete only, within the window
 orders.purge_expired()                # erase soft deletes whose window is over
 ```
@@ -28,6 +30,21 @@ moment: see [Embeddings](embeddings.md#vector-fields-on-entities).
 - **Times.** Each instance carries `dat_created_at`, `dat_updated_at` and
   `dat_deleted_at` (UTC, from the HLC), set on reads and ignored by equality.
   The creation time is stored in every version.
+- **Versions** (preconditions). A read instance also carries `dat_version`,
+  the `dat_tx_time` of the version it was read at, and so does the instance a
+  write returns. `update` (and `save` of an existing entity) of an instance
+  with a `dat_version` writes only if that is still the latest version, else
+  raises `VersionConflict` (with `expected` and `actual`) and writes nothing;
+  `delete` checks a version given as `expected_version`. Read again and redo
+  the change: `dat.transaction` does not retry it, since its function would
+  write the same stale instance. An instance built by hand (`dat_version` is
+  `None`) is written unchecked, last writer wins. The check holds against
+  concurrent writers in PostgreSQL (an advisory lock per entity, held until
+  the commit is finished) and drevo (a write on the latest version, so the
+  second writer conflicts and its retry sees the new version); every write of
+  an existing entity takes that lock. A ClickHouse or Iceberg part is only
+  compared, so an entity whose parts are all there can still lose a race; the
+  native facade compares only, until the Rust core takes the locks.
 - **Soft delete** (opt-in per type): `@entity(..., soft_delete=True)` uses the
   configured window, `Rhizodat(soft_delete_window=timedelta(days=30))` (the
   default); `soft_delete=timedelta(days=7)` gives the type its own, which wins.

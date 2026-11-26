@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Version preconditions (the first step of server mode, decided in
+  `docs/development/server.md`): entities carry `dat_version`, the
+  `dat_tx_time` of the version they were read at (and written at, on the
+  instance a write returns). `update` / `save` of an instance with a
+  `dat_version`, and `delete(..., expected_version=...)`, raise the new
+  `rhizodat.VersionConflict` instead of overwriting a newer version.
+  PostgreSQL (`pg_advisory_xact_lock`, held until `COMMIT PREPARED`) and drevo
+  (a write on the latest version node) serialise writers of one entity, so the
+  check also holds under concurrency; ClickHouse, Iceberg and the native facade
+  compare only for now. New optional branch capability `LocksParts`.
+  **Behaviour change:** updating an instance read before someone else's write
+  now fails instead of silently replacing that write.
+
 ## 0.3.0 — entity repositories in Go
 
 The Go package (in this repository, not in the wheels; still a preview) gets

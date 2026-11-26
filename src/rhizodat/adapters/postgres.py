@@ -641,6 +641,17 @@ class PostgresBranch:
         sql = self._sql(part)
         self._conn.execute(f"DELETE FROM {sql.table} WHERE dat_id = %s", (dat_id,))
 
+    def lock_part(self, part: Part, dat_id: uuid.UUID) -> None:
+        """A transaction-level advisory lock on the part's table (schema-qualified)
+        and ``dat_id``: kept across ``PREPARE TRANSACTION`` until ``COMMIT
+        PREPARED``, so the next writer of this entity waits, then reads what this
+        one committed. The key is ``<schema>.<table>:<dat_id>``, hashed."""
+        key = f"{self._sql(part).table}:{dat_id}"
+        self._conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || '.' || %s, 0))",
+            (key,),
+        )
+
     def read_part(self, part: Part, dat_id: uuid.UUID) -> Version | None:
         sql = self._sql(part)
         # This branch's own versions have no dat_tx_time yet: they come first.

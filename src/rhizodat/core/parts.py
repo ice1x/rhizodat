@@ -13,7 +13,10 @@ Stores join by implementing two capabilities, checked with ``isinstance``:
   missing creation time) then;
 - ``PartStore`` on a store: committed reads outside any Unit of Work;
 - ``ScansParts`` on a store: every entity's committed versions at once, for
-  searches over all entities of a type (``similar``).
+  searches over all entities of a type (``similar``);
+- ``LocksParts`` on a branch: serialise the writers of one entity, so that a
+  version precondition read after the lock is still true at commit
+  (PostgreSQL, drevo). A branch without it is checked by comparing only.
 
 Values reach the store as plain data: references are their ``dat_id``.
 """
@@ -29,6 +32,7 @@ from rhizodat.core.mapping import Ref, mapping_of
 
 __all__ = [
     "VALIDITY",
+    "LocksParts",
     "Part",
     "PartBranch",
     "PartStore",
@@ -140,6 +144,14 @@ class PartStore(Protocol):
 
     def expired_parts(self, part: Part, *, deleted_before: int, limit: int) -> list[uuid.UUID]:
         """Entities whose latest version is a soft delete older than ``deleted_before``."""
+        ...
+
+
+@runtime_checkable
+class LocksParts(Protocol):
+    def lock_part(self, part: Part, dat_id: uuid.UUID) -> None:
+        """Make every other branch that locks this entity's part wait for, or
+        conflict with, this one until its meta-transaction is finished."""
         ...
 
 

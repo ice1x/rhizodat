@@ -32,7 +32,7 @@ __all__ = [
     "values_from_json",
 ]
 
-_SERVICE = ("dat_id", "dat_created_at", "dat_updated_at", "dat_deleted_at")
+_SERVICE = ("dat_id", "dat_created_at", "dat_updated_at", "dat_deleted_at", "dat_version")
 
 
 def load_entity_types(spec: str) -> list[type]:
@@ -253,7 +253,7 @@ def _plain(value: object) -> object:
 
 
 def entity_json(obj: object) -> dict[str, Any]:
-    """An entity as JSON: ``dat_id``, the service times and every field."""
+    """An entity as JSON: ``dat_id``, the service times, ``dat_version`` and every field."""
     from rhizodat.mcp.tools import jsonable
 
     mapping = mapping_of(type(obj))
