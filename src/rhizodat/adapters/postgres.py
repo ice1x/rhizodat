@@ -641,7 +641,7 @@ class PostgresBranch:
         sql = self._sql(part)
         self._conn.execute(f"DELETE FROM {sql.table} WHERE dat_id = %s", (dat_id,))
 
-    def lock_part(self, part: Part, dat_id: uuid.UUID) -> None:
+    def lock_part(self, part: Part, dat_id: uuid.UUID, *, expected: int | None = None) -> None:
         """A transaction-level advisory lock on the part's table (schema-qualified)
         and ``dat_id``: kept across ``PREPARE TRANSACTION`` until ``COMMIT
         PREPARED``, so the next writer of this entity waits, then reads what this

@@ -318,20 +318,20 @@ class Repository[T]:
         compare its latest version with ``expected``."""
         if expected is None or dat_id in self._checked:
             return
-        self._lock(dat_id)
+        self._lock(dat_id, expected)
         snap = self._latest(dat_id)
         actual = None if snap is None or snap.any.deleted else snap.any.dat_tx_time
         if actual != expected:
             raise VersionConflict(self._kind.mapping.type_name, dat_id, expected, actual)
         self._checked.add(dat_id)
 
-    def _lock(self, dat_id: uuid.UUID) -> None:
+    def _lock(self, dat_id: uuid.UUID, expected: int | None = None) -> None:
         if dat_id in self._locked:
             return
         for store, part in self._kind.parts.items():
             branch = self._branch(store)
             if isinstance(branch, LocksParts):
-                branch.lock_part(part, dat_id)
+                branch.lock_part(part, dat_id, expected=expected)
         self._locked.add(dat_id)
 
     def _live(self, dat_id: uuid.UUID) -> _Snapshot:

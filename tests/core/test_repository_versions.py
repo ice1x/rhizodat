@@ -195,14 +195,19 @@ class Locking(MemoryEntityStore):
     def __init__(self, name: str) -> None:
         super().__init__(name)
         self.events: list[tuple[str, uuid.UUID]] = []
+        self.expected: list[int | None] = []
 
     def branch(self, dat_txn: uuid.UUID) -> Any:
         inner = super().branch(dat_txn)
         events = self.events
+        expectations = self.expected
 
         class Branch(type(inner)):  # type: ignore[misc]
-            def lock_part(self, part: Part, dat_id: uuid.UUID) -> None:
+            def lock_part(
+                self, part: Part, dat_id: uuid.UUID, *, expected: int | None = None
+            ) -> None:
                 events.append(("lock", dat_id))
+                expectations.append(expected)
 
             def read_part(self, part: Part, dat_id: uuid.UUID) -> Any:
                 events.append(("read", dat_id))
@@ -223,6 +228,7 @@ def test_a_write_locks_the_entity_before_reading_its_version(faker: Faker) -> No
         c.email = faker.email()
         customers.update(c)
         assert store.events[0] == ("lock", c.dat_id)
+        assert store.expected[-1] == c.dat_version  # the precondition rides the lock
         assert ("read", c.dat_id) in store.events[1:]
         # An unchecked write of an existing entity locks it too, so it cannot slip
         # in between another writer's check and commit; adding a new one does not.

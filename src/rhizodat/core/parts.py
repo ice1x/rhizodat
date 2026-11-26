@@ -149,9 +149,13 @@ class PartStore(Protocol):
 
 @runtime_checkable
 class LocksParts(Protocol):
-    def lock_part(self, part: Part, dat_id: uuid.UUID) -> None:
+    def lock_part(self, part: Part, dat_id: uuid.UUID, *, expected: int | None = None) -> None:
         """Make every other branch that locks this entity's part wait for, or
-        conflict with, this one until its meta-transaction is finished."""
+        conflict with, this one until its meta-transaction is finished.
+
+        ``expected`` is the version precondition the repository checks right
+        after the lock; a branch that applies its writes only at commit (the
+        native units) checks it again there, under the lock."""
         ...
 
 
