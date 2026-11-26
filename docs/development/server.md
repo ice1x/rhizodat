@@ -1,8 +1,9 @@
-# Server mode: the transaction model (proposal)
+# Server mode: the transaction model
 
-Status: **proposal, for the owner's decision**. Nothing here is built yet. It
-settles the open question in the [plan](../plan.md#server-mode-after-v01):
-how a client's transaction runs over the network.
+Status: **decided 2026-11-26** (model B, preconditions on by default,
+HTTP/JSON); being built in the order of the first slice below. It settles the
+open question in the [plan](../plan.md#server-mode-after-v01): how a client's
+transaction runs over the network.
 
 ## What a transaction is today
 
@@ -85,23 +86,61 @@ and answers with the outcome.
 - A can be added on the same core later as an opt-in, with a short session
   timeout (seconds) and per-instance limits.
 
-## If B is chosen: first slice
+## First slice
 
-1. Preconditions in the core and both facades: `update` / `delete` with an
-   expected `dat_tx_time`, a retryable conflict when it differs (TDD, in-process
-   first; Python reference, then Rust).
+1. Preconditions in the core and both facades (below): `dat_version` on
+   entities, `VersionConflict`, the per-store lock (TDD, in-process first;
+   Python reference, then Rust and Go).
 2. A Unit of Work as data: a serialisable list of operations, in the C ABI's
    tagged-JSON value format (already the journal's row format), so a request is
    one document. Conformance vectors for it.
 3. `rhizodat-server` in Rust: one endpoint that runs such a document through the
-   coordinator, recovery as a background task, health and metrics. Transport
-   (HTTP/JSON or gRPC) to be decided with the first client.
+   coordinator over HTTP/JSON, recovery as a background task, health and
+   metrics.
 4. A client in Python and Go that builds the document from repositories and
    retries on conflict.
 
-## Decisions for the owner
+## Preconditions: how a check stays atomic
 
-1. The model: **B** (recommended), A, or both from the start.
-2. Preconditions on by default for `update` / `delete` over the server, or
-   opt-in.
-3. Transport: HTTP/JSON (simplest, curl-able) or gRPC (streams, typed clients).
+An entity read carries its **version**, `dat_version`: the `dat_tx_time` (the
+HLC value) of the version it was assembled from. `update` of an entity whose
+`dat_version` is set checks that the latest committed version is still that
+one, else raises `VersionConflict`; `delete(dat_id, expected_version=...)`
+does the same for a given version. An entity built by hand (`dat_version` is
+`None`) and a `delete` without a version are written unchecked, as today; over
+the server, the client library sends the version of what it read. A write stamps the
+returned entity with the new `dat_version`, so updating the same object again
+works.
+
+Reading the latest version and comparing is not enough: a new version is a new
+row (a new node), so two writers that both read version 1 would both pass the
+check and both write. Each transactional store therefore serialises the
+writers of one entity first, then reads:
+
+- **PostgreSQL:** `pg_advisory_xact_lock` on the part table and the `dat_id`,
+  then the read. A second writer waits on the lock until the first one's
+  `COMMIT PREPARED` (a transaction-level advisory lock is kept across
+  `PREPARE TRANSACTION`: checked on PostgreSQL 16), then its read, a new
+  statement under `READ COMMITTED`, sees the new version and fails the check.
+- **drevo:** the write sets a property on the entity's anchor node
+  `(:DatEntity {dat_id})`. Two writers of one entity then write one record, and
+  drevo refuses the second at commit (`Transaction.Outdated`, retryable;
+  checked on 0.0.90); the retry reads again and fails the check.
+- **ClickHouse and Iceberg** have no such lock: the check reads and compares,
+  which catches a stale read but not two writers racing. An entity with a part
+  in PostgreSQL or drevo is protected by that part, since every part of a
+  version commits in one meta-transaction.
+
+`VersionConflict` is not retried inside `dat.transaction`, whose function
+would write the same stale entity again: the caller reads again. Over the
+server it is a `409` with the current version, and the client library rereads
+and resends.
+
+## Decisions (2026-11-26)
+
+1. The model: **B**, one request per Unit of Work; sessions (A) may come later
+   as an opt-in.
+2. Preconditions: **on by default** (an entity that was read carries its
+   `dat_version`, and `update` / `delete` check it), in-process and over the
+   server alike.
+3. Transport: **HTTP/JSON**.

@@ -78,7 +78,7 @@ nav:
   - Development:
       - Contributing: development/index.md
       - Package structure: development/package.md
-      - "Server mode (proposal)": development/server.md
+      - "Server mode": development/server.md
       - Plan: plan.md
 
 validation:
