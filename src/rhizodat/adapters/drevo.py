@@ -720,6 +720,17 @@ class DrevoBranch:
         nodes = self._nodes(part)
         self._remove(nodes, f"MATCH (v:{nodes.label} {{dat_id: $id}})", {"id": str(dat_id)})
 
+    def lock_part(self, part: Part, dat_id: uuid.UUID, *, expected: int | None = None) -> None:
+        """Write this branch's ``dat_txn`` on the entity's latest committed version:
+        two branches that lock one entity write one record, and drevo refuses the
+        second at commit (a retryable conflict). Readers ignore the property."""
+        nodes = self._nodes(part)
+        self._tx.execute(
+            f"MATCH (v:{nodes.label} {{dat_id: $id}}) WHERE v.dat_tx_time IS NOT NULL"
+            " WITH v ORDER BY v.dat_tx_time DESC LIMIT 1 SET v.dat_lock = $txn",
+            {"id": str(dat_id), "txn": str(self.dat_txn)},
+        )
+
     def read_part(self, part: Part, dat_id: uuid.UUID) -> Version | None:
         nodes = self._nodes(part)
         rows = self._tx.execute(

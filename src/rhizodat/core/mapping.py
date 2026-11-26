@@ -15,8 +15,10 @@ no central registry. Rules:
 ``@entity`` turns the class into a keyword-only dataclass with a ``dat_id``
 field (a new UUIDv7 unless given) and, with ``valid_time=True``, the
 ``valid_from`` / ``valid_to`` fields. Every instance also carries the service
-times ``dat_created_at``, ``dat_updated_at`` and ``dat_deleted_at``, set by the
-repository on reads and ignored by equality.
+times ``dat_created_at``, ``dat_updated_at`` and ``dat_deleted_at``, and the
+version ``dat_version`` (the ``dat_tx_time`` of the version it was read at, the
+precondition of a later ``update``), set by the repository on reads and ignored
+by equality.
 
 ``soft_delete=True`` makes ``delete`` hide the entity for the configured window
 (``Rhizodat(soft_delete_window=...)``) instead of erasing it;
@@ -47,6 +49,7 @@ _MAPPING_ATTR = "__rhizodat_mapping__"
 _SERVICE_PREFIX = "dat_"
 _VALIDITY_FIELDS = ("valid_from", "valid_to")
 _SERVICE_TIMES = ("dat_created_at", "dat_updated_at", "dat_deleted_at")
+_VERSION = "dat_version"
 _REF_IN_STRING = re.compile(r"""\bRef\[\s*['"]?([\w.]+)['"]?\s*\]""")
 
 
@@ -205,6 +208,8 @@ def entity(
         for service in _SERVICE_TIMES:
             cls.__annotations__[service] = datetime | None
             setattr(cls, service, dataclasses.field(default=None, compare=False))
+        cls.__annotations__[_VERSION] = int | None
+        setattr(cls, _VERSION, dataclasses.field(default=None, compare=False))
         data_cls = dataclasses.dataclass(kw_only=True)(cls)
 
         refs: dict[str, str] = {}

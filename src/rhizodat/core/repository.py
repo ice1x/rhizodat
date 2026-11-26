@@ -18,6 +18,15 @@ exact scan of the store's versions (``ScansParts``), without an index.
 Delete is a hard delete, erasing every version in every store, unless the type
 is declared with ``soft_delete``: then it adds a version marked deleted, hidden
 from reads, restorable within the window and erased by ``purge_expired`` after.
+
+Version preconditions: a read entity carries ``dat_version``. ``update`` (and
+``save`` of an existing entity) of an entity whose ``dat_version`` is set, and
+``delete(..., expected_version=...)``, first lock the entity in every store
+that can (``LocksParts``), then check that the latest committed version is
+still that one, else raise ``VersionConflict``; nothing is written. A Unit of
+Work checks an entity once: later writes in it follow its own. Every write of
+an existing entity takes that lock, checked or not, so an unchecked writer
+cannot slip in between a check and its commit.
 """
 
 import dataclasses
@@ -31,6 +40,7 @@ from rhizodat.core.coordinator import Committed, CommittedPending
 from rhizodat.core.mapping import EntityMapping, mapping_of
 from rhizodat.core.parts import (
     VALIDITY,
+    LocksParts,
     Part,
     PartBranch,
     PartStore,
@@ -48,7 +58,14 @@ if TYPE_CHECKING:
     from rhizodat.core.unit_of_work import UnitOfWork
     from rhizodat.embed import Embedder
 
-__all__ = ["EntityExists", "EntityNotFound", "EntityRepository", "NotRestorable", "Repository"]
+__all__ = [
+    "EntityExists",
+    "EntityNotFound",
+    "EntityRepository",
+    "NotRestorable",
+    "Repository",
+    "VersionConflict",
+]
 
 Outcome = Committed | CommittedPending
 
@@ -66,6 +83,23 @@ class EntityNotFound(LookupError):
 
 class NotRestorable(Exception):
     """``restore`` of an entity that is not soft-deleted, or left its window."""
+
+
+class VersionConflict(Exception):
+    """A write based on a version of an entity that is no longer the latest.
+
+    Not retried by ``dat.transaction``: the same stale entity would be written
+    again. Read the entity again and redo the change."""
+
+    def __init__(
+        self, type_name: str, dat_id: uuid.UUID, expected: int, actual: int | None
+    ) -> None:
+        state = "it is deleted" if actual is None else f"the latest is {actual}"
+        super().__init__(f"{type_name} {dat_id}: written from version {expected}, but {state}")
+        self.dat_id = dat_id
+        self.expected = expected
+        self.actual = actual
+        """The latest version's ``dat_tx_time``; ``None``: no live version."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +182,7 @@ class _Kind:
             dat_created_at=hlc_datetime(v.created) if v.created is not None else None,
             dat_updated_at=hlc_datetime(updated) if updated is not None else None,
             dat_deleted_at=hlc_datetime(updated) if v.deleted and updated is not None else None,
+            dat_version=updated,
         )
 
     def stamped(self, obj: object, created: int | None, at: int | None) -> object:
@@ -164,6 +199,7 @@ class _Kind:
             **extra,
             dat_created_at=hlc_datetime(created if created is not None else at),
             dat_updated_at=hlc_datetime(at),
+            dat_version=at,
         )
 
 
@@ -185,6 +221,10 @@ class Repository[T]:
         """The Unit of Work's part branch of a store; ``None``: ``uow.store(name)``."""
         self.created: dict[uuid.UUID, int | None] = {}
         """Creation time of each entity this repository wrote; ``None``: created now."""
+        self._checked: set[uuid.UUID] = set()
+        """Entities whose version precondition this Unit of Work has checked."""
+        self._locked: set[uuid.UUID] = set()
+        """Entities this Unit of Work has locked in the stores that can."""
 
     # --- reads ---------------------------------------------------------------------------
 
@@ -205,12 +245,14 @@ class Repository[T]:
 
     def update(self, obj: T) -> None:
         dat_id = _id_of(obj)
+        self._check(dat_id, _version_of(obj))
         snap = self._live(dat_id)
         self._write(dat_id, self._kind.split(obj), created=snap.any.created)
 
     def save(self, obj: T) -> None:
         """``add`` or ``update``, whichever applies."""
         dat_id = _id_of(obj)
+        self._check(dat_id, _version_of(obj))
         snap = self._latest(dat_id)
         if snap is not None and snap.any.deleted:
             raise EntityExists(
@@ -219,7 +261,10 @@ class Repository[T]:
         created = snap.any.created if snap is not None else None
         self._write(dat_id, self._kind.split(obj), created=created)
 
-    def delete(self, dat_id: uuid.UUID) -> None:
+    def delete(self, dat_id: uuid.UUID, *, expected_version: int | None = None) -> None:
+        """Delete the entity; with ``expected_version``, only if that is still its
+        latest version (else ``VersionConflict``)."""
+        self._check(dat_id, expected_version)
         snap = self._live(dat_id)
         if self._kind.mapping.soft_delete:
             self._write(dat_id, _values(snap), created=snap.any.created, deleted=True)
@@ -268,6 +313,27 @@ class Repository[T]:
         }
         return _Snapshot(dat_id, versions) if len(versions) == len(self._kind.parts) else None
 
+    def _check(self, dat_id: uuid.UUID, expected: int | None) -> None:
+        """The version precondition: lock the entity where a store can, then
+        compare its latest version with ``expected``."""
+        if expected is None or dat_id in self._checked:
+            return
+        self._lock(dat_id, expected)
+        snap = self._latest(dat_id)
+        actual = None if snap is None or snap.any.deleted else snap.any.dat_tx_time
+        if actual != expected:
+            raise VersionConflict(self._kind.mapping.type_name, dat_id, expected, actual)
+        self._checked.add(dat_id)
+
+    def _lock(self, dat_id: uuid.UUID, expected: int | None = None) -> None:
+        if dat_id in self._locked:
+            return
+        for store, part in self._kind.parts.items():
+            branch = self._branch(store)
+            if isinstance(branch, LocksParts):
+                branch.lock_part(part, dat_id, expected=expected)
+        self._locked.add(dat_id)
+
     def _live(self, dat_id: uuid.UUID) -> _Snapshot:
         snap = self._latest(dat_id)
         if snap is None or snap.any.deleted:
@@ -282,6 +348,8 @@ class Repository[T]:
         created: int | None,
         deleted: bool = False,
     ) -> None:
+        if created is not None:  # a new version of an existing entity
+            self._lock(dat_id)
         for store, part in self._kind.parts.items():
             self._branch(store).write_part(
                 part, dat_id, parts[store], created=created, deleted=deleted
@@ -289,6 +357,7 @@ class Repository[T]:
         self.created[dat_id] = created
 
     def _erase(self, dat_id: uuid.UUID) -> None:
+        self._lock(dat_id)
         for store, part in self._kind.parts.items():
             self._branch(store).erase_part(part, dat_id)
         self.created.pop(dat_id, None)
@@ -456,8 +525,12 @@ class EntityRepository[T]:
     def save(self, obj: T) -> Outcome:
         return self._write(lambda repo: repo.save(obj), obj)
 
-    def delete(self, dat_id: uuid.UUID) -> Outcome:
-        outcome, _, _ = self._run(lambda repo: repo.delete(dat_id))
+    def delete(self, dat_id: uuid.UUID, *, expected_version: int | None = None) -> Outcome:
+        """Delete the entity; with ``expected_version`` (the ``dat_version`` of
+        what was read), only if that is still its latest version."""
+        outcome, _, _ = self._run(
+            lambda repo: repo.delete(dat_id, expected_version=expected_version)
+        )
         return outcome
 
     def restore(self, dat_id: uuid.UUID) -> Outcome:
@@ -556,6 +629,11 @@ def _id_of(obj: object) -> uuid.UUID:
     if not isinstance(dat_id, uuid.UUID):
         raise TypeError(f"not an entity: {type(obj).__name__}")
     return dat_id
+
+
+def _version_of(obj: object) -> int | None:
+    version = getattr(obj, "dat_version", None)
+    return version if isinstance(version, int) else None
 
 
 def _values(snap: _Snapshot) -> dict[str, Mapping[str, Any]]:
