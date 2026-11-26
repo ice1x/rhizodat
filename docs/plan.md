@@ -541,5 +541,6 @@ safe). The open design question is the transaction model over the network:
 
 The library stays the core; the server is built on it, not instead of it.
 
-The proposal for this question, with a recommendation, is in
-[Server mode (proposal)](development/server.md).
+Decided (2026-11-26): one request per Unit of Work, preconditions on by
+default, HTTP/JSON; the design and the build order are in
+[Server mode](development/server.md).
