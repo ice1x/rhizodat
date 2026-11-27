@@ -700,3 +700,62 @@ fn malformed_parts_are_refused() {
         rhizodat_postgres_store_free(store);
     }
 }
+
+fn lock_part(
+    unit: *mut RhizodatUnit,
+    store: *mut RhizodatPostgresStore,
+    dat_id: &str,
+    expected: Option<i64>,
+) {
+    let (spec, id) = (c(SPEC), c(dat_id));
+    let expected = expected.as_ref().map_or(ptr::null(), ptr::from_ref);
+    // SAFETY: live handles, valid strings, `expected` null or a live local.
+    ok(|e| unsafe {
+        rhizodat_unit_postgres_lock_part(unit, store, spec.as_ptr(), id.as_ptr(), expected, e)
+    });
+}
+
+#[test]
+fn a_locked_write_from_a_stale_version_aborts_with_the_conflict() {
+    let Some(dsn) = pg_dsn() else { return };
+    let db = Db::new(&dsn);
+    let store = db.store("pg");
+    install_part(store, SPEC);
+    let coordinator = coordinator(ptr::null());
+    let id = new_id();
+    let values = json!({"title": "t"});
+
+    let unit = empty_unit();
+    write_part(unit, store, &id, &values, None, false);
+    let (_, done) = commit(coordinator, unit);
+    let t1 = done["dat_tx_time"].as_i64().unwrap();
+
+    let current = empty_unit();
+    lock_part(current, store, &id, Some(t1));
+    assert_eq!(own_part(current, store, &id), json!({"touched": false}));
+    write_part(current, store, &id, &values, Some(t1), false);
+    let (status, done2) = commit(coordinator, current);
+    assert_eq!(status, RhizodatStatus::Ok, "{done2}");
+    let t2 = done2["dat_tx_time"].as_i64().unwrap();
+
+    let stale = empty_unit();
+    lock_part(stale, store, &id, Some(t1));
+    write_part(stale, store, &id, &values, Some(t1), false);
+    let (status, refused) = commit(coordinator, stale);
+    assert_eq!(status, RhizodatStatus::Aborted, "{refused}");
+    assert_eq!(refused["retryable"], json!(false));
+    assert_eq!(
+        refused["conflict"],
+        json!({"type_name": "tracker.Issue", "dat_id": id, "expected": t1, "actual": t2})
+    );
+    assert_eq!(read_part(store, &id, None)["dat_tx_time"], json!(t2));
+
+    // SAFETY: freed once each.
+    unsafe {
+        rhizodat_unit_free(unit);
+        rhizodat_unit_free(current);
+        rhizodat_unit_free(stale);
+        rhizodat_coordinator_free(coordinator);
+        rhizodat_postgres_store_free(store);
+    }
+}

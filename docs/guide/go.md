@@ -46,7 +46,8 @@ done, err := coordinator.Transactional(3, func(u *rhizodat.Unit) error {
 ```
 
 `Commit` fails with `*rhizodat.AbortedError` (nothing written; `Retryable`
-says whether a re-run may help), `*rhizodat.InDoubtError` (recovery resolves
+says whether a re-run may help), `*rhizodat.VersionConflictError` (an entity
+version precondition, below), `*rhizodat.InDoubtError` (recovery resolves
 it; do not re-run), or `*rhizodat.Error` for a unit of work the core refuses
 (two stores without a journal, a reserved column). `Transactional` re-runs the
 whole function while the abort is retryable.
@@ -115,6 +116,15 @@ the entity, `Restore` brings it back within the window
 (`ErrNotRestorable` after), and `PurgeExpired` erases it once the window is
 over. `issues.In(unit)` is the repository inside your own unit of work: its
 reads see the unit's writes, and they commit with the rest of it.
+
+Versions work as in Python: a read (or written) entity carries `DatVersion`,
+and `Update` / `Save` of an entity with one fail with `ErrVersionConflict` (a
+`*VersionConflictError` with `Expected` and `Actual`) when it is no longer the
+latest; `DeleteVersion(id, expected)` checks before deleting. The repository
+compares when the write is buffered, and the core again at commit, under the
+entity's lock in PostgreSQL and drevo, so of two writers of one version the
+first to commit wins. `Transactional` does not re-run a conflict. An entity
+built by hand (`DatVersion` 0) is written unchecked.
 
 Tables and columns are the Python facade's (a type `tracker.Issue` lives in
 `tracker_issue`; `string` is `text`, integers `bigint`, floats `double

@@ -37,6 +37,11 @@ type Entity struct {
 	DatUpdatedAt time.Time
 	// DatDeletedAt is when it was soft-deleted (zero when it is live).
 	DatDeletedAt time.Time
+	// DatVersion is the transaction time of the version this was read (or
+	// written) at; 0 for an entity built by hand. Update and Save of an entity
+	// with a version write only if it is still the latest, else fail with
+	// ErrVersionConflict; with 0 the last writer wins.
+	DatVersion int64
 }
 
 // Ref is a reference to another entity of type T, by its id: stored as the
@@ -96,6 +101,10 @@ var (
 	ErrEntityExists = errors.New("rhizodat: entity exists")
 	// ErrEntityNotFound is a write to an entity with no live version.
 	ErrEntityNotFound = errors.New("rhizodat: entity not found")
+	// ErrVersionConflict is a write based on a version of an entity that is
+	// no longer the latest (a *VersionConflictError). Transactional does not
+	// re-run it: read the entity again and redo the change.
+	ErrVersionConflict = errors.New("rhizodat: version conflict")
 	// ErrNotRestorable is a Restore of an entity that is not soft-deleted, or
 	// left its window.
 	ErrNotRestorable = errors.New("rhizodat: entity not restorable")
@@ -114,7 +123,29 @@ type PartStore interface {
 	writePart(u *Unit, spec PartSpec, id UUID, values map[string]any, created *int64, deleted bool) error
 	erasePart(u *Unit, spec PartSpec, id UUID) error
 	ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error)
+	lockPart(u *Unit, spec PartSpec, id UUID, expected *int64) error
 }
+
+// VersionConflictError is a write based on version Expected of an entity
+// whose latest live version is Actual (nil: it has none). It matches
+// ErrVersionConflict.
+type VersionConflictError struct {
+	TypeName string
+	DatID    UUID
+	Expected int64
+	Actual   *int64
+}
+
+func (e *VersionConflictError) Error() string {
+	state := "it is deleted"
+	if e.Actual != nil {
+		state = fmt.Sprintf("the latest is %d", *e.Actual)
+	}
+	return fmt.Sprintf("rhizodat: %s %s: written from version %d, but %s", e.TypeName, e.DatID, e.Expected, state)
+}
+
+// Is matches ErrVersionConflict.
+func (e *VersionConflictError) Is(target error) bool { return target == ErrVersionConflict }
 
 // EntityOptions declares an entity type.
 type EntityOptions struct {
@@ -349,6 +380,7 @@ func (k *kind) assemble(id UUID, s snapshot, into reflect.Value) error {
 	}
 	if v.DatTxTime != nil {
 		e.DatUpdatedAt = hlcTime(*v.DatTxTime)
+		e.DatVersion = *v.DatTxTime
 		if v.Deleted {
 			e.DatDeletedAt = e.DatUpdatedAt
 		}
@@ -783,6 +815,7 @@ func (r *Repository[T]) write(obj *T, work func(*UnitRepository[T]) error) (Comm
 		first = *c
 	}
 	e.DatCreatedAt, e.DatUpdatedAt, e.DatDeletedAt = hlcTime(first), hlcTime(at), time.Time{}
+	e.DatVersion = at
 	return done, nil
 }
 
@@ -806,6 +839,13 @@ func (r *Repository[T]) Save(obj *T) (Committed, error) {
 // type has a SoftDelete window.
 func (r *Repository[T]) Delete(id UUID) (Committed, error) {
 	done, _, err := r.run(func(in *UnitRepository[T]) error { return in.Delete(id) })
+	return done, err
+}
+
+// DeleteVersion is Delete if expected is still the latest version, else
+// ErrVersionConflict.
+func (r *Repository[T]) DeleteVersion(id UUID, expected int64) (Committed, error) {
+	done, _, err := r.run(func(in *UnitRepository[T]) error { return in.DeleteVersion(id, expected) })
 	return done, err
 }
 
@@ -863,7 +903,7 @@ func (r *Repository[T]) PurgeExpired(limit int) (int, error) {
 // In is the repository inside a unit of work: its writes commit with the
 // rest of the unit, its reads see them.
 func (r *Repository[T]) In(u *Unit) *UnitRepository[T] {
-	return &UnitRepository[T]{repo: r, unit: u, created: map[UUID]*int64{}}
+	return &UnitRepository[T]{repo: r, unit: u, created: map[UUID]*int64{}, checked: map[UUID]bool{}, locked: map[UUID]bool{}}
 }
 
 // UnitRepository reads and writes one entity type inside one unit of work.
@@ -871,6 +911,49 @@ type UnitRepository[T any] struct {
 	repo    *Repository[T]
 	unit    *Unit
 	created map[UUID]*int64
+	checked map[UUID]bool
+	locked  map[UUID]bool
+}
+
+// check is the version precondition: lock the entity where a store can (the
+// core checks expected again under the lock at commit), then compare its
+// latest version here. 0 is no precondition.
+func (in *UnitRepository[T]) check(id UUID, expected int64) error {
+	if expected == 0 || in.checked[id] {
+		return nil
+	}
+	if err := in.lock(id, &expected); err != nil {
+		return err
+	}
+	s, err := in.latest(id)
+	if err != nil {
+		return err
+	}
+	var actual *int64
+	if s != nil && !in.repo.kind.first(s).Deleted {
+		actual = in.repo.kind.first(s).DatTxTime
+	}
+	if actual == nil || *actual != expected {
+		return &VersionConflictError{TypeName: in.repo.kind.typeName, DatID: id, Expected: expected, Actual: actual}
+	}
+	in.checked[id] = true
+	return nil
+}
+
+// lock buffers the entity's lock in every store of its parts (PostgreSQL and
+// drevo take it; the others only compare), once per unit of work.
+func (in *UnitRepository[T]) lock(id UUID, expected *int64) error {
+	if in.locked[id] {
+		return nil
+	}
+	k := in.repo.kind
+	for _, store := range k.stores {
+		if err := in.repo.stores[store].lockPart(in.unit, k.specs[store], id, expected); err != nil {
+			return err
+		}
+	}
+	in.locked[id] = true
+	return nil
 }
 
 // Get is the latest live version, this unit of work's writes included; nil
@@ -946,9 +1029,14 @@ func (in *UnitRepository[T]) Add(obj *T) error {
 	return in.write(e.DatID, parts, nil, false)
 }
 
-// Update buffers a new version of a live entity.
+// Update buffers a new version of a live entity; ErrVersionConflict when obj
+// has a DatVersion that is no longer the latest.
 func (in *UnitRepository[T]) Update(obj *T) error {
-	id := in.entity(obj).DatID
+	e := in.entity(obj)
+	id := e.DatID
+	if err := in.check(id, e.DatVersion); err != nil {
+		return err
+	}
 	s, err := in.live(id)
 	if err != nil {
 		return err
@@ -972,6 +1060,9 @@ func (in *UnitRepository[T]) Save(obj *T) error {
 	}
 	var created *int64
 	if s != nil {
+		if err := in.check(e.DatID, e.DatVersion); err != nil {
+			return err
+		}
 		if in.repo.kind.first(s).Deleted {
 			return fmt.Errorf("%w: %s %s is soft-deleted: restore it first", ErrEntityExists, in.repo.kind.typeName, e.DatID)
 		}
@@ -986,6 +1077,15 @@ func (in *UnitRepository[T]) Save(obj *T) error {
 
 // Delete buffers the erase of every version, or a soft delete.
 func (in *UnitRepository[T]) Delete(id UUID) error {
+	return in.DeleteVersion(id, 0)
+}
+
+// DeleteVersion is Delete if expected is still the latest version (0: no
+// check), else ErrVersionConflict.
+func (in *UnitRepository[T]) DeleteVersion(id UUID, expected int64) error {
+	if err := in.check(id, expected); err != nil {
+		return err
+	}
 	s, err := in.live(id)
 	if err != nil {
 		return err
@@ -1034,6 +1134,11 @@ func (in *UnitRepository[T]) purge(id UUID, deletedBefore int64) (bool, error) {
 
 func (in *UnitRepository[T]) write(id UUID, parts map[string]map[string]any, created *int64, deleted bool) error {
 	k := in.repo.kind
+	if created != nil { // a new version of an existing entity: no write slips past a check
+		if err := in.lock(id, nil); err != nil {
+			return err
+		}
+	}
 	for _, store := range k.stores {
 		if err := in.repo.stores[store].writePart(in.unit, k.specs[store], id, parts[store], created, deleted); err != nil {
 			return err
@@ -1045,6 +1150,9 @@ func (in *UnitRepository[T]) write(id UUID, parts map[string]map[string]any, cre
 
 func (in *UnitRepository[T]) erase(id UUID) error {
 	k := in.repo.kind
+	if err := in.lock(id, nil); err != nil {
+		return err
+	}
 	for _, store := range k.stores {
 		if err := in.repo.stores[store].erasePart(in.unit, k.specs[store], id); err != nil {
 			return err
