@@ -14,6 +14,13 @@
   compare only for now. New optional branch capability `LocksParts`.
   **Behaviour change:** updating an instance read before someone else's write
   now fails instead of silently replacing that write.
+- The native facade checks versions in the Rust core too: PostgreSQL and drevo
+  units buffer a lock (`lock_part(spec, dat_id, expected=...)`) that the core
+  takes at stage, before the Unit of Work's writes, and under which it compares
+  the latest committed version again; a mismatch fails the commit with
+  `rhizodat_native.VersionConflictError` (an `AbortedError`, never retryable),
+  raised as `rhizodat.VersionConflict`. The lock key is the Python adapter's,
+  so the two facades serialise each other's writers.
 
 ## 0.3.0 — entity repositories in Go
 

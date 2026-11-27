@@ -34,7 +34,7 @@ use pyo3::types::{PyBytes, PyDict};
 use rhizodat_core::clock::HybridLogicalClock;
 use rhizodat_core::coordinator::{CommitError, Coordinator as CoreCoordinator, Outcome};
 use rhizodat_core::journal::{BranchRecord, Journal, MemoryJournal as CoreJournal};
-use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
+use rhizodat_core::store::{BoxError, Branch, Participant, Participants, VersionConflict};
 use rhizodat_core::timer::{NoWait, TokioTimer};
 use uuid::Uuid;
 
@@ -42,7 +42,10 @@ use crate::clickhouse::{ClickHouseStore, ClickHouseUnit};
 use crate::drevo::{DrevoJournal, DrevoStore, DrevoUnit};
 use crate::iceberg::{IcebergStore, IcebergUnit};
 use crate::postgres::{PostgresJournal, PostgresStore, PostgresUnit};
-use crate::{AbortedError, Failure, InDoubtError, InvalidUnitOfWork, journal_record_dict, op_err};
+use crate::{
+    AbortedError, Failure, InDoubtError, InvalidUnitOfWork, VersionConflictError,
+    journal_record_dict, op_err,
+};
 use rhizodat_units::{ConnectError, NativeStore};
 
 /// A Python branch callback raised; it is kept in the [`Failure`] cell.
@@ -217,7 +220,18 @@ fn commit_error(py: Python<'_>, error: CommitError, failure: &Failure) -> PyErr 
             retryable,
             cause,
         } => {
-            let err = AbortedError::new_err(cause.to_string());
+            let err = match cause.downcast_ref::<VersionConflict>() {
+                Some(conflict) => {
+                    let err = VersionConflictError::new_err(cause.to_string());
+                    let value = err.value(py).as_any();
+                    value.setattr("type_name", &conflict.type_name).ok();
+                    value.setattr("dat_id", conflict.dat_id).ok();
+                    value.setattr("expected", conflict.expected).ok();
+                    value.setattr("actual", conflict.actual).ok();
+                    err
+                }
+                None => AbortedError::new_err(cause.to_string()),
+            };
             {
                 let value = err.value(py).as_any();
                 value.setattr("dat_txn", dat_txn).ok();

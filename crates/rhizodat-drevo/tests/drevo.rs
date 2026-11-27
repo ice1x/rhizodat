@@ -23,7 +23,7 @@ use rhizodat_core::identity::IdGenerator;
 use rhizodat_core::journal::{BranchRecord, Journal, JournalError, State};
 use rhizodat_core::recovery::{Recovery, RecoveryReport};
 use rhizodat_core::rows::RowValue;
-use rhizodat_core::store::{BoxError, Branch, Participant, Participants};
+use rhizodat_core::store::{BoxError, Branch, Participant, Participants, VersionConflict};
 use rhizodat_core::timer::TokioTimer;
 use rhizodat_drevo::parts::{DrevoPartSpec, DrevoParts, FieldKind, PartVersion};
 use rhizodat_drevo::{DrevoBranch, DrevoJournal, DrevoStore, HeuristicOutcome, Value, params};
@@ -831,6 +831,8 @@ on_both!(
     parts_read_as_of_their_time_like_the_reference,
     references_link_anchors_and_an_erase_removes_orphans,
     soft_deletes_expire_and_a_rolled_back_branch_leaves_nothing,
+    a_write_from_a_stale_version_is_refused_at_stage,
+    two_writers_of_one_version_cannot_both_commit,
 );
 
 fn issue_spec(g: &Graph) -> DrevoPartSpec {
@@ -1103,5 +1105,106 @@ async fn soft_deletes_expire_and_a_rolled_back_branch_leaves_nothing(target: Tar
         g.store.part_history(&spec, lost).await.unwrap(),
         Vec::<PartVersion>::new()
     );
+    g.drop().await;
+}
+
+/// A write of `title` to `id`, locked first (checked against `expected`).
+fn locked(spec: &DrevoPartSpec, id: Uuid, expected: Option<i64>, title: &str) -> DrevoParts {
+    let mut parts = DrevoParts::new();
+    parts.lock(spec, id, expected);
+    parts
+        .write(
+            spec,
+            id,
+            &[("title".into(), RowValue::Str(title.into()))],
+            Some(10),
+            false,
+        )
+        .unwrap();
+    parts
+}
+
+async fn a_write_from_a_stale_version_is_refused_at_stage(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
+    let spec = issue_spec(&g);
+    g.store.install_part(&spec).await.unwrap();
+    let id = new_id();
+    commit_parts(&mut g, locked(&spec, id, None, "draft"), 10).await;
+    commit_parts(&mut g, locked(&spec, id, Some(10), "final"), 20).await;
+
+    let mut branch = g.store.branch().await.unwrap();
+    branch.load_parts(locked(&spec, id, Some(10), "stale"));
+    let err = branch.stage(g.txn(), 30).await.unwrap_err();
+    let conflict = err.downcast_ref::<VersionConflict>().expect("a conflict");
+    assert_eq!(
+        (conflict.dat_id, conflict.expected, conflict.actual),
+        (id, 10, Some(20))
+    );
+    assert!(
+        !branch.is_retryable(err.as_ref()),
+        "a conflict is not retried"
+    );
+    branch.rollback().await.unwrap();
+
+    let mut gone = DrevoParts::new();
+    gone.lock(&spec, id, Some(20));
+    gone.write(&spec, id, &[], Some(10), true).unwrap();
+    commit_parts(&mut g, gone, 40).await;
+    let mut branch = g.store.branch().await.unwrap();
+    branch.load_parts(locked(&spec, id, Some(40), "revived"));
+    let err = branch.stage(g.txn(), 50).await.unwrap_err();
+    let conflict = err.downcast_ref::<VersionConflict>().expect("a conflict");
+    assert_eq!(conflict.actual, None, "a soft delete is no live version");
+    branch.rollback().await.unwrap();
+
+    let history = g.store.part_history(&spec, id).await.unwrap();
+    assert_eq!(
+        history.iter().map(|v| v.dat_tx_time).collect::<Vec<_>>(),
+        [Some(10), Some(20), Some(40)]
+    );
+    g.drop().await;
+}
+
+/// Both branches lock the same version before either commits: the second to
+/// commit fails (a retryable conflict on the locked node, or the check, if it
+/// already sees the first one's version) and the first one's write stays.
+async fn two_writers_of_one_version_cannot_both_commit(target: Target) {
+    let Some(mut g) = Graph::new(target).await else {
+        return;
+    };
+    let spec = issue_spec(&g);
+    g.store.install_part(&spec).await.unwrap();
+    let id = new_id();
+    commit_parts(&mut g, locked(&spec, id, None, "draft"), 10).await;
+
+    let mut first = g.store.branch().await.unwrap();
+    let mut second = g.store.branch().await.unwrap();
+    first.load_parts(locked(&spec, id, Some(10), "first"));
+    second.load_parts(locked(&spec, id, Some(10), "second"));
+    first.stage(g.txn(), 20).await.unwrap();
+    first.commit_one_phase().await.unwrap();
+
+    let lost = match second.stage(g.txn(), 30).await {
+        Err(e) => {
+            assert!(
+                e.downcast_ref::<VersionConflict>().is_some() || second.is_retryable(e.as_ref()),
+                "{e}"
+            );
+            second.rollback().await.ok();
+            true
+        }
+        Ok(_) => match second.commit_one_phase().await {
+            Err(e) => {
+                assert!(second.is_retryable(e.as_ref()), "{e}");
+                true
+            }
+            Ok(()) => false,
+        },
+    };
+    assert!(lost, "the second writer of version 10 must not commit");
+    let latest = g.store.read_part(&spec, id, None).await.unwrap().unwrap();
+    assert_eq!(latest.values[0], RowValue::Str("first".into()));
     g.drop().await;
 }

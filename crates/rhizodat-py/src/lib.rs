@@ -50,6 +50,12 @@ create_exception!(
 );
 create_exception!(
     rhizodat_native,
+    VersionConflictError,
+    AbortedError,
+    "A write based on a version of an entity that is no longer the latest; never retryable."
+);
+create_exception!(
+    rhizodat_native,
     InDoubtError,
     PyException,
     "A meta-transaction's outcome is unknown; recovery resolves it from the journal."
@@ -397,6 +403,10 @@ fn rhizodat_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<MigrationFormatError>(),
     )?;
     m.add("AbortedError", py.get_type::<AbortedError>())?;
+    m.add(
+        "VersionConflictError",
+        py.get_type::<VersionConflictError>(),
+    )?;
     m.add("InDoubtError", py.get_type::<InDoubtError>())?;
     m.add("InvalidUnitOfWork", py.get_type::<InvalidUnitOfWork>())?;
     m.add_class::<coordinator::MemoryJournal>()?;

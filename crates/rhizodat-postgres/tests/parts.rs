@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rhizodat_core::identity::IdGenerator;
 use rhizodat_core::rows::RowValue;
-use rhizodat_core::store::Branch;
+use rhizodat_core::store::{Branch, VersionConflict};
 use rhizodat_postgres::PostgresStore;
 use rhizodat_postgres::parts::{ColumnType, PartSpec, PartVersion, PostgresParts};
 use uuid::Uuid;
@@ -399,4 +399,140 @@ async fn a_rolled_back_branch_leaves_no_version() {
         Vec::<PartVersion>::new()
     );
     db.drop().await;
+}
+
+/// Commit one version of `title` at `dat_tx_time` (`created`: the first one's).
+async fn put(db: &Db, spec: &PartSpec, id: Uuid, title: &str, created: Option<i64>, at: i64) {
+    let mut parts = PostgresParts::new();
+    parts
+        .write(spec, id, &[("title".into(), text(title))], created, false)
+        .unwrap();
+    db.commit(parts, at).await;
+}
+
+/// A locked write of `title` based on version `expected`.
+fn locked(spec: &PartSpec, id: Uuid, expected: Option<i64>, title: &str) -> PostgresParts {
+    let mut parts = PostgresParts::new();
+    parts.lock(spec, id, expected);
+    parts
+        .write(spec, id, &[("title".into(), text(title))], Some(100), false)
+        .unwrap();
+    parts
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_from_a_stale_version_is_refused_at_stage() {
+    let db = db!();
+    let spec = issue();
+    db.store.install_part(&spec).await.unwrap();
+    let id = new_id();
+    put(&db, &spec, id, "draft", None, 100).await;
+    put(&db, &spec, id, "final", Some(100), 200).await;
+
+    let mut branch = db.store.branch().await.unwrap();
+    branch.load_parts(locked(&spec, id, Some(100), "stale"));
+    let err = branch.stage(new_id(), 300).await.unwrap_err();
+    let conflict = err.downcast_ref::<VersionConflict>().expect("a conflict");
+    assert_eq!(
+        (conflict.dat_id, conflict.expected, conflict.actual),
+        (id, 100, Some(200))
+    );
+    assert_eq!(conflict.type_name, "tracker.Issue");
+    assert!(
+        !branch.is_retryable(err.as_ref()),
+        "a conflict is not retried"
+    );
+    branch.rollback().await.unwrap();
+
+    // The latest version passes; an unchecked lock only locks.
+    db.commit(locked(&spec, id, Some(200), "next"), 300).await;
+    db.commit(locked(&spec, id, None, "blind"), 400).await;
+    let latest = db.store.read_part(&spec, id, None).await.unwrap().unwrap();
+    assert_eq!(latest.values[0], text("blind"));
+    assert_eq!(db.store.part_history(&spec, id).await.unwrap().len(), 4);
+    db.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_soft_deleted_entity_has_no_live_version() {
+    let db = db!();
+    let spec = issue();
+    db.store.install_part(&spec).await.unwrap();
+    let id = new_id();
+    put(&db, &spec, id, "draft", None, 100).await;
+    let mut gone = PostgresParts::new();
+    gone.lock(&spec, id, Some(100));
+    gone.write(&spec, id, &[], Some(100), true).unwrap();
+    db.commit(gone, 200).await;
+
+    let mut branch = db.store.branch().await.unwrap();
+    branch.load_parts(locked(&spec, id, Some(200), "revived"));
+    let err = branch.stage(new_id(), 300).await.unwrap_err();
+    let conflict = err.downcast_ref::<VersionConflict>().expect("a conflict");
+    assert_eq!(conflict.actual, None);
+    branch.rollback().await.unwrap();
+    db.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_writers_of_one_version_are_serialised_by_the_lock() {
+    let db = db!();
+    let spec = issue();
+    db.store.install_part(&spec).await.unwrap();
+    let id = new_id();
+    put(&db, &spec, id, "draft", None, 100).await;
+
+    let mut first = db.store.branch().await.unwrap();
+    first.load_parts(locked(&spec, id, Some(100), "first"));
+    first.stage(new_id(), 200).await.unwrap(); // holds the lock
+
+    let mut second = db.store.branch().await.unwrap();
+    second.load_parts(locked(&spec, id, Some(100), "second"));
+    let waiting = tokio::spawn(async move {
+        let result = second.stage(new_id(), 300).await;
+        (second, result)
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !waiting.is_finished(),
+        "the second waits for the first one's lock"
+    );
+    first.commit_one_phase().await.unwrap();
+
+    let (mut second, result) = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the lock is released at commit")
+        .unwrap();
+    let err = result.unwrap_err();
+    let conflict = err.downcast_ref::<VersionConflict>().expect("a conflict");
+    assert_eq!(conflict.actual, Some(200));
+    second.rollback().await.unwrap();
+    let latest = db.store.read_part(&spec, id, None).await.unwrap().unwrap();
+    assert_eq!(latest.values[0], text("first"));
+    db.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lock_is_keyed_by_schema_table_and_entity() {
+    // Two stores in two schemas with the same table, in one task: neither waits.
+    let (a, b) = (db!(), db!());
+    let spec = issue();
+    let id = new_id();
+    for db in [&a, &b] {
+        db.store.install_part(&spec).await.unwrap();
+        put(db, &spec, id, "draft", None, 100).await;
+    }
+    let mut first = a.store.branch().await.unwrap();
+    first.load_parts(locked(&spec, id, Some(100), "a"));
+    first.stage(new_id(), 200).await.unwrap();
+    let mut second = b.store.branch().await.unwrap();
+    second.load_parts(locked(&spec, id, Some(100), "b"));
+    tokio::time::timeout(Duration::from_secs(5), second.stage(new_id(), 200))
+        .await
+        .expect("another schema's lock is another lock")
+        .unwrap();
+    first.commit_one_phase().await.unwrap();
+    second.commit_one_phase().await.unwrap();
+    a.drop().await;
+    b.drop().await;
 }

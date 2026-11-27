@@ -16,7 +16,7 @@ use std::fmt::{self, Write as _};
 use std::str::FromStr;
 
 use rhizodat_core::rows::{RowValue, decode_value, encode_value};
-use rhizodat_core::store::BoxError;
+use rhizodat_core::store::{BoxError, VersionConflict};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Row};
 use uuid::Uuid;
@@ -320,6 +320,11 @@ enum Op {
         spec: PartSpec,
         dat_id: Uuid,
     },
+    Lock {
+        spec: PartSpec,
+        dat_id: Uuid,
+        expected: Option<i64>,
+    },
 }
 
 /// A Unit of Work's part writes for a PostgreSQL store, buffered client-side and
@@ -378,6 +383,22 @@ impl PostgresParts {
         });
     }
 
+    /// Lock `dat_id`'s part at stage, before the writes that follow, and (with
+    /// `expected`) check that its latest live committed version is `expected`.
+    ///
+    /// The lock is the Python reference's transaction-level advisory lock, keyed
+    /// `<schema>.<table>:<dat_id>`: it is held across `PREPARE TRANSACTION`
+    /// until the branch is finished, so a second writer of the entity waits, then
+    /// reads what the first committed. A failed check fails the stage with a
+    /// [`VersionConflict`].
+    pub fn lock(&mut self, spec: &PartSpec, dat_id: Uuid, expected: Option<i64>) {
+        self.ops.push(Op::Lock {
+            spec: spec.clone(),
+            dat_id,
+            expected,
+        });
+    }
+
     /// This Unit of Work's own latest version of `dat_id`'s part: `None` when it
     /// did not touch it, `Some(None)` when it erased it last.
     #[must_use]
@@ -389,7 +410,7 @@ impl PostgresParts {
                 version,
             } if spec.table == table && *id == dat_id => Some(Some(version)),
             Op::Erase { spec, dat_id: id } if spec.table == table && *id == dat_id => Some(None),
-            _ => None,
+            Op::Write { .. } | Op::Erase { .. } | Op::Lock { .. } => None,
         })
     }
 }
@@ -442,8 +463,46 @@ pub(crate) async fn apply_parts(
                 let sql = format!("DELETE FROM {} WHERE dat_id = $1", quote_ident(&spec.table));
                 client.execute(&sql, &[dat_id]).await?;
             }
+            Op::Lock {
+                spec,
+                dat_id,
+                expected,
+            } => lock(client, spec, *dat_id, *expected, dat_txn).await?,
         }
     }
+    Ok(())
+}
+
+/// Take `dat_id`'s lock, then compare its latest live committed version (not
+/// this meta-transaction's own) with `expected`.
+async fn lock(
+    client: &Client,
+    spec: &PartSpec,
+    dat_id: Uuid,
+    expected: Option<i64>,
+    dat_txn: Uuid,
+) -> Result<(), BoxError> {
+    let key = format!("{}:{dat_id}", quote_ident(&spec.table));
+    client
+        .execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || '.' || $1, 0))",
+            &[&key],
+        )
+        .await?;
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let sql = format!(
+        "SELECT dat_tx_time, dat_deleted FROM {} WHERE dat_id = $1 AND dat_txn <> $2 \
+         AND dat_tx_time IS NOT NULL ORDER BY dat_tx_time DESC LIMIT 1",
+        quote_ident(&spec.table)
+    );
+    let rows = client.query(&sql, &[&dat_id, &dat_txn]).await?;
+    let actual = match rows.first() {
+        Some(row) if !row.try_get::<_, bool>(1)? => row.try_get(0)?,
+        _ => None,
+    };
+    VersionConflict::check(&spec.type_name, dat_id, expected, actual)?;
     Ok(())
 }
 
@@ -678,6 +737,18 @@ mod tests {
         assert!(parts.latest("t_t", a).unwrap().unwrap().deleted);
         assert_eq!(parts.latest("t_t", b), None);
         assert_eq!(parts.latest("other", a), None);
+    }
+
+    #[test]
+    fn a_lock_is_buffered_but_is_not_an_own_version() {
+        let a = Uuid::from_u128(1);
+        let mut parts = PostgresParts::new();
+        parts.lock(&spec(), a, Some(7));
+        assert!(!parts.is_empty());
+        assert_eq!(parts.latest("t_t", a), None);
+        parts.write(&spec(), a, &[], Some(1), false).unwrap();
+        parts.lock(&spec(), a, None);
+        assert!(parts.latest("t_t", a).unwrap().is_some());
     }
 
     #[test]

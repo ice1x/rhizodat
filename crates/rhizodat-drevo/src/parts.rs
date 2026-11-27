@@ -19,7 +19,7 @@
 use std::fmt::Write as _;
 
 use rhizodat_core::rows::{RowValue, decode_value, encode_value};
-use rhizodat_core::store::BoxError;
+use rhizodat_core::store::{BoxError, VersionConflict};
 use uuid::Uuid;
 
 use crate::{ConfigError, DrevoBranch, DrevoStore, Params, Row, Value, params};
@@ -282,6 +282,11 @@ enum Op {
         spec: DrevoPartSpec,
         dat_id: Uuid,
     },
+    Lock {
+        spec: DrevoPartSpec,
+        dat_id: Uuid,
+        expected: Option<i64>,
+    },
 }
 
 /// A Unit of Work's part writes for a drevo store, buffered client-side and
@@ -339,6 +344,21 @@ impl DrevoParts {
         });
     }
 
+    /// Lock `dat_id`'s part at stage, before the writes that follow, and (with
+    /// `expected`) check that its latest live committed version is `expected`.
+    ///
+    /// The lock is the Python reference's: a write (`dat_lock`) on the latest
+    /// version node, so of two transactions that lock one entity the second to
+    /// commit conflicts (retryable), and its re-run reads the first one's
+    /// version. A failed check fails the stage with a [`VersionConflict`].
+    pub fn lock(&mut self, spec: &DrevoPartSpec, dat_id: Uuid, expected: Option<i64>) {
+        self.ops.push(Op::Lock {
+            spec: spec.clone(),
+            dat_id,
+            expected,
+        });
+    }
+
     /// This Unit of Work's own latest version of `dat_id`'s part: `None` when it
     /// did not touch it, `Some(None)` when it erased it last.
     #[must_use]
@@ -350,7 +370,7 @@ impl DrevoParts {
                 version,
             } if spec.label == label && *id == dat_id => Some(Some(version)),
             Op::Erase { spec, dat_id: id } if spec.label == label && *id == dat_id => Some(None),
-            _ => None,
+            Op::Write { .. } | Op::Erase { .. } | Op::Lock { .. } => None,
         })
     }
 }
@@ -428,6 +448,29 @@ impl DrevoBranch {
                     let matched = format!("MATCH (v:{} {{dat_id: $id}})", spec.label);
                     self.remove(&matched, params![("id", dat_id.to_string())])
                         .await?;
+                }
+                Op::Lock {
+                    spec,
+                    dat_id,
+                    expected,
+                } => {
+                    let query = format!(
+                        "MATCH (v:{} {{dat_id: $id}}) WHERE v.dat_tx_time IS NOT NULL \
+                         AND v.dat_txn <> $txn WITH v ORDER BY v.dat_tx_time DESC LIMIT 1 \
+                         SET v.dat_lock = $txn RETURN v.dat_tx_time AS t, v.dat_deleted AS d",
+                        spec.label
+                    );
+                    let params = params![("id", dat_id.to_string()), ("txn", txn.clone())];
+                    let rows = self.run(&query, params).await?;
+                    if let Some(expected) = expected {
+                        let actual = match rows.first() {
+                            Some(row) if row.value("d") != &Value::Bool(true) => {
+                                row.opt_int("t")?
+                            }
+                            _ => None,
+                        };
+                        VersionConflict::check(&spec.type_name, dat_id, expected, actual)?;
+                    }
                 }
             }
         }
@@ -655,6 +698,15 @@ mod tests {
             &mut found,
         );
         assert_eq!(found, vec![a.to_string(), b.to_string()]);
+    }
+
+    #[test]
+    fn a_lock_is_buffered_but_is_not_an_own_version() {
+        let id = Uuid::from_u128(1);
+        let mut parts = DrevoParts::new();
+        parts.lock(&spec(), id, Some(7));
+        assert!(!parts.is_empty());
+        assert_eq!(parts.latest("TT", id), None);
     }
 
     #[test]
