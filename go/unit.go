@@ -134,11 +134,18 @@ type outcome struct {
 	DatTxTime *int64 `json:"dat_tx_time"`
 	Retryable bool   `json:"retryable"`
 	Error     string `json:"error"`
+	Conflict  *struct {
+		TypeName string `json:"type_name"`
+		DatID    string `json:"dat_id"`
+		Expected int64  `json:"expected"`
+		Actual   *int64 `json:"actual"`
+	} `json:"conflict"`
 }
 
 // Commit commits unit as one new meta-transaction: every store's writes, or
-// none of them. A failure is an *AbortedError, an *InDoubtError, or an *Error
-// for a unit of work the core refuses.
+// none of them. A failure is an *AbortedError, a *VersionConflictError (a
+// version precondition the core checked under the entity's lock), an
+// *InDoubtError, or an *Error for a unit of work the core refuses.
 func (c *Coordinator) Commit(unit *Unit) (Committed, error) {
 	defer runtime.KeepAlive(c)
 	defer runtime.KeepAlive(unit)
@@ -159,6 +166,9 @@ func (c *Coordinator) Commit(unit *Unit) (Committed, error) {
 		}
 		return done, nil
 	case StatusAborted:
+		if k := o.Conflict; k != nil {
+			return Committed{}, &VersionConflictError{TypeName: k.TypeName, DatID: UUID(k.DatID), Expected: k.Expected, Actual: k.Actual}
+		}
 		return Committed{}, &AbortedError{DatTxn: UUID(o.DatTxn), Retryable: o.Retryable, Message: text}
 	case StatusInDoubt:
 		return Committed{}, &InDoubtError{DatTxn: UUID(o.DatTxn), Message: text}

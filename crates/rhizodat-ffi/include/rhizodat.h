@@ -579,6 +579,23 @@ enum RhizodatStatus rhizodat_unit_postgres_erase_part(const struct RhizodatUnit 
                                                       const char *dat_id,
                                                       char **error);
 
+// Buffer a lock of `dat_id`'s part in a PostgreSQL store, taken at the commit
+// before the writes that follow (the Python adapter's advisory lock); with
+// `expected`, the commit aborts (not retryable, the outcome's `conflict` set)
+// unless the latest live committed version is `expected`.
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+// NUL-terminated strings; `expected` null or readable; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_unit_postgres_lock_part(const struct RhizodatUnit *unit,
+                                                     const struct RhizodatPostgresStore *store,
+                                                     const char *spec_json,
+                                                     const char *dat_id,
+                                                     const int64_t *expected,
+                                                     char **error);
+
 // This unit of work's own latest version of `dat_id`'s part in a PostgreSQL
 // store: `{"touched": false}` when it did not touch it, else `{"touched":
 // true, "version": null | {...}}` (null: it erased it last; a version has no
@@ -625,6 +642,21 @@ enum RhizodatStatus rhizodat_unit_drevo_erase_part(const struct RhizodatUnit *un
                                                    const char *spec_json,
                                                    const char *dat_id,
                                                    char **error);
+
+// Buffer a lock of `dat_id`'s part in a drevo store (a write on its latest
+// version node), as [`rhizodat_unit_postgres_lock_part`].
+//
+// # Safety
+//
+// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+// NUL-terminated strings; `expected` null or readable; `error` null or
+// writable.
+enum RhizodatStatus rhizodat_unit_drevo_lock_part(const struct RhizodatUnit *unit,
+                                                  const struct RhizodatDrevoStore *store,
+                                                  const char *spec_json,
+                                                  const char *dat_id,
+                                                  const int64_t *expected,
+                                                  char **error);
 
 // This unit of work's own latest version of `dat_id`'s part in a drevo store,
 // as [`rhizodat_unit_postgres_own_part`].

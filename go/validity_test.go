@@ -86,7 +86,7 @@ func TestAValidTimeEntityIsReadAsItHeldAndAsItWasKnown(t *testing.T) {
 		t.Fatalf("after the end: %+v", got)
 	}
 
-	backwards := *contract
+	backwards := ended // the latest version: a stale one would be a version conflict first
 	backwards.ValidFrom, backwards.ValidTo = day(5, 1), day(4, 1)
 	if _, err := contracts.Update(&backwards); err == nil || !strings.Contains(err.Error(), "ValidFrom must be before ValidTo") {
 		t.Fatalf("a period that ends before it starts: %v", err)

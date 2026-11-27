@@ -16,6 +16,7 @@ use rhizodat_core::clock::HybridLogicalClock;
 use rhizodat_core::coordinator::{CommitError, Outcome};
 use rhizodat_core::journal::Journal;
 use rhizodat_core::rows::RowValue;
+use rhizodat_core::store::VersionConflict;
 use rhizodat_drevo::parts::DrevoParts;
 use rhizodat_drevo::{DrevoStore, DrevoWrites};
 use rhizodat_iceberg::IcebergBatches;
@@ -262,6 +263,39 @@ pub unsafe extern "C" fn rhizodat_unit_postgres_erase_part(
     }
 }
 
+/// Buffer a lock of `dat_id`'s part in a PostgreSQL store, taken at the commit
+/// before the writes that follow (the Python adapter's advisory lock); with
+/// `expected`, the commit aborts (not retryable, the outcome's `conflict` set)
+/// unless the latest live committed version is `expected`.
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `expected` null or readable; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_postgres_lock_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatPostgresStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    expected: *const i64,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = part_spec(spec_json)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let expected = parts::optional_i64(expected);
+            postgres_parts(unit, store, |parts| {
+                parts.lock(&spec, dat_id, expected);
+                Ok(())
+            })
+        })
+    }
+}
+
 /// This unit of work's own latest version of `dat_id`'s part in a PostgreSQL
 /// store: `{"touched": false}` when it did not touch it, else `{"touched":
 /// true, "version": null | {...}}` (null: it erased it last; a version has no
@@ -411,6 +445,37 @@ pub unsafe extern "C" fn rhizodat_unit_drevo_erase_part(
             let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
             drevo_parts(unit, store, |parts| {
                 parts.erase(&spec, dat_id);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Buffer a lock of `dat_id`'s part in a drevo store (a write on its latest
+/// version node), as [`rhizodat_unit_postgres_lock_part`].
+///
+/// # Safety
+///
+/// `unit` and `store` must be live handles; `spec_json` and `dat_id`
+/// NUL-terminated strings; `expected` null or readable; `error` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rhizodat_unit_drevo_lock_part(
+    unit: *const RhizodatUnit,
+    store: *const RhizodatDrevoStore,
+    spec_json: *const c_char,
+    dat_id: *const c_char,
+    expected: *const i64,
+    error: *mut *mut c_char,
+) -> RhizodatStatus {
+    // SAFETY: the caller's contract.
+    unsafe {
+        boundary(error, || {
+            let spec = drevo_spec(parts::spec(spec_json)?)?;
+            let dat_id = parts::uuid_arg(dat_id, "dat_id")?;
+            let expected = parts::optional_i64(expected);
+            drevo_parts(unit, store, |parts| {
+                parts.lock(&spec, dat_id, expected);
                 Ok(())
             })
         })
@@ -1126,11 +1191,17 @@ fn outcome_json(
             cause,
         })) => {
             let message = cause.to_string();
-            (
-                json!({"status": "aborted", "dat_txn": dat_txn.to_string(),
-                       "retryable": retryable, "error": message}),
-                Some((RhizodatStatus::Aborted, message)),
-            )
+            let mut outcome = json!({"status": "aborted", "dat_txn": dat_txn.to_string(),
+                                     "retryable": retryable, "error": message});
+            if let Some(conflict) = cause.downcast_ref::<VersionConflict>() {
+                outcome["conflict"] = json!({
+                    "type_name": conflict.type_name,
+                    "dat_id": conflict.dat_id.to_string(),
+                    "expected": conflict.expected,
+                    "actual": conflict.actual,
+                });
+            }
+            (outcome, Some((RhizodatStatus::Aborted, message)))
         }
         Err(UnitError::Commit(CommitError::InDoubt { dat_txn, cause })) => {
             let message = cause.to_string();

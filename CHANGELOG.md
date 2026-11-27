@@ -21,6 +21,12 @@
   `rhizodat_native.VersionConflictError` (an `AbortedError`, never retryable),
   raised as `rhizodat.VersionConflict`. The lock key is the Python adapter's,
   so the two facades serialise each other's writers.
+- Go: `Entity.DatVersion`, `ErrVersionConflict` / `*VersionConflictError`,
+  and `DeleteVersion`; `Update` and `Save` of a read entity check its version,
+  and the core checks it again under the lock at commit (new C functions
+  `rhizodat_unit_postgres_lock_part` / `rhizodat_unit_drevo_lock_part`; an
+  aborted outcome carries `conflict`). **Behaviour change:** as in Python,
+  updating an entity read before someone else's write now fails.
 
 ## 0.3.0 — entity repositories in Go
 

@@ -195,6 +195,8 @@ type unitPartCalls struct {
 	write func(spec, id, fields, values *C.char, created *C.int64_t, deleted C.bool, e **C.char) C.enum_RhizodatStatus
 	erase func(spec, id *C.char, e **C.char) C.enum_RhizodatStatus
 	own   func(spec, id *C.char, out, e **C.char) C.enum_RhizodatStatus
+	// lock is nil for a store that only compares versions (ClickHouse, Iceberg).
+	lock func(spec, id *C.char, expected *C.int64_t, e **C.char) C.enum_RhizodatStatus
 }
 
 func (p partCalls) installPart(spec PartSpec) error {
@@ -315,6 +317,23 @@ func (p unitPartCalls) erasePart(spec PartSpec, id UUID) error {
 	return call(func(e **C.char) C.enum_RhizodatStatus { return p.erase(args.spec, args.id, e) })
 }
 
+func (p unitPartCalls) lockPart(spec PartSpec, id UUID, expected *int64) error {
+	if p.lock == nil {
+		return nil
+	}
+	args, err := newPartArgs(spec, id)
+	if err != nil {
+		return err
+	}
+	defer args.free()
+	var e *C.int64_t
+	if expected != nil {
+		v := C.int64_t(*expected)
+		e = &v
+	}
+	return call(func(m **C.char) C.enum_RhizodatStatus { return p.lock(args.spec, args.id, e, m) })
+}
+
 func (p unitPartCalls) ownPart(spec PartSpec, id UUID) (OwnPart, error) {
 	args, err := newPartArgs(spec, id)
 	if err != nil {
@@ -395,6 +414,9 @@ func (s *PostgresStore) unitParts(u *Unit) unitPartCalls {
 		own: func(spec, id *C.char, out, e **C.char) C.enum_RhizodatStatus {
 			return C.rhizodat_unit_postgres_own_part(u.ptr, s.ptr, spec, id, out, e)
 		},
+		lock: func(spec, id *C.char, expected *C.int64_t, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_postgres_lock_part(u.ptr, s.ptr, spec, id, expected, e)
+		},
 	}
 }
 
@@ -453,6 +475,12 @@ func (s *PostgresStore) erasePart(u *Unit, spec PartSpec, id UUID) error {
 	defer runtime.KeepAlive(s)
 	return s.unitParts(u).erasePart(spec, id)
 }
+func (s *PostgresStore) lockPart(u *Unit, spec PartSpec, id UUID, expected *int64) error {
+	defer runtime.KeepAlive(s)
+	defer runtime.KeepAlive(u)
+	return s.unitParts(u).lockPart(spec, id, expected)
+}
+
 func (s *PostgresStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error) {
 	defer runtime.KeepAlive(u)
 	defer runtime.KeepAlive(s)
@@ -491,6 +519,9 @@ func (s *DrevoStore) unitParts(u *Unit) unitPartCalls {
 		},
 		own: func(spec, id *C.char, out, e **C.char) C.enum_RhizodatStatus {
 			return C.rhizodat_unit_drevo_own_part(u.ptr, s.ptr, spec, id, out, e)
+		},
+		lock: func(spec, id *C.char, expected *C.int64_t, e **C.char) C.enum_RhizodatStatus {
+			return C.rhizodat_unit_drevo_lock_part(u.ptr, s.ptr, spec, id, expected, e)
 		},
 	}
 }
@@ -551,6 +582,12 @@ func (s *DrevoStore) erasePart(u *Unit, spec PartSpec, id UUID) error {
 	defer runtime.KeepAlive(s)
 	return s.unitParts(u).erasePart(spec, id)
 }
+func (s *DrevoStore) lockPart(u *Unit, spec PartSpec, id UUID, expected *int64) error {
+	defer runtime.KeepAlive(s)
+	defer runtime.KeepAlive(u)
+	return s.unitParts(u).lockPart(spec, id, expected)
+}
+
 func (s *DrevoStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error) {
 	defer runtime.KeepAlive(u)
 	defer runtime.KeepAlive(s)
@@ -678,6 +715,12 @@ func (s *ClickHouseStore) erasePart(u *Unit, spec PartSpec, id UUID) error {
 	defer runtime.KeepAlive(s)
 	return s.unitParts(u).erasePart(spec, id)
 }
+func (s *ClickHouseStore) lockPart(u *Unit, spec PartSpec, id UUID, expected *int64) error {
+	defer runtime.KeepAlive(s)
+	defer runtime.KeepAlive(u)
+	return s.unitParts(u).lockPart(spec, id, expected)
+}
+
 func (s *ClickHouseStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error) {
 	defer runtime.KeepAlive(u)
 	defer runtime.KeepAlive(s)
@@ -812,6 +855,12 @@ func (s *IcebergStore) erasePart(u *Unit, spec PartSpec, id UUID) error {
 	defer runtime.KeepAlive(s)
 	return s.unitParts(u).erasePart(spec, id)
 }
+func (s *IcebergStore) lockPart(u *Unit, spec PartSpec, id UUID, expected *int64) error {
+	defer runtime.KeepAlive(s)
+	defer runtime.KeepAlive(u)
+	return s.unitParts(u).lockPart(spec, id, expected)
+}
+
 func (s *IcebergStore) ownPart(u *Unit, spec PartSpec, id UUID) (OwnPart, error) {
 	defer runtime.KeepAlive(u)
 	defer runtime.KeepAlive(s)
