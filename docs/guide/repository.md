@@ -43,8 +43,11 @@ moment: see [Embeddings](embeddings.md#vector-fields-on-entities).
   the commit is finished) and drevo (a write on the latest version, so the
   second writer conflicts and its retry sees the new version); every write of
   an existing entity takes that lock. A ClickHouse or Iceberg part is only
-  compared, so an entity whose parts are all there can still lose a race; the
-  native facade compares only, until the Rust core takes the locks.
+  compared, so an entity whose parts are all there can still lose a race. On
+  the native facade writes reach the store at commit: the core takes the same
+  locks then and checks the version again under them, so of two writers of one
+  version the first to commit wins and the other's `commit` raises
+  `VersionConflict`.
 - **Soft delete** (opt-in per type): `@entity(..., soft_delete=True)` uses the
   configured window, `Rhizodat(soft_delete_window=timedelta(days=30))` (the
   default); `soft_delete=timedelta(days=7)` gives the type its own, which wins.

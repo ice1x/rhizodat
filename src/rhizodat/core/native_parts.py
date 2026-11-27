@@ -8,7 +8,9 @@ A native facade's repositories run the same logic as the Python facade's
 adapter. :class:`NativePartBranch` is a
 :class:`~rhizodat.core.parts.PartBranch` over a Unit of Work's native unit: writes
 are buffered on the unit and applied inside the meta-transaction when it commits;
-a read sees the unit's own writes first, then the committed versions.
+a read sees the unit's own writes first, then the committed versions. A version
+precondition is checked twice: by the repository when the entity is written, and
+by the core under the entity's lock when the unit is applied (PostgreSQL, drevo).
 
 The layout is the Python adapters' (PostgreSQL and ClickHouse tables with the
 same DDL and JSON encoding; drevo nodes with the same properties and reference
@@ -128,6 +130,15 @@ class NativePartBranch:
 
     def erase_part(self, part: Part, dat_id: uuid.UUID) -> None:
         self._unit.erase_part(self._parts.spec(part), dat_id)
+
+    def lock_part(self, part: Part, dat_id: uuid.UUID, *, expected: int | None = None) -> None:
+        """Buffer the entity's lock (PostgreSQL and drevo units): taken at stage,
+        before this Unit of Work's writes, where the core checks ``expected``
+        against the latest committed version again, under the lock, and fails the
+        commit with ``VersionConflict``. Other stores only compare, in Python."""
+        lock = getattr(self._unit, "lock_part", None)
+        if lock is not None:
+            lock(self._parts.spec(part), dat_id, expected=expected)
 
     def read_part(self, part: Part, dat_id: uuid.UUID) -> Version | None:
         """This Unit of Work's own latest version, else the latest committed one."""

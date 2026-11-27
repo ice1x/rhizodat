@@ -121,3 +121,81 @@ impl FromIterator<(String, std::sync::Arc<dyn Participant>)> for Participants {
             .fold(Self::new(), |all, (name, p)| all.with(name, p))
     }
 }
+
+/// A write based on a version of an entity that is no longer the latest: the
+/// version precondition a branch checks under the entity's lock at stage.
+///
+/// Not retryable: re-running the Unit of Work would write the same stale
+/// entity again. Read it again and redo the change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionConflict {
+    /// The entity type.
+    pub type_name: String,
+    /// The entity.
+    pub dat_id: Uuid,
+    /// The version the write was based on (its `dat_tx_time`).
+    pub expected: i64,
+    /// The latest version's `dat_tx_time`; `None`: no live version.
+    pub actual: Option<i64>,
+}
+
+impl VersionConflict {
+    /// `Err` unless `actual` is `expected`.
+    ///
+    /// # Errors
+    ///
+    /// The conflict, when the latest live version is not the expected one.
+    pub fn check(
+        type_name: &str,
+        dat_id: Uuid,
+        expected: i64,
+        actual: Option<i64>,
+    ) -> Result<(), Self> {
+        if actual == Some(expected) {
+            return Ok(());
+        }
+        Err(Self {
+            type_name: type_name.to_owned(),
+            dat_id,
+            expected,
+            actual,
+        })
+    }
+}
+
+impl std::fmt::Display for VersionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {}: written from version {}, but ",
+            self.type_name, self.dat_id, self.expected
+        )?;
+        match self.actual {
+            None => write!(f, "it is deleted"),
+            Some(actual) => write!(f, "the latest is {actual}"),
+        }
+    }
+}
+
+impl Error for VersionConflict {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_version_conflict_reads_like_the_reference() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(VersionConflict::check("t.T", id, 5, Some(5)), Ok(()));
+        let moved = VersionConflict::check("t.T", id, 5, Some(9)).unwrap_err();
+        assert_eq!(
+            moved.to_string(),
+            format!("t.T {id}: written from version 5, but the latest is 9")
+        );
+        let gone = VersionConflict::check("t.T", id, 5, None).unwrap_err();
+        assert!(gone.to_string().ends_with("but it is deleted"), "{gone}");
+        assert_eq!((gone.expected, gone.actual), (5, None));
+        let boxed: BoxError = Box::new(moved.clone());
+        assert_eq!(boxed.downcast_ref::<VersionConflict>(), Some(&moved));
+    }
+}

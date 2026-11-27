@@ -327,3 +327,24 @@ def test_a_native_part_store_scans_every_version(dat: Rhizodat, faker: Faker) ->
     part = Part.of(Customer, "pg")
     assert [i for i, _ in parts.part_versions(part)] == [a.dat_id, b.dat_id]
     assert [i for i, _ in parts.part_versions(part, known_at=hlc_bound(between))] == [a.dat_id]
+
+
+def test_a_native_branch_locks_only_where_the_unit_can() -> None:
+    from rhizodat.core.native_parts import NativePartBranch, NativePartStore
+    from rhizodat.core.parts import LocksParts
+
+    store = native.PostgresStore("postgresql://u:p@127.0.0.1:5432/db", "pg")
+    parts = NativePartStore(native, store)
+    part = Part.of(Customer, "pg")
+    dat_id = uuid.uuid4()
+    unit = store.unit()
+    branch = NativePartBranch(unit, parts, uuid.uuid4())
+    assert isinstance(branch, LocksParts)
+    branch.lock_part(part, dat_id, expected=5)
+    touched, _ = unit.own_part(parts.spec(part), dat_id)
+    assert not touched, "a lock is not an own write"
+
+    class Compares:
+        """A unit without locks (ClickHouse, Iceberg): locking is a no-op."""
+
+    NativePartBranch(Compares(), parts, uuid.uuid4()).lock_part(part, dat_id, expected=5)

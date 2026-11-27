@@ -40,6 +40,7 @@ from rhizodat.core.coordinator import (
     InDoubt,
     RecoveryReport,
 )
+from rhizodat.core.repository import VersionConflict
 from rhizodat.core.unit_of_work import UnitOfWorkClosed
 
 __all__ = [
@@ -139,6 +140,8 @@ class NativeUnitOfWork:
             return self.outcome
         try:
             result = self._coordinator.commit(self.dat_txn, list(self._units.values()))
+        except self._native.VersionConflictError as exc:
+            raise VersionConflict(exc.type_name, exc.dat_id, exc.expected, exc.actual) from exc
         except self._native.AbortedError as exc:
             raise Aborted(
                 self.dat_txn, retryable=bool(getattr(exc, "retryable", False)), reason=str(exc)

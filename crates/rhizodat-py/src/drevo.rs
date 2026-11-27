@@ -435,6 +435,17 @@ impl DrevoUnit {
             .erase(&spec.0, dat_id);
     }
 
+    /// Buffer a lock of `dat_id`'s part, taken at stage before the writes that
+    /// follow; with `expected`, the stage fails with `VersionConflictError` unless
+    /// the latest live committed version is `expected`.
+    #[pyo3(signature = (spec, dat_id, *, expected = None))]
+    fn lock_part(&self, spec: &DrevoPartSpec, dat_id: Uuid, expected: Option<i64>) {
+        self.parts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock(&spec.0, dat_id, expected);
+    }
+
     /// This unit's own latest version of `dat_id`'s part: `(False, None)` when it
     /// did not touch it, `(True, None)` when it erased it last, else
     /// `(True, {created, deleted, values})`.
